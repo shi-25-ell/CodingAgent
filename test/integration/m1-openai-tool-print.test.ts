@@ -54,8 +54,98 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     expect(application.model).toMatchObject({
       providerId: "openrouter",
       modelId: "openrouter/free",
+      capabilities: {
+        toolCalls: "single",
+        toolChoice: ["auto"],
+        reasoning: false,
+        reasoningReplay: false,
+      },
     });
+    expect(application.model.capabilities.contextWindow).toBeUndefined();
     expect(JSON.stringify(application.model)).not.toContain("openrouter-local-secret");
+    await application.dispose();
+  });
+
+  it("OpenRouter print mode 通过 production facade 执行工具并继续 Model Turn", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-m1-openrouter-print-"));
+    temporaryDirectories.push(root);
+    const credential = `openrouter-credential-${randomUUID()}`;
+    await writeFile(
+      path.join(root, "answer.txt"),
+      `openrouter vertical slice ${credential}`,
+      "utf8",
+    );
+    let attempt = 0;
+    const transport: OpenAiTransport = {
+      async send(request) {
+        attempt += 1;
+        expect(request.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+        expect(request.headers.authorization).toBe(`Bearer ${credential}`);
+        const wire = JSON.parse(request.body);
+        expect(wire.model).toBe("openrouter/free");
+        expect(wire.messages[0]).toMatchObject({ role: "system" });
+        expect(wire.parallel_tool_calls).toBe(false);
+        if (attempt === 1) {
+          return {
+            status: 200,
+            headers: {},
+            body: body(
+              'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-openrouter-read","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":\\"answer.txt\\"}"}}]},"finish_reason":null}]}\n\ndata: {"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls"}]}\n\ndata: {"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":6,"total_tokens":26}}\n\ndata: [DONE]\n\n',
+            ),
+          };
+        }
+        expect(wire.messages.at(-1)).toMatchObject({
+          role: "tool",
+          tool_call_id: "call-openrouter-read",
+          content: expect.stringContaining("openrouter vertical slice"),
+        });
+        expect(wire.messages.at(-1).content).toContain("[REDACTED]");
+        expect(wire.messages.at(-1).content).not.toContain(credential);
+        return {
+          status: 200,
+          headers: {},
+          body: body(
+            'data: {"choices":[{"index":0,"delta":{"content":"OpenRouter 工具链完成"},"finish_reason":"stop"}]}\n\ndata: {"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":30,"completion_tokens":5,"total_tokens":35}}\n\ndata: [DONE]\n\n',
+          ),
+        };
+      },
+    };
+    const application = await createOpenRouterCodingAgent({
+      workspaceRoot: root,
+      transport,
+      credentialSources: [
+        createEnvironmentCredentialSource({
+          id: "openrouter-test-environment",
+          values: { OPENROUTER_API_KEY: credential },
+          variables: { "openrouter.default": "OPENROUTER_API_KEY" },
+        }),
+      ],
+      clock: new ManualClock(1_000),
+      ids: new SequentialIdFactory(),
+      maxOutputTokens: 128,
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+
+    const result = await runPrintEntry(["--print", "读取 answer.txt"], {
+      agent: application.agent,
+      workspace: { root, fingerprint: "openrouter-fixture" },
+      io: { stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) },
+    });
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      status: "completed",
+      report: {
+        finalAnswer: "OpenRouter 工具链完成",
+        counts: { modelTurnCount: 2, modelAttemptCount: 2, toolCallCount: 1 },
+        tools: { accepted: 1, settled: 1, succeeded: 1, failed: 0 },
+      },
+    });
+    expect(stdout).toEqual(["OpenRouter 工具链完成\n"]);
+    expect(stderr).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain(credential);
+    expect(attempt).toBe(2);
     await application.dispose();
   });
 
@@ -141,6 +231,41 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     expect(result.status).toBe(3);
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe("OpenRouter credential 未配置\n");
+  });
+
+  it("production CLI process 拒绝未知 provider，不静默 fallback", async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), "fast-m1-provider-cli-"));
+    temporaryDirectories.push(repositoryRoot);
+    expect(spawnSync("git", ["init", "-q"], { cwd: repositoryRoot }).status).toBe(0);
+    expect(
+      spawnSync(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "fixture",
+          "-q",
+        ],
+        { cwd: repositoryRoot },
+      ).status,
+    ).toBe(0);
+    const entry = fileURLToPath(
+      new URL("../../packages/coding/dist/cli/entry.js", import.meta.url),
+    );
+    const result = spawnSync(process.execPath, [entry, "--print", "status"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: { ...process.env, FAST_MODEL_PROVIDER: "typo-provider" },
+    });
+
+    expect(result.status).toBe(3);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("不支持的 model provider: typo-provider\n");
   });
 
   it("composition 对 missing/failed credential 给出稳定错误码", async () => {

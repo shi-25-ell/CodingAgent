@@ -28,8 +28,15 @@ const root = process.cwd();
 let application: Awaited<ReturnType<typeof createOpenAiCodingAgent>> | undefined;
 try {
   const fingerprint = workspaceFingerprint(root);
+  const configuredProvider = process.env.FAST_MODEL_PROVIDER ?? "openai";
+  if (configuredProvider !== "openai" && configuredProvider !== "openrouter") {
+    throw new CodingCompositionError(
+      "UNSUPPORTED_PROVIDER",
+      `不支持的 model provider: ${configuredProvider}`,
+    );
+  }
   application =
-    process.env.FAST_MODEL_PROVIDER === "openrouter"
+    configuredProvider === "openrouter"
       ? await createOpenRouterCodingAgent({
           workspaceRoot: root,
           ...(process.env.FAST_OPENROUTER_MODEL

@@ -57,7 +57,7 @@ export interface OpenAiCodingAgent {
 export type OpenRouterCodingAgent = OpenAiCodingAgent;
 
 export class CodingCompositionError extends Error {
-  readonly code: "CREDENTIAL_UNAVAILABLE" | "CREDENTIAL_RESOLUTION_FAILED";
+  readonly code: "CREDENTIAL_UNAVAILABLE" | "CREDENTIAL_RESOLUTION_FAILED" | "UNSUPPORTED_PROVIDER";
 
   constructor(code: CodingCompositionError["code"], message: string) {
     super(message);
@@ -87,11 +87,10 @@ const openRouterProductionCatalog: readonly ModelDescriptor[] = [
     modelId: modelId("openrouter/free"),
     displayName: "OpenRouter Free Models Router",
     capabilities: {
-      toolCalls: "multiple",
-      toolChoice: ["auto", "none", "required", "specific"],
+      toolCalls: "single",
+      toolChoice: ["auto"],
       reasoning: false,
       reasoningReplay: false,
-      contextWindow: 200_000,
     },
     source: { kind: "built_in", id: "openrouter", revision: "2026-08-28" },
   },
