@@ -91,6 +91,7 @@ export class ModelTurnAccumulator {
           throw new ModelProtocolError("MODEL_EVENT_DUPLICATE_PART", `part ${event.index} 已存在`);
         }
         this.#parts.set(event.index, { header: event.part, text: "", completed: false });
+        if (event.part.type === "tool_call") this.#producedSemanticOutput = true;
         return;
       }
       case "text_delta":

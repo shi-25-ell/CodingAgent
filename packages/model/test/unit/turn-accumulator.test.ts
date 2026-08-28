@@ -146,4 +146,25 @@ describe("ModelTurnAccumulator", () => {
       producedSemanticOutput: true,
     });
   });
+
+  it("tool-call identity 本身就是 semantic output，即使 arguments 尚未到达", () => {
+    const accumulator = new ModelTurnAccumulator();
+    accumulator.accept({ version: 1, type: "turn_started", attemptId: "attempt-tool" });
+    accumulator.accept({
+      version: 1,
+      type: "part_started",
+      index: 0,
+      part: { type: "tool_call", callId: "call-visible", name: "read_file" },
+    });
+    accumulator.accept({
+      version: 1,
+      type: "turn_failed",
+      failure: { category: "network", retryable: true, message: "连接中断" },
+    });
+
+    expect(accumulator.result()).toMatchObject({
+      status: "failed",
+      producedSemanticOutput: true,
+    });
+  });
 });

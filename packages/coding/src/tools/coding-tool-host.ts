@@ -322,13 +322,10 @@ async function applyPatchTool(
     `.${path.basename(target)}.${randomUUID()}.tmp`,
   );
   const handle = await open(temporary, "wx", 0o600);
+  let committed = false;
   try {
     await handle.writeFile(updated, "utf8");
     await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
     checkAbort(signal);
     await mutationTarget(root, relative);
     let current: string;
@@ -341,10 +338,26 @@ async function applyPatchTool(
     if (current !== original) {
       throw new ToolFailure("conflict", "patch 目标在提交前已变化");
     }
+    const [rootNow, parentNow, pathInfo, handleInfo] = await Promise.all([
+      realpath(root),
+      realpath(path.dirname(target)),
+      lstat(temporary),
+      handle.stat(),
+    ]);
+    if (
+      rootNow !== root ||
+      parentNow !== path.dirname(target) ||
+      pathInfo.dev !== handleInfo.dev ||
+      pathInfo.ino !== handleInfo.ino
+    ) {
+      throw new ToolFailure("conflict", "patch path identity 在提交前已变化");
+    }
     checkAbort(signal);
     await rename(temporary, target);
+    committed = true;
   } finally {
-    await rm(temporary, { force: true });
+    await handle.close();
+    if (!committed) await rm(temporary, { force: true });
   }
   return JSON.stringify({ path: relative, changed: true });
 }
