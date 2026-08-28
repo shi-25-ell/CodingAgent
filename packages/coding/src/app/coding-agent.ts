@@ -1,7 +1,6 @@
 import type {
   AgentHarness,
   BranchId,
-  CommandAck,
   ContextManager,
   HarnessCommand,
   HarnessEvent,
@@ -16,6 +15,7 @@ import type {
   WorkspaceBinding,
 } from "@coding-agent/agent";
 import type { Model, ModelDescriptor } from "@coding-agent/model";
+import type { ApprovalBridge } from "../permissions/approval-bridge.js";
 
 export interface CreateCodingSessionInput {
   readonly workspace: WorkspaceBinding;
@@ -47,12 +47,25 @@ export interface CodingSessionView extends CodingSessionSummary {
 }
 
 export type CodingEvent = HarnessEvent;
-export type CodingRunCommand = HarnessCommand;
+export type CodingRunCommand =
+  | HarnessCommand
+  | {
+      readonly commandId: string;
+      readonly type: "respond_permission";
+      readonly approvalId: string;
+      readonly decision: "allow_once" | "deny";
+      readonly planFingerprint: string;
+    };
+
+export interface CodingCommandAck {
+  readonly commandId: string;
+  readonly status: "accepted" | "already_applied" | "not_active" | "unknown" | "stale";
+}
 
 export interface CodingRunHandle {
   readonly runId: RunId;
   events(): AsyncIterable<CodingEvent>;
-  dispatch(command: CodingRunCommand): Promise<CommandAck>;
+  dispatch(command: CodingRunCommand): Promise<CodingCommandAck>;
   readonly finished: Promise<RunReport>;
 }
 
@@ -90,6 +103,7 @@ export interface CodingAgentOptions {
   readonly context: ContextManager;
   readonly policies: RunPolicies;
   readonly configurationRevision: string;
+  readonly approvals?: ApprovalBridge;
 }
 
 function assistantText(content: import("@coding-agent/model").AssistantMessage["content"]): string {
@@ -156,7 +170,19 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
       return {
         runId: handle.runId,
         events: () => handle.events(),
-        dispatch: (command) => handle.dispatch(command),
+        async dispatch(command) {
+          if (command.type !== "respond_permission") return handle.dispatch(command);
+          if (!options.approvals) {
+            return { commandId: command.commandId, status: "unknown" };
+          }
+          const ack = options.approvals.respond({
+            approvalId: command.approvalId,
+            runId: handle.runId,
+            decision: command.decision,
+            planFingerprint: command.planFingerprint,
+          });
+          return { commandId: command.commandId, status: ack.status };
+        },
         finished: handle.finished,
       };
     },

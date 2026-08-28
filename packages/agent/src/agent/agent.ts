@@ -234,6 +234,10 @@ class DefaultAgent implements Agent {
             if (input.signal.aborted) return aborted(counts, usage);
             if (decision.action === "retry") {
               retriesInTurn += 1;
+              const waited = await callDependency("policy", () =>
+                input.policies.retryWaiter.wait(decision.delayMs, input.signal),
+              );
+              if (waited === "aborted" || input.signal.aborted) return aborted(counts, usage);
               continue;
             }
             await callDependency("persistence", () =>
@@ -311,7 +315,10 @@ class DefaultAgent implements Agent {
               };
             } else {
               try {
-                const execution = input.tools.execute(call, { signal: input.signal });
+                const execution = input.tools.execute(call, {
+                  runId: input.runId,
+                  signal: input.signal,
+                });
                 const updates = (async () => {
                   for await (const update of execution.updates) {
                     publish({ version: 1, type: "tool_update", callId: call.callId, update });

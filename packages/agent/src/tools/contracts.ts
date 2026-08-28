@@ -1,8 +1,10 @@
 import type { JsonObject, ModelToolDefinition, ToolCall } from "@coding-agent/model";
+import type { RunId } from "../contracts/primitives.js";
 
 export type ToolDefinition = ModelToolDefinition;
 
 export interface ToolExecutionContext {
+  readonly runId: RunId;
   readonly signal: AbortSignal;
 }
 

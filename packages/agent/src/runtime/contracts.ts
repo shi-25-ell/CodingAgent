@@ -100,10 +100,16 @@ export interface RetryPolicyInput {
   readonly attemptProducedSemanticOutput: boolean;
 }
 
-export type RetryDecision = { readonly action: "retry" } | { readonly action: "fail" };
+export type RetryDecision =
+  | { readonly action: "retry"; readonly delayMs: number }
+  | { readonly action: "fail" };
 
 export interface ModelRetryPolicy {
   decide(input: RetryPolicyInput): Promise<RetryDecision>;
+}
+
+export interface RetryWaiter {
+  wait(delayMs: number, signal: AbortSignal): Promise<"elapsed" | "aborted">;
 }
 
 export interface StopPolicyInput {
@@ -122,6 +128,7 @@ export interface RunStopPolicy {
 export interface RunPolicies {
   readonly budgets: RunBudgets;
   readonly retryPolicy: ModelRetryPolicy;
+  readonly retryWaiter: RetryWaiter;
   readonly stopPolicy: RunStopPolicy;
 }
 

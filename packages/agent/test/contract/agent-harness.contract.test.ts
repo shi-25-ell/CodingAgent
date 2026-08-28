@@ -309,6 +309,60 @@ describe("AgentHarness terminal contract", () => {
     await repository[Symbol.asyncDispose]();
   });
 
+  it("abort during retry wait 清理 waiter 且不启动下一 Model Attempt", async () => {
+    const retryGate = new ManualGate();
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(825),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const model = new ScriptedModel([
+      {
+        outcome: {
+          status: "failed",
+          failure: { category: "rate_limit", retryable: true, message: "retry later" },
+        },
+      },
+    ]);
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "等待 retry" }],
+      model,
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({
+        maxModelTurns: 1,
+        maxModelAttempts: 2,
+        maxRetries: 1,
+        retryDelayMs: 1_000,
+        retryWaiter: {
+          wait: (delayMs, signal) => {
+            expect(delayMs).toBe(1_000);
+            return retryGate
+              .wait(signal)
+              .then((status) => (status === "aborted" ? "aborted" : "elapsed"));
+          },
+        },
+      }),
+      metadata: { task: "等待 retry", configurationRevision: "m2" },
+    });
+    await retryGate.waitUntilBlocked();
+    await handle.dispatch({ commandId: "abort-retry", type: "abort" });
+
+    await expect(handle.finished).resolves.toMatchObject({
+      status: "aborted",
+      terminationReason: "user_abort",
+      counts: { modelAttemptCount: 1 },
+    });
+    expect(retryGate.blockedCount()).toBe(0);
+    model.assertConsumed();
+    await repository[Symbol.asyncDispose]();
+  });
+
   it("tool-call batch 不一致时在执行前失败", async () => {
     const invalid: ModelResponse = {
       version: 1,

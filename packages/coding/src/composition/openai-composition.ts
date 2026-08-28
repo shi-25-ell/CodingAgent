@@ -31,6 +31,8 @@ import {
   openRouterProfile,
 } from "@coding-agent/model/providers/openai-compatible";
 import { type CodingAgent, createCodingAgent } from "../app/coding-agent.js";
+import { type ApprovalBridge, createApprovalBridge } from "../permissions/approval-bridge.js";
+import type { PermissionMode } from "../tools/coding-tool-host.js";
 import { createCodingToolHost } from "../tools/coding-tool-host.js";
 
 export interface OpenAiCodingAgentOptions {
@@ -44,6 +46,8 @@ export interface OpenAiCodingAgentOptions {
   readonly ids?: IdFactory;
   readonly instructions?: readonly InstructionPart[];
   readonly maxOutputTokens?: number;
+  readonly permissionMode?: PermissionMode;
+  readonly approvalBridge?: ApprovalBridge;
 }
 
 export type OpenRouterCodingAgentOptions = OpenAiCodingAgentOptions;
@@ -51,6 +55,7 @@ export type OpenRouterCodingAgentOptions = OpenAiCodingAgentOptions;
 export interface OpenAiCodingAgent {
   readonly agent: CodingAgent;
   readonly model: ModelDescriptor;
+  readonly approvals: ApprovalBridge;
   dispose(): Promise<void>;
 }
 
@@ -181,12 +186,15 @@ async function createCompatibleCodingAgent(
       },
     } satisfies IdFactory);
   const sessions = new InMemorySessionRepository({ clock, ids });
+  const approvals = options.approvalBridge ?? createApprovalBridge();
   const agent = createCodingAgent({
     sessions,
     harness: createAgentHarness({ agent: createAgent() }),
     model,
     tools: createCodingToolHost({
       workspaceRoot: options.workspaceRoot,
+      permissionMode: options.permissionMode ?? "autonomous",
+      approvalPort: approvals,
       redact: (value) =>
         [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value),
     }),
@@ -198,10 +206,12 @@ async function createCompatibleCodingAgent(
     }),
     policies: createFixedRunPolicies({ maxModelTurns: 16, maxModelAttempts: 20, maxRetries: 2 }),
     configurationRevision: definition.configurationRevision,
+    approvals,
   });
   return {
     agent,
     model: model.descriptor,
+    approvals,
     async dispose() {
       await sessions[Symbol.asyncDispose]();
     },

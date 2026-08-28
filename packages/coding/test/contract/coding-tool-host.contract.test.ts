@@ -1,9 +1,13 @@
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { watch } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runId } from "@coding-agent/agent";
 import type { ToolCall } from "@coding-agent/model";
 import { afterEach, describe, expect, it } from "vitest";
+import type { ApprovalRequest } from "../../src/tools/coding-tool-host.js";
 import { createCodingToolHost } from "../../src/tools/coding-tool-host.js";
 
 const temporaryDirectories: string[] = [];
@@ -21,10 +25,238 @@ async function outcome(
   call: ToolCall,
   signal = new AbortController().signal,
 ) {
-  return host.execute(call, { signal }).outcome;
+  return host.execute(call, { runId: runId("tool-host-test"), signal }).outcome;
 }
 
 describe("CodingToolHost ToolExecutor contract", () => {
+  it("registry 只暴露 M2 的十个本地 coding tools", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-tools-registry-"));
+    temporaryDirectories.push(root);
+    const host = createCodingToolHost({ workspaceRoot: root });
+    expect(host.definitions().map((definition) => definition.name)).toEqual([
+      "list_files",
+      "read_file",
+      "search_text",
+      "create_file",
+      "apply_patch",
+      "replace_file",
+      "delete_file",
+      "run_command",
+      "git_status",
+      "git_diff",
+    ]);
+  });
+
+  it("create/list/read/replace/delete 共享 workspace safety 与 content precondition", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-tools-files-"));
+    temporaryDirectories.push(root);
+    await mkdir(path.join(root, "src"));
+    const host = createCodingToolHost({ workspaceRoot: root });
+
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "create",
+        name: "create_file",
+        arguments: { path: "src/a.txt", content: "alpha" },
+      }),
+    ).resolves.toMatchObject({ status: "succeeded", effectState: "committed" });
+
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "list",
+        name: "list_files",
+        arguments: { path: "." },
+      }),
+    ).resolves.toMatchObject({
+      status: "succeeded",
+      modelContent: expect.stringContaining("src/a.txt"),
+    });
+
+    const hash = createHash("sha256").update("alpha").digest("hex");
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "replace-conflict",
+        name: "replace_file",
+        arguments: { path: "src/a.txt", expectedHash: "0".repeat(64), content: "wrong" },
+      }),
+    ).resolves.toMatchObject({ status: "conflict", effectState: "none" });
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "replace",
+        name: "replace_file",
+        arguments: { path: "src/a.txt", expectedHash: hash, content: "beta" },
+      }),
+    ).resolves.toMatchObject({ status: "succeeded", effectState: "committed" });
+
+    const betaHash = createHash("sha256").update("beta").digest("hex");
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "delete",
+        name: "delete_file",
+        arguments: { path: "src/a.txt", expectedHash: betaHash },
+      }),
+    ).resolves.toMatchObject({ status: "succeeded", effectState: "committed" });
+    await expect(access(path.join(root, "src", "a.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("git_status 与 git_diff 通过只读 evidence adapter 返回真实 repository 状态", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-tools-git-"));
+    temporaryDirectories.push(root);
+    expect(spawnSync("git", ["init", "-q"], { cwd: root }).status).toBe(0);
+    await writeFile(path.join(root, "a.txt"), "before\n", "utf8");
+    expect(spawnSync("git", ["add", "a.txt"], { cwd: root }).status).toBe(0);
+    expect(
+      spawnSync(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "-qm",
+          "fixture",
+        ],
+        { cwd: root },
+      ).status,
+    ).toBe(0);
+    await writeFile(path.join(root, "a.txt"), "after\n", "utf8");
+    const host = createCodingToolHost({ workspaceRoot: root, permissionMode: "safe" });
+
+    await expect(
+      outcome(host, { type: "tool_call", callId: "status", name: "git_status", arguments: {} }),
+    ).resolves.toMatchObject({
+      status: "succeeded",
+      modelContent: expect.stringContaining("a.txt"),
+    });
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "diff",
+        name: "git_diff",
+        arguments: { path: "a.txt" },
+      }),
+    ).resolves.toMatchObject({
+      status: "succeeded",
+      modelContent: expect.stringContaining("+after"),
+    });
+  });
+  it("Safe Mode 自动允许 read，mutation 绑定 immutable ToolPlan fingerprint 审批", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-tools-approval-"));
+    temporaryDirectories.push(root);
+    await writeFile(path.join(root, "a.txt"), "before", "utf8");
+    const requests: ApprovalRequest[] = [];
+    const host = createCodingToolHost({
+      workspaceRoot: root,
+      permissionMode: "safe",
+      approvalPort: {
+        async request(request) {
+          requests.push(request);
+          expect(Object.isFrozen(request.plan)).toBe(true);
+          expect(Object.isFrozen(request.plan.resources)).toBe(true);
+          return { decision: "allow_once", planFingerprint: request.plan.fingerprint };
+        },
+      },
+    });
+
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "read-safe",
+        name: "read_file",
+        arguments: { path: "a.txt" },
+      }),
+    ).resolves.toMatchObject({ status: "succeeded" });
+    expect(requests).toHaveLength(0);
+
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "patch-safe",
+        name: "apply_patch",
+        arguments: { path: "a.txt", oldText: "before", newText: "after" },
+      }),
+    ).resolves.toMatchObject({ status: "succeeded", effectState: "committed" });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.plan).toMatchObject({
+      callId: "patch-safe",
+      toolName: "apply_patch",
+      normalizedArguments: { path: "a.txt", oldText: "before", newText: "after" },
+      effects: ["workspace_mutation"],
+      policyVersion: expect.any(String),
+      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  });
+
+  it("deny、wrong fingerprint 与 approval 后 precondition 变化均不启动 mutation", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-tools-approval-"));
+    temporaryDirectories.push(root);
+    const target = path.join(root, "a.txt");
+    await writeFile(target, "before", "utf8");
+
+    const denied = createCodingToolHost({
+      workspaceRoot: root,
+      permissionMode: "safe",
+      approvalPort: {
+        async request(request) {
+          return { decision: "deny", planFingerprint: request.plan.fingerprint };
+        },
+      },
+    });
+    await expect(
+      outcome(denied, {
+        type: "tool_call",
+        callId: "deny",
+        name: "apply_patch",
+        arguments: { path: "a.txt", oldText: "before", newText: "denied" },
+      }),
+    ).resolves.toMatchObject({ status: "denied", effectState: "none" });
+    await expect(readFile(target, "utf8")).resolves.toBe("before");
+
+    const wrong = createCodingToolHost({
+      workspaceRoot: root,
+      permissionMode: "safe",
+      approvalPort: {
+        async request() {
+          return { decision: "allow_once", planFingerprint: "wrong" };
+        },
+      },
+    });
+    await expect(
+      outcome(wrong, {
+        type: "tool_call",
+        callId: "wrong",
+        name: "apply_patch",
+        arguments: { path: "a.txt", oldText: "before", newText: "wrong" },
+      }),
+    ).resolves.toMatchObject({ status: "rejected", effectState: "none" });
+    await expect(readFile(target, "utf8")).resolves.toBe("before");
+
+    const raced = createCodingToolHost({
+      workspaceRoot: root,
+      permissionMode: "safe",
+      approvalPort: {
+        async request(request) {
+          await writeFile(target, "concurrent", "utf8");
+          return { decision: "allow_once", planFingerprint: request.plan.fingerprint };
+        },
+      },
+    });
+    await expect(
+      outcome(raced, {
+        type: "tool_call",
+        callId: "race-after-approval",
+        name: "apply_patch",
+        arguments: { path: "a.txt", oldText: "before", newText: "after" },
+      }),
+    ).resolves.toMatchObject({ status: "conflict", effectState: "none" });
+    await expect(readFile(target, "utf8")).resolves.toBe("concurrent");
+  });
   it("四个真实工具共享 strict validation、workspace containment 与明确 ToolOutcome", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-tools-"));
     temporaryDirectories.push(root);
@@ -86,7 +318,7 @@ describe("CodingToolHost ToolExecutor contract", () => {
       }),
     ).resolves.toMatchObject({
       status: "succeeded",
-      effectState: "none",
+      effectState: "unknown",
       modelContent: expect.stringContaining("command-ok"),
     });
 
@@ -134,18 +366,26 @@ describe("CodingToolHost ToolExecutor contract", () => {
       abortObserved: true,
     });
 
-    await expect(
-      outcome(host, {
-        type: "tool_call",
-        callId: "limited",
-        name: "read_file",
-        arguments: { path: "large.txt" },
-      }),
-    ).resolves.toMatchObject({
+    const limited = await outcome(host, {
+      type: "tool_call",
+      callId: "limited",
+      name: "read_file",
+      arguments: { path: "large.txt" },
+    });
+    expect(limited).toMatchObject({
       status: "output_limit",
       effectState: "none",
       modelContent: expect.any(String),
+      evidence: {
+        truncated: true,
+        originalBytes: expect.any(Number),
+        inlineBytes: expect.any(Number),
+        budget: "modelContent",
+      },
     });
+    expect(limited.artifacts).toHaveLength(1);
+    const artifact = await host.artifacts.read(limited.artifacts[0]?.id ?? "");
+    expect(Buffer.from(artifact ?? []).toString("utf8")).toContain("abcdefghij");
 
     const utf8Host = createCodingToolHost({ workspaceRoot: root, maxOutputBytes: 4 });
     await expect(

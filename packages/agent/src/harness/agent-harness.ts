@@ -1,4 +1,4 @@
-import type { Model } from "@coding-agent/model";
+import type { JsonObject, Model } from "@coding-agent/model";
 import type { Agent } from "../agent/agent.js";
 import type { ContextManager } from "../context/contracts.js";
 import { responseAsAssistantMessage } from "../context/transcript-context.js";
@@ -8,7 +8,9 @@ import type {
   AgentEvent,
   AgentRunResult,
   AgentSemanticEvent,
+  ChangedFileEvidence,
   CommandEvidence,
+  PermissionSummary,
   RunPolicies,
   RunReport,
   ToolSummary,
@@ -60,7 +62,14 @@ export interface AgentHarnessOptions {
   readonly agent: Agent;
 }
 
-function reportFromResult(run: RunId, result: AgentRunResult, tools: ToolSummary): RunReport {
+function reportFromResult(
+  run: RunId,
+  result: AgentRunResult,
+  tools: ToolSummary,
+  permissions: PermissionSummary,
+  changedFiles: readonly ChangedFileEvidence[],
+  commands: readonly CommandEvidence[],
+): RunReport {
   return {
     version: 1,
     runId: run,
@@ -70,9 +79,9 @@ function reportFromResult(run: RunId, result: AgentRunResult, tools: ToolSummary
     counts: result.counts,
     usage: result.usage,
     tools,
-    permissions: { requested: 0, allowed: 0, denied: 0 },
-    changedFiles: [],
-    commands: [] satisfies readonly CommandEvidence[],
+    permissions,
+    changedFiles,
+    commands,
     unfinishedWork: result.unfinishedWork,
     ...(result.error ? { error: result.error } : {}),
     lastPhase: "finalizing",
@@ -97,6 +106,9 @@ class DefaultAgentHarness implements AgentHarness {
     let abortApplied = false;
     const appliedCommands = new Set<string>();
     let toolSummary: ToolSummary = { accepted: 0, settled: 0, succeeded: 0, failed: 0 };
+    let permissionSummary: PermissionSummary = { requested: 0, allowed: 0, denied: 0 };
+    const changedFiles: ChangedFileEvidence[] = [];
+    const commands: CommandEvidence[] = [];
     let lifecycle: "active" | "finalizing" | "terminal" = "active";
     stream.publish({ version: 1, type: "run_started", runId: lease.runId });
 
@@ -111,6 +123,40 @@ class DefaultAgentHarness implements AgentHarness {
         stream.publish({ version: 1, type: "model_failure_committed", runId: lease.runId });
       } else {
         await lease.append([{ kind: "tool_outcome", outcome: event.outcome }]);
+        const evidence = event.outcome.evidence;
+        if (evidence?.permissionRequested === true) {
+          permissionSummary = {
+            requested: permissionSummary.requested + 1,
+            allowed:
+              permissionSummary.allowed + (evidence.permissionDecision === "allowed" ? 1 : 0),
+            denied: permissionSummary.denied + (evidence.permissionDecision === "denied" ? 1 : 0),
+          };
+        }
+        const changedFile = evidence?.changedFile;
+        if (
+          changedFile !== null &&
+          typeof changedFile === "object" &&
+          !Array.isArray(changedFile)
+        ) {
+          const changedFileObject = changedFile as JsonObject;
+          if (
+            typeof changedFileObject.path === "string" &&
+            (changedFileObject.change === "created" ||
+              changedFileObject.change === "modified" ||
+              changedFileObject.change === "deleted")
+          ) {
+            changedFiles.push({
+              path: changedFileObject.path,
+              change: changedFileObject.change,
+            });
+          }
+        }
+        if (typeof evidence?.command === "string") {
+          commands.push({
+            command: evidence.command,
+            ...(typeof evidence.exitCode === "number" ? { exitCode: evidence.exitCode } : {}),
+          });
+        }
         toolSummary = {
           accepted: toolSummary.accepted + 1,
           settled: toolSummary.settled + 1,
@@ -158,10 +204,22 @@ class DefaultAgentHarness implements AgentHarness {
               unfinishedWork: ["Run 在 finalizing 前收到取消请求"],
             }
           : result;
-        const requestedReport = reportFromResult(lease.runId, arbitratedResult, toolSummary);
+        const requestedReport = reportFromResult(
+          lease.runId,
+          arbitratedResult,
+          toolSummary,
+          permissionSummary,
+          changedFiles,
+          commands,
+        );
         const terminalCommit = await lease.finish(requestedReport);
         const report = terminalCommit.report;
         lifecycle = "terminal";
+        stream.publish({
+          version: 1,
+          type: "progress",
+          event: { version: 1, type: "phase_changed", phase: "terminal" },
+        });
         stream.publish({ version: 1, type: "terminal", report });
         return report;
       })
