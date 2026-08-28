@@ -1,9 +1,7 @@
-import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { lstat, open, opendir, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
+  ArtifactStore,
   RunId,
   ToolDefinition,
   ToolExecution,
@@ -13,9 +11,11 @@ import type {
 } from "@coding-agent/agent";
 import type { JsonObject, JsonValue, ToolCall } from "@coding-agent/model";
 import {
-  createEphemeralArtifactStore,
-  type ToolArtifactStore,
-} from "./ephemeral-artifact-store.js";
+  createNodeLocalExecutionPorts,
+  type LocalExecutionPorts,
+  type LocalFilesystemPort,
+} from "../adapters/local-execution-ports.js";
+import { createEphemeralArtifactStore } from "./ephemeral-artifact-store.js";
 import { ToolRegistry, type ToolRegistrySnapshot } from "./tool-registry.js";
 
 export type PermissionMode = "safe" | "autonomous";
@@ -55,6 +55,7 @@ export interface ApprovalResponse {
 
 export interface ApprovalPort {
   request(request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalResponse>;
+  invalidate?(approvalId: string): void;
 }
 
 export interface CodingToolHostOptions {
@@ -66,11 +67,11 @@ export interface CodingToolHostOptions {
   readonly permissionMode?: PermissionMode;
   readonly approvalPort?: ApprovalPort;
   readonly policyVersion?: string;
-  readonly artifactStore?: ToolArtifactStore;
+  readonly artifactStore?: ArtifactStore;
 }
 
 export interface CodingToolHost extends ToolExecutor, AsyncDisposable {
-  readonly artifacts: ToolArtifactStore;
+  readonly artifacts: ArtifactStore;
 }
 
 type FailureStatus =
@@ -89,6 +90,7 @@ class ToolFailure extends Error {
   readonly modelContent: string;
   readonly artifactBytes: Uint8Array | undefined;
   readonly evidence: JsonObject | undefined;
+  readonly infrastructureFailure: ToolOutcome["infrastructureFailure"];
 
   constructor(
     status: FailureStatus,
@@ -98,6 +100,7 @@ class ToolFailure extends Error {
       readonly abortObserved?: boolean;
       readonly artifactBytes?: Uint8Array;
       readonly evidence?: JsonObject;
+      readonly infrastructureFailure?: NonNullable<ToolOutcome["infrastructureFailure"]>;
     },
   ) {
     super(modelContent);
@@ -108,6 +111,7 @@ class ToolFailure extends Error {
     this.abortObserved = options?.abortObserved ?? false;
     this.artifactBytes = options?.artifactBytes;
     this.evidence = options?.evidence;
+    this.infrastructureFailure = options?.infrastructureFailure;
   }
 }
 
@@ -237,6 +241,17 @@ function canonicalJson(value: JsonValue): string {
     .join(",")}}`;
 }
 
+function redactJson(value: JsonValue, redact: (text: string) => string): JsonValue {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map((item) => redactJson(item, redact));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, redactJson(item, redact)]),
+    );
+  }
+  return value;
+}
+
 function contentHash(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -254,20 +269,6 @@ function ensureObject(value: JsonObject): Record<string, JsonValue> {
     throw new ToolFailure("rejected", "Tool arguments 必须是 JSON object");
   }
   return value;
-}
-
-function validateKeys(
-  input: Record<string, JsonValue>,
-  required: readonly string[],
-  optional: readonly string[] = [],
-): void {
-  const allowed = new Set([...required, ...optional]);
-  if (Object.keys(input).some((key) => !allowed.has(key))) {
-    throw new ToolFailure("rejected", "Tool arguments 包含未知字段");
-  }
-  if (required.some((key) => !(key in input))) {
-    throw new ToolFailure("rejected", "Tool arguments 缺少必填字段");
-  }
 }
 
 function stringArgument(input: Record<string, JsonValue>, key: string, allowEmpty = false): string {
@@ -304,11 +305,50 @@ function lexicalPath(root: string, value: string): string {
   return candidate;
 }
 
-async function readTarget(root: string, value: string): Promise<string> {
+function normalizeArguments(
+  root: string,
+  toolName: string,
+  input: Record<string, JsonValue>,
+): Record<string, JsonValue> {
+  const normalized = structuredClone(input);
+  const normalizePath = (key: "path" | "cwd", fallback?: string): void => {
+    const value = normalized[key] === undefined ? fallback : stringArgument(normalized, key);
+    if (value === undefined) return;
+    const absolute = lexicalPath(root, value);
+    normalized[key] = modelPath(path.relative(root, absolute) || ".");
+  };
+  switch (toolName) {
+    case "list_files":
+      normalizePath("path", ".");
+      normalized.recursive ??= true;
+      break;
+    case "search_text":
+    case "git_diff":
+      normalizePath("path", ".");
+      break;
+    case "run_command":
+      normalizePath("cwd", ".");
+      break;
+    case "read_file":
+    case "create_file":
+    case "apply_patch":
+    case "replace_file":
+    case "delete_file":
+      normalizePath("path");
+      break;
+  }
+  return normalized;
+}
+
+async function readTarget(
+  root: string,
+  value: string,
+  filesystem: LocalFilesystemPort,
+): Promise<string> {
   const candidate = lexicalPath(root, value);
   let resolved: string;
   try {
-    resolved = await realpath(candidate);
+    resolved = await filesystem.realpath(candidate);
   } catch (_error) {
     throw new ToolFailure("failed", "目标文件不存在或不可访问");
   }
@@ -316,7 +356,11 @@ async function readTarget(root: string, value: string): Promise<string> {
   return resolved;
 }
 
-async function mutationTarget(root: string, value: string): Promise<string> {
+async function mutationTarget(
+  root: string,
+  value: string,
+  filesystem: LocalFilesystemPort,
+): Promise<string> {
   const candidate = lexicalPath(root, value);
   const relative = path.relative(root, candidate);
   const segments = relative.split(path.sep).filter(Boolean);
@@ -324,8 +368,8 @@ async function mutationTarget(root: string, value: string): Promise<string> {
   for (const segment of segments) {
     current = path.join(current, segment);
     try {
-      const info = await lstat(current);
-      if (info.isSymbolicLink()) {
+      const info = await filesystem.inspect(current);
+      if (info.symbolicLink) {
         throw new ToolFailure("rejected", "mutation 不允许 symlink/junction 路径");
       }
     } catch (error) {
@@ -352,6 +396,7 @@ async function createPlan(
   call: ToolCall,
   args: Record<string, JsonValue>,
   policyVersion: string,
+  filesystem: LocalFilesystemPort,
 ): Promise<ToolPlan> {
   const resources: ToolResource[] = [];
   const effects: ToolEffect[] = [];
@@ -381,7 +426,7 @@ async function createPlan(
     }
     case "create_file": {
       const relative = stringArgument(args, "path");
-      await mutationTarget(root, relative);
+      await mutationTarget(root, relative, filesystem);
       resources.push({ kind: "path", value: relative });
       effects.push("workspace_mutation");
       risks.push("创建 workspace 文件");
@@ -390,10 +435,10 @@ async function createPlan(
     }
     case "apply_patch": {
       const relative = stringArgument(args, "path");
-      const target = await mutationTarget(root, relative);
+      const target = await mutationTarget(root, relative, filesystem);
       let bytes: Uint8Array;
       try {
-        bytes = await readFile(target);
+        bytes = await filesystem.read(target);
       } catch (_error) {
         throw new ToolFailure("failed", "patch 目标文件不存在或不可访问");
       }
@@ -410,10 +455,10 @@ async function createPlan(
     case "delete_file": {
       const relative = stringArgument(args, "path");
       const expectedHash = stringArgument(args, "expectedHash");
-      const target = await mutationTarget(root, relative);
+      const target = await mutationTarget(root, relative, filesystem);
       let bytes: Uint8Array;
       try {
-        bytes = await readFile(target);
+        bytes = await filesystem.read(target);
       } catch (_error) {
         throw new ToolFailure("failed", "目标文件不存在或不可访问");
       }
@@ -467,30 +512,56 @@ async function createPlan(
   return deepFreeze({ ...draft, fingerprint });
 }
 
-async function enforceHardGuard(root: string, plan: ToolPlan): Promise<void> {
+function redactPlan(plan: ToolPlan, redact: (value: string) => string): ToolPlan {
+  return deepFreeze({
+    ...plan,
+    normalizedArguments: redactJson(plan.normalizedArguments, redact) as JsonObject,
+    resources: plan.resources.map((resource) => ({ ...resource, value: redact(resource.value) })),
+    risks: plan.risks.map(redact),
+    preconditions: plan.preconditions.map((precondition) => ({
+      ...precondition,
+      resource: redact(precondition.resource),
+    })),
+  });
+}
+
+async function enforceHardGuard(
+  root: string,
+  plan: ToolPlan,
+  filesystem: LocalFilesystemPort,
+): Promise<void> {
   const args = ensureObject(plan.normalizedArguments);
   switch (plan.toolName) {
     case "list_files":
-      await readTarget(root, args.path === undefined ? "." : stringArgument(args, "path"));
+      await readTarget(
+        root,
+        args.path === undefined ? "." : stringArgument(args, "path"),
+        filesystem,
+      );
       return;
     case "read_file":
-      await readTarget(root, stringArgument(args, "path"));
+      await readTarget(root, stringArgument(args, "path"), filesystem);
       return;
     case "search_text":
-      await readTarget(root, args.path === undefined ? "." : stringArgument(args, "path"));
+      await readTarget(
+        root,
+        args.path === undefined ? "." : stringArgument(args, "path"),
+        filesystem,
+      );
       return;
     case "create_file":
     case "apply_patch":
     case "replace_file":
     case "delete_file":
-      await mutationTarget(root, stringArgument(args, "path"));
+      await mutationTarget(root, stringArgument(args, "path"), filesystem);
       return;
     case "run_command": {
       const cwd = await readTarget(
         root,
         args.cwd === undefined ? "." : stringArgument(args, "cwd"),
+        filesystem,
       );
-      if (!(await lstat(cwd)).isDirectory()) {
+      if (!(await filesystem.inspect(cwd)).directory) {
         throw new ToolFailure("rejected", "cwd 必须是 directory");
       }
       return;
@@ -503,12 +574,16 @@ async function enforceHardGuard(root: string, plan: ToolPlan): Promise<void> {
   }
 }
 
-async function revalidatePreconditions(root: string, plan: ToolPlan): Promise<void> {
+async function revalidatePreconditions(
+  root: string,
+  plan: ToolPlan,
+  filesystem: LocalFilesystemPort,
+): Promise<void> {
   for (const precondition of plan.preconditions) {
-    const target = await mutationTarget(root, precondition.resource);
+    const target = await mutationTarget(root, precondition.resource, filesystem);
     if (precondition.kind === "path_absent") {
       try {
-        await lstat(target);
+        await filesystem.inspect(target);
         throw new ToolFailure("conflict", "目标在批准后已存在");
       } catch (error) {
         if (error instanceof ToolFailure) throw error;
@@ -525,7 +600,7 @@ async function revalidatePreconditions(root: string, plan: ToolPlan): Promise<vo
     }
     let bytes: Uint8Array;
     try {
-      bytes = await readFile(target);
+      bytes = await filesystem.read(target);
     } catch (_error) {
       throw new ToolFailure("conflict", "目标在批准后不可访问");
     }
@@ -588,12 +663,12 @@ async function readFileTool(
   args: Record<string, JsonValue>,
   signal: AbortSignal,
   maximum: number,
+  filesystem: LocalFilesystemPort,
 ): Promise<string> {
-  validateKeys(args, ["path"]);
   const relative = stringArgument(args, "path");
   checkAbort(signal);
-  const target = await readTarget(root, relative);
-  const bytes = await readFile(target, { signal });
+  const target = await readTarget(root, relative, filesystem);
+  const bytes = await filesystem.read(target, signal);
   checkAbort(signal);
   return bounded(
     JSON.stringify({ path: relative, contentHash: contentHash(bytes), content: decodeUtf8(bytes) }),
@@ -605,19 +680,20 @@ async function* listEntries(
   root: string,
   directory: string,
   recursive: boolean,
+  filesystem: LocalFilesystemPort,
 ): AsyncIterable<string> {
-  const entries = await opendir(directory);
-  for await (const entry of entries) {
+  const entries = await filesystem.list(directory);
+  for (const entry of entries) {
     if (entry.name === ".git") continue;
     const target = path.join(directory, entry.name);
     if (!isWithin(target, root)) continue;
     const relative = modelPath(path.relative(root, target));
-    if (entry.isSymbolicLink()) {
+    if (entry.symbolicLink) {
       yield `${relative}\tsymlink`;
-    } else if (entry.isDirectory()) {
+    } else if (entry.directory) {
       yield `${relative}\tdirectory`;
-      if (recursive) yield* listEntries(root, target, true);
-    } else if (entry.isFile()) {
+      if (recursive) yield* listEntries(root, target, true, filesystem);
+    } else if (entry.file) {
       yield `${relative}\tfile`;
     }
   }
@@ -628,33 +704,37 @@ async function listFilesTool(
   args: Record<string, JsonValue>,
   signal: AbortSignal,
   maximum: number,
+  filesystem: LocalFilesystemPort,
 ): Promise<string> {
-  validateKeys(args, [], ["path", "recursive"]);
   const relative = args.path === undefined ? "." : stringArgument(args, "path");
   const recursive = args.recursive === undefined ? true : args.recursive;
   if (typeof recursive !== "boolean") throw new ToolFailure("rejected", "recursive 必须是 boolean");
   checkAbort(signal);
-  const target = await readTarget(root, relative);
-  if (!(await lstat(target)).isDirectory()) {
+  const target = await readTarget(root, relative, filesystem);
+  if (!(await filesystem.inspect(target)).directory) {
     throw new ToolFailure("rejected", "list_files path 必须是 directory");
   }
   const entries: string[] = [];
-  for await (const entry of listEntries(root, target, recursive)) {
+  for await (const entry of listEntries(root, target, recursive, filesystem)) {
     checkAbort(signal);
     entries.push(entry);
   }
   return bounded(entries.sort().join("\n"), maximum);
 }
 
-async function* filesUnder(root: string, directory: string): AsyncIterable<string> {
-  const entries = await opendir(directory);
-  for await (const entry of entries) {
+async function* filesUnder(
+  root: string,
+  directory: string,
+  filesystem: LocalFilesystemPort,
+): AsyncIterable<string> {
+  const entries = await filesystem.list(directory);
+  for (const entry of entries) {
     const target = path.join(directory, entry.name);
-    if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory()) {
+    if (entry.symbolicLink) continue;
+    if (entry.directory) {
       if (entry.name === ".git") continue;
-      yield* filesUnder(root, target);
-    } else if (entry.isFile() && isWithin(target, root)) {
+      yield* filesUnder(root, target, filesystem);
+    } else if (entry.file && isWithin(target, root)) {
       yield target;
     }
   }
@@ -665,15 +745,15 @@ async function searchTextTool(
   args: Record<string, JsonValue>,
   signal: AbortSignal,
   maximum: number,
+  filesystem: LocalFilesystemPort,
 ): Promise<string> {
-  validateKeys(args, ["query"], ["path"]);
   const query = stringArgument(args, "query");
   const relative = args.path === undefined ? "." : stringArgument(args, "path");
   checkAbort(signal);
-  const target = await readTarget(root, relative);
-  const info = await lstat(target);
-  const candidates = info.isDirectory()
-    ? filesUnder(root, target)
+  const target = await readTarget(root, relative, filesystem);
+  const info = await filesystem.inspect(target);
+  const candidates = info.directory
+    ? filesUnder(root, target, filesystem)
     : (async function* () {
         yield target;
       })();
@@ -682,7 +762,7 @@ async function searchTextTool(
     checkAbort(signal);
     let text: string;
     try {
-      text = decodeUtf8(await readFile(file, { signal }));
+      text = decodeUtf8(await filesystem.read(file, signal));
     } catch (error) {
       if (error instanceof ToolFailure && error.status === "rejected") continue;
       throw error;
@@ -702,28 +782,29 @@ async function atomicWrite(
   content: string,
   signal: AbortSignal,
   precondition: { readonly kind: "absent" } | { readonly kind: "hash"; readonly value: string },
+  filesystem: LocalFilesystemPort,
 ): Promise<string> {
-  const target = await mutationTarget(root, relative);
+  const target = await mutationTarget(root, relative, filesystem);
   const parent = path.dirname(target);
   let parentResolved: string;
   try {
-    parentResolved = await realpath(parent);
+    parentResolved = await filesystem.realpath(parent);
   } catch (_error) {
     throw new ToolFailure("failed", "目标 parent directory 不存在或不可访问");
   }
   if (parentResolved !== parent)
     throw new ToolFailure("rejected", "mutation parent 不能是 symlink/junction");
   const temporary = path.join(parent, `.${path.basename(target)}.${randomUUID()}.tmp`);
-  const handle = await open(temporary, "wx", 0o600);
+  const handle = await filesystem.openExclusive(temporary);
   let committed = false;
   try {
-    await handle.writeFile(content, "utf8");
+    await handle.write(content);
     await handle.sync();
     checkAbort(signal);
-    await mutationTarget(root, relative);
+    await mutationTarget(root, relative, filesystem);
     if (precondition.kind === "absent") {
       try {
-        await lstat(target);
+        await filesystem.inspect(target);
         throw new ToolFailure("conflict", "create_file 目标已存在");
       } catch (error) {
         if (error instanceof ToolFailure) throw error;
@@ -739,7 +820,7 @@ async function atomicWrite(
     } else {
       let current: Uint8Array;
       try {
-        current = await readFile(target, { signal });
+        current = await filesystem.read(target, signal);
       } catch (_error) {
         throw new ToolFailure("conflict", "目标在提交前不可访问");
       }
@@ -748,11 +829,11 @@ async function atomicWrite(
       }
     }
     checkAbort(signal);
-    await rename(temporary, target);
+    await filesystem.rename(temporary, target);
     committed = true;
   } finally {
-    await handle.close();
-    if (!committed) await rm(temporary, { force: true });
+    await handle[Symbol.asyncDispose]();
+    if (!committed) await filesystem.remove(temporary);
   }
   return JSON.stringify({ path: relative, contentHash: contentHash(Buffer.from(content, "utf8")) });
 }
@@ -761,14 +842,15 @@ async function createFileTool(
   root: string,
   args: Record<string, JsonValue>,
   signal: AbortSignal,
+  filesystem: LocalFilesystemPort,
 ): Promise<string> {
-  validateKeys(args, ["path", "content"]);
   return atomicWrite(
     root,
     stringArgument(args, "path"),
     stringArgument(args, "content", true),
     signal,
     { kind: "absent" },
+    filesystem,
   );
 }
 
@@ -776,14 +858,14 @@ async function replaceFileTool(
   root: string,
   args: Record<string, JsonValue>,
   signal: AbortSignal,
+  filesystem: LocalFilesystemPort,
 ): Promise<string> {
-  validateKeys(args, ["path", "expectedHash", "content"]);
   const relative = stringArgument(args, "path");
   const expectedHash = stringArgument(args, "expectedHash");
-  const target = await mutationTarget(root, relative);
+  const target = await mutationTarget(root, relative, filesystem);
   let current: Uint8Array;
   try {
-    current = await readFile(target, { signal });
+    current = await filesystem.read(target, signal);
   } catch (_error) {
     throw new ToolFailure("failed", "replace_file 目标不存在或不可访问");
   }
@@ -791,24 +873,31 @@ async function replaceFileTool(
   if (contentHash(current) !== expectedHash) {
     throw new ToolFailure("conflict", "expectedHash 与当前内容不一致");
   }
-  return atomicWrite(root, relative, stringArgument(args, "content", true), signal, {
-    kind: "hash",
-    value: expectedHash,
-  });
+  return atomicWrite(
+    root,
+    relative,
+    stringArgument(args, "content", true),
+    signal,
+    {
+      kind: "hash",
+      value: expectedHash,
+    },
+    filesystem,
+  );
 }
 
 async function deleteFileTool(
   root: string,
   args: Record<string, JsonValue>,
   signal: AbortSignal,
+  filesystem: LocalFilesystemPort,
 ): Promise<string> {
-  validateKeys(args, ["path", "expectedHash"]);
   const relative = stringArgument(args, "path");
   const expectedHash = stringArgument(args, "expectedHash");
-  const target = await mutationTarget(root, relative);
+  const target = await mutationTarget(root, relative, filesystem);
   let current: Uint8Array;
   try {
-    current = await readFile(target, { signal });
+    current = await filesystem.read(target, signal);
   } catch (_error) {
     throw new ToolFailure("failed", "delete_file 目标不存在或不可访问");
   }
@@ -821,9 +910,9 @@ async function deleteFileTool(
     path.dirname(target),
     `.${path.basename(target)}.${randomUUID()}.delete`,
   );
-  await rename(target, tombstone);
+  await filesystem.rename(target, tombstone);
   try {
-    await rm(tombstone);
+    await filesystem.remove(tombstone);
   } catch (_error) {
     throw new ToolFailure("failed", "文件已移出目标路径但 cleanup 失败", {
       effectState: "partial",
@@ -836,16 +925,16 @@ async function applyPatchTool(
   root: string,
   args: Record<string, JsonValue>,
   signal: AbortSignal,
+  filesystem: LocalFilesystemPort,
 ): Promise<string> {
-  validateKeys(args, ["path", "oldText", "newText"]);
   const relative = stringArgument(args, "path");
   const oldText = stringArgument(args, "oldText");
   const newText = stringArgument(args, "newText", true);
   checkAbort(signal);
-  const target = await mutationTarget(root, relative);
+  const target = await mutationTarget(root, relative, filesystem);
   let original: string;
   try {
-    original = decodeUtf8(await readFile(target, { signal }));
+    original = decodeUtf8(await filesystem.read(target, signal));
   } catch (error) {
     if (error instanceof ToolFailure) throw error;
     throw new ToolFailure("failed", "patch 目标文件不存在或不可访问");
@@ -859,16 +948,16 @@ async function applyPatchTool(
     path.dirname(target),
     `.${path.basename(target)}.${randomUUID()}.tmp`,
   );
-  const handle = await open(temporary, "wx", 0o600);
+  const handle = await filesystem.openExclusive(temporary);
   let committed = false;
   try {
-    await handle.writeFile(updated, "utf8");
+    await handle.write(updated);
     await handle.sync();
     checkAbort(signal);
-    await mutationTarget(root, relative);
+    await mutationTarget(root, relative, filesystem);
     let current: string;
     try {
-      current = decodeUtf8(await readFile(target, { signal }));
+      current = decodeUtf8(await filesystem.read(target, signal));
     } catch (error) {
       if (error instanceof ToolFailure) throw error;
       throw new ToolFailure("conflict", "patch 目标在提交前不可访问");
@@ -877,65 +966,27 @@ async function applyPatchTool(
       throw new ToolFailure("conflict", "patch 目标在提交前已变化");
     }
     const [rootNow, parentNow, pathInfo, handleInfo] = await Promise.all([
-      realpath(root),
-      realpath(path.dirname(target)),
-      lstat(temporary),
+      filesystem.realpath(root),
+      filesystem.realpath(path.dirname(target)),
+      filesystem.inspect(temporary),
       handle.stat(),
     ]);
     if (
       rootNow !== root ||
       parentNow !== path.dirname(target) ||
-      pathInfo.dev !== handleInfo.dev ||
-      pathInfo.ino !== handleInfo.ino
+      pathInfo.device !== handleInfo.device ||
+      pathInfo.inode !== handleInfo.inode
     ) {
       throw new ToolFailure("conflict", "patch path identity 在提交前已变化");
     }
     checkAbort(signal);
-    await rename(temporary, target);
+    await filesystem.rename(temporary, target);
     committed = true;
   } finally {
-    await handle.close();
-    if (!committed) await rm(temporary, { force: true });
+    await handle[Symbol.asyncDispose]();
+    if (!committed) await filesystem.remove(temporary);
   }
   return JSON.stringify({ path: relative, changed: true });
-}
-
-function sanitizedEnvironment(registeredSecrets: readonly string[] = []): NodeJS.ProcessEnv {
-  const allowed = new Set([
-    "APPDATA",
-    "COMSPEC",
-    "LOCALAPPDATA",
-    "NUMBER_OF_PROCESSORS",
-    "OS",
-    "PATH",
-    "PATHEXT",
-    "PROCESSOR_ARCHITECTURE",
-    "PROCESSOR_IDENTIFIER",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "WINDIR",
-  ]);
-  return Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([name, value]) =>
-        allowed.has(name.toUpperCase()) &&
-        !/(?:credential|secret|token|password|api[_-]?key)/i.test(name) &&
-        (value === undefined || !registeredSecrets.includes(value)),
-    ),
-  );
-}
-
-function terminateWindowsProcessTree(pid: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-    killer.once("error", () => resolve(false));
-    killer.once("close", (code) => resolve(code === 0));
-  });
 }
 
 async function runCommandTool(
@@ -945,192 +996,58 @@ async function runCommandTool(
   maximum: number,
   timeoutMs: number,
   registeredSecrets: readonly string[],
+  ports: LocalExecutionPorts,
 ): Promise<string> {
-  validateKeys(args, ["command"], ["cwd"]);
   const command = stringArgument(args, "command");
   const relativeCwd = args.cwd === undefined ? "." : stringArgument(args, "cwd");
   checkAbort(signal);
-  const cwd = await readTarget(root, relativeCwd);
-  if (!(await lstat(cwd)).isDirectory()) throw new ToolFailure("rejected", "cwd 必须是 directory");
-  checkAbort(signal);
-  if (process.platform !== "win32") {
-    throw new ToolFailure("rejected", "M2 run_command 仅支持 Windows PowerShell");
+  const cwd = await readTarget(root, relativeCwd, ports.filesystem);
+  if (!(await ports.filesystem.inspect(cwd)).directory) {
+    throw new ToolFailure("rejected", "cwd 必须是 directory");
   }
-  const executable = "powershell.exe";
-  const shellArgs = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command];
-  return new Promise<string>((resolve, reject) => {
-    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    const captureMaximum = Math.max(maximum, Math.min(maximum * 16, 8 * 1024 * 1024));
-    let captureExceeded = false;
-    let timedOut = false;
-    let termination: Promise<boolean> | undefined;
-    const child = spawn(executable, shellArgs, {
-      cwd,
-      env: sanitizedEnvironment(registeredSecrets),
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const append = (
-      current: Buffer<ArrayBufferLike>,
-      chunk: Buffer<ArrayBufferLike>,
-    ): Buffer<ArrayBufferLike> => {
-      const remaining = Math.max(0, captureMaximum + 1 - current.length);
-      const next = Buffer.concat([current, chunk.subarray(0, remaining)]);
-      if (next.length > captureMaximum) {
-        captureExceeded = true;
-        termination ??= terminateWindowsProcessTree(child.pid ?? 0);
-      }
-      return next;
-    };
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout = append(stdout, chunk);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr = append(stderr, chunk);
-    });
-    const abort = () => {
-      termination ??= terminateWindowsProcessTree(child.pid ?? 0);
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      termination ??= terminateWindowsProcessTree(child.pid ?? 0);
-    }, timeoutMs);
-    child.once("error", () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
-      reject(new ToolFailure("failed", "command process 无法启动"));
-    });
-    child.once("close", async (code) => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
-      if (termination && !(await termination)) {
-        reject(
-          new ToolFailure("failed", "process tree cleanup 无法确认", { effectState: "unknown" }),
-        );
-        return;
-      }
-      if (signal.aborted) {
-        reject(
-          new ToolFailure("cancelled", "command 已取消", {
-            effectState: "unknown",
-            abortObserved: true,
-          }),
-        );
-        return;
-      }
-      if (timedOut) {
-        reject(new ToolFailure("timed_out", "command 超时", { effectState: "unknown" }));
-        return;
-      }
-      try {
-        const result = JSON.stringify({
-          exitCode: code,
-          stdout: captureExceeded ? decodeUtf8Prefix(stdout) : decodeUtf8(stdout),
-          stderr: captureExceeded ? decodeUtf8Prefix(stderr) : decodeUtf8(stderr),
-        });
-        const resultBytes = Buffer.from(result, "utf8");
-        if (captureExceeded || resultBytes.length > maximum) {
-          const inline = decodeUtf8Prefix(resultBytes.subarray(0, maximum));
-          reject(
-            new ToolFailure("output_limit", inline, {
-              effectState: "unknown",
-              artifactBytes: resultBytes,
-              evidence: {
-                truncated: true,
-                stdoutBytes: stdout.length,
-                stderrBytes: stderr.length,
-                inlineBytes: Buffer.byteLength(inline),
-                captureComplete: !captureExceeded,
-                exitCode: code,
-              },
-            }),
-          );
-          return;
-        }
-        if (code !== 0) {
-          reject(new ToolFailure("failed", result, { effectState: "unknown" }));
-          return;
-        }
-        resolve(result);
-      } catch (error) {
-        reject(error);
-      }
-    });
-  });
-}
-
-async function runGitTool(
-  root: string,
-  args: readonly string[],
-  signal: AbortSignal,
-  maximum: number,
-  registeredSecrets: readonly string[] = [],
-): Promise<string> {
   checkAbort(signal);
-  return new Promise<string>((resolve, reject) => {
-    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let exceeded = false;
-    const child = spawn("git", args, {
-      cwd: root,
-      env: sanitizedEnvironment(registeredSecrets),
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const append = (
-      current: Buffer<ArrayBufferLike>,
-      chunk: Buffer<ArrayBufferLike>,
-    ): Buffer<ArrayBufferLike> => {
-      const remaining = Math.max(0, maximum + 1 - current.length);
-      const next = Buffer.concat([current, chunk.subarray(0, remaining)]);
-      if (next.length > maximum) {
-        exceeded = true;
-        child.kill();
-      }
-      return next;
-    };
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout = append(stdout, chunk);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr = append(stderr, chunk);
-    });
-    const abort = () => child.kill();
-    signal.addEventListener("abort", abort, { once: true });
-    child.once("error", () => {
-      signal.removeEventListener("abort", abort);
-      reject(new ToolFailure("failed", "git process 无法启动"));
-    });
-    child.once("close", (code) => {
-      signal.removeEventListener("abort", abort);
-      if (signal.aborted) {
-        reject(new ToolFailure("cancelled", "Git evidence 已取消", { abortObserved: true }));
-      } else if (exceeded) {
-        reject(new ToolFailure("output_limit", decodeUtf8Prefix(stdout.subarray(0, maximum))));
-      } else if (code !== 0) {
-        reject(
-          new ToolFailure(
-            "failed",
-            bounded(JSON.stringify({ exitCode: code, stderr: decodeUtf8(stderr) }), maximum),
-          ),
-        );
-      } else {
-        resolve(bounded(decodeUtf8(stdout), maximum));
-      }
-    });
+  const result = await ports.process.runPowerShell({
+    command,
+    cwd,
+    signal,
+    timeoutMs,
+    inlineOutputBytes: maximum,
+    registeredSecrets,
   });
+  if (result.status !== "succeeded") {
+    throw new ToolFailure(result.status, result.modelContent, {
+      effectState: result.effectState,
+      abortObserved: result.abortObserved,
+      ...(result.artifactBytes ? { artifactBytes: result.artifactBytes } : {}),
+      ...(result.evidence ? { evidence: result.evidence } : {}),
+      ...(result.infrastructureFailure
+        ? { infrastructureFailure: result.infrastructureFailure }
+        : {}),
+    });
+  }
+  return result.modelContent;
 }
 
 async function gitStatusTool(
   root: string,
-  args: Record<string, JsonValue>,
   signal: AbortSignal,
   maximum: number,
+  ports: LocalExecutionPorts,
 ): Promise<string> {
-  validateKeys(args, []);
-  return runGitTool(root, ["status", "--porcelain=v1", "--untracked-files=all"], signal, maximum);
+  const result = await ports.git.run(
+    root,
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    signal,
+    maximum,
+  );
+  if (result.status !== "succeeded") {
+    throw new ToolFailure(result.status, result.modelContent, {
+      abortObserved: result.abortObserved,
+      ...(result.artifactBytes ? { artifactBytes: result.artifactBytes } : {}),
+      ...(result.evidence ? { evidence: result.evidence } : {}),
+    });
+  }
+  return result.modelContent;
 }
 
 async function gitDiffTool(
@@ -1138,17 +1055,23 @@ async function gitDiffTool(
   args: Record<string, JsonValue>,
   signal: AbortSignal,
   maximum: number,
+  ports: LocalExecutionPorts,
 ): Promise<string> {
-  validateKeys(args, [], ["path", "cached"]);
   const gitArgs = ["diff", "--no-ext-diff", "--no-textconv"];
   if (args.cached === true) gitArgs.push("--cached");
   gitArgs.push("--");
-  if (args.path !== undefined) {
-    const relative = stringArgument(args, "path");
-    lexicalPath(root, relative);
-    gitArgs.push(relative);
+  if (args.path !== undefined && args.path !== ".") {
+    gitArgs.push(stringArgument(args, "path"));
   }
-  return runGitTool(root, gitArgs, signal, maximum);
+  const result = await ports.git.run(root, gitArgs, signal, maximum);
+  if (result.status !== "succeeded") {
+    throw new ToolFailure(result.status, result.modelContent, {
+      abortObserved: result.abortObserved,
+      ...(result.artifactBytes ? { artifactBytes: result.artifactBytes } : {}),
+      ...(result.evidence ? { evidence: result.evidence } : {}),
+    });
+  }
+  return result.modelContent;
 }
 
 function outcomeFromFailure(
@@ -1165,11 +1088,17 @@ function outcomeFromFailure(
     abortObserved: failure.abortObserved,
     artifacts,
     ...(failure.evidence ? { evidence: failure.evidence } : {}),
+    ...(failure.infrastructureFailure
+      ? { infrastructureFailure: failure.infrastructureFailure }
+      : {}),
   };
 }
 
-export function createCodingToolHost(options: CodingToolHostOptions): CodingToolHost {
-  const root = realpathSync.native(path.resolve(options.workspaceRoot));
+export function createCodingToolHostWithPorts(
+  options: CodingToolHostOptions,
+  ports: LocalExecutionPorts,
+): CodingToolHost {
+  const root = ports.filesystem.captureWorkspaceRoot(options.workspaceRoot);
   const registry = createRegistry();
   const maximum = options.maxOutputBytes ?? 128 * 1024;
   const timeoutMs = options.commandTimeoutMs ?? 30_000;
@@ -1197,7 +1126,9 @@ export function createCodingToolHost(options: CodingToolHostOptions): CodingTool
     execute(call: ToolCall, context): ToolExecution {
       const result = (async (): Promise<ToolOutcome> => {
         let activePlan: ToolPlan | undefined;
-        let permissionRequested = false;
+        let permissionRequestCount = 0;
+        let permissionAllowedCount = 0;
+        let permissionDeniedCount = 0;
         let permissionDecision: "allowed" | "denied" | undefined;
         const evidence = (additional: JsonObject = {}): JsonObject => ({
           ...(activePlan
@@ -1206,7 +1137,10 @@ export function createCodingToolHost(options: CodingToolHostOptions): CodingTool
                 effects: activePlan.effects,
               }
             : {}),
-          permissionRequested,
+          permissionRequested: permissionRequestCount > 0,
+          permissionRequestCount,
+          permissionAllowedCount,
+          permissionDeniedCount,
           ...(permissionDecision ? { permissionDecision } : {}),
           ...additional,
         });
@@ -1218,62 +1152,125 @@ export function createCodingToolHost(options: CodingToolHostOptions): CodingTool
           if (!validation.valid) {
             throw new ToolFailure("rejected", "Tool arguments 不符合 strict JSON schema");
           }
-          const args = ensureObject(validation.value);
-          const plan = await createPlan(root, call, args, policyVersion);
-          activePlan = plan;
-          await enforceHardGuard(root, plan);
+          const args = normalizeArguments(root, call.name, ensureObject(validation.value));
+          let plan = await createPlan(root, call, args, policyVersion, ports.filesystem);
+          activePlan = redactPlan(plan, redact);
+          let preconditionsValidated = false;
+          await enforceHardGuard(root, plan, ports.filesystem);
           if (
             permissionMode === "safe" &&
             plan.effects.some((effect) => effect === "workspace_mutation" || effect === "process")
           ) {
             if (!options.approvalPort) {
-              permissionRequested = true;
+              permissionRequestCount += 1;
+              permissionDeniedCount += 1;
               permissionDecision = "denied";
               throw new ToolFailure("denied", "Safe Mode 需要明确批准");
             }
-            permissionRequested = true;
-            const response = await options.approvalPort.request(
-              { approvalId: randomUUID(), runId: context.runId, plan },
-              context.signal,
-            );
-            checkAbort(context.signal);
-            if (response.planFingerprint !== plan.fingerprint) {
-              throw new ToolFailure("rejected", "approval fingerprint 不匹配或已失效");
+            while (true) {
+              permissionRequestCount += 1;
+              const approvalPlan = redactPlan(plan, redact);
+              activePlan = approvalPlan;
+              const approvalId = randomUUID();
+              const response = await options.approvalPort.request(
+                { approvalId, runId: context.runId, plan: approvalPlan },
+                context.signal,
+              );
+              checkAbort(context.signal);
+              if (response.planFingerprint !== plan.fingerprint) {
+                throw new ToolFailure("rejected", "approval fingerprint 不匹配或已失效");
+              }
+              if (response.decision === "deny") {
+                permissionDeniedCount += 1;
+                permissionDecision = "denied";
+                throw new ToolFailure("denied", "用户拒绝 ToolPlan");
+              }
+              permissionAllowedCount += 1;
+              const refreshedPlan = await createPlan(
+                root,
+                call,
+                args,
+                policyVersion,
+                ports.filesystem,
+              );
+              await enforceHardGuard(root, refreshedPlan, ports.filesystem);
+              if (refreshedPlan.fingerprint !== plan.fingerprint) {
+                options.approvalPort.invalidate?.(approvalId);
+                plan = refreshedPlan;
+                activePlan = redactPlan(refreshedPlan, redact);
+                continue;
+              }
+              try {
+                await revalidatePreconditions(root, plan, ports.filesystem);
+                preconditionsValidated = true;
+              } catch (error) {
+                if (!(error instanceof ToolFailure) || error.status !== "conflict") throw error;
+                const changedPlan = await createPlan(
+                  root,
+                  call,
+                  args,
+                  policyVersion,
+                  ports.filesystem,
+                );
+                await enforceHardGuard(root, changedPlan, ports.filesystem);
+                if (changedPlan.fingerprint === plan.fingerprint) throw error;
+                options.approvalPort.invalidate?.(approvalId);
+                plan = changedPlan;
+                activePlan = redactPlan(changedPlan, redact);
+                continue;
+              }
+              permissionDecision = "allowed";
+              break;
             }
-            if (response.decision === "deny") {
-              permissionDecision = "denied";
-              throw new ToolFailure("denied", "用户拒绝 ToolPlan");
-            }
-            permissionDecision = "allowed";
           }
-          await revalidatePreconditions(root, plan);
+          if (!preconditionsValidated) {
+            await revalidatePreconditions(root, plan, ports.filesystem);
+          }
           checkAbort(context.signal);
           let modelContent: string;
           let effectState: ToolOutcome["effectState"] = "none";
           switch (call.name) {
             case "list_files":
-              modelContent = await listFilesTool(root, args, context.signal, maximum);
+              modelContent = await listFilesTool(
+                root,
+                args,
+                context.signal,
+                maximum,
+                ports.filesystem,
+              );
               break;
             case "read_file":
-              modelContent = await readFileTool(root, args, context.signal, maximum);
+              modelContent = await readFileTool(
+                root,
+                args,
+                context.signal,
+                maximum,
+                ports.filesystem,
+              );
               break;
             case "search_text":
-              modelContent = await searchTextTool(root, args, context.signal, maximum);
+              modelContent = await searchTextTool(
+                root,
+                args,
+                context.signal,
+                maximum,
+                ports.filesystem,
+              );
               break;
             case "create_file":
-              modelContent = await createFileTool(root, args, context.signal);
+              modelContent = await createFileTool(root, args, context.signal, ports.filesystem);
               effectState = "committed";
               break;
             case "apply_patch":
-              modelContent = await applyPatchTool(root, args, context.signal);
+              modelContent = await applyPatchTool(root, args, context.signal, ports.filesystem);
               effectState = "committed";
               break;
             case "replace_file":
-              modelContent = await replaceFileTool(root, args, context.signal);
+              modelContent = await replaceFileTool(root, args, context.signal, ports.filesystem);
               effectState = "committed";
               break;
             case "delete_file":
-              modelContent = await deleteFileTool(root, args, context.signal);
+              modelContent = await deleteFileTool(root, args, context.signal, ports.filesystem);
               effectState = "committed";
               break;
             case "run_command":
@@ -1284,14 +1281,15 @@ export function createCodingToolHost(options: CodingToolHostOptions): CodingTool
                 maximum,
                 timeoutMs,
                 redactValues,
+                ports,
               );
               effectState = "unknown";
               break;
             case "git_status":
-              modelContent = await gitStatusTool(root, args, context.signal, maximum);
+              modelContent = await gitStatusTool(root, context.signal, maximum, ports);
               break;
             case "git_diff":
-              modelContent = await gitDiffTool(root, args, context.signal, maximum);
+              modelContent = await gitDiffTool(root, args, context.signal, maximum, ports);
               break;
             default:
               throw new ToolFailure("rejected", `未知 tool: ${call.name}`);
@@ -1319,6 +1317,16 @@ export function createCodingToolHost(options: CodingToolHostOptions): CodingTool
         } catch (error) {
           if (error instanceof ToolFailure) {
             const artifactRefs: { readonly id: string }[] = [];
+            const failureEvidence = evidence({
+              ...(error.evidence ?? {}),
+              ...(call.name === "run_command" &&
+              call.arguments !== null &&
+              !Array.isArray(call.arguments) &&
+              typeof call.arguments === "object" &&
+              typeof call.arguments.command === "string"
+                ? { command: redact(call.arguments.command) }
+                : {}),
+            });
             if (error.artifactBytes) {
               const artifactText = redact(decodeUtf8(error.artifactBytes));
               try {
@@ -1335,7 +1343,10 @@ export function createCodingToolHost(options: CodingToolHostOptions): CodingTool
                   new ToolFailure("failed", "Artifact spill failed", {
                     effectState: error.effectState,
                     abortObserved: error.abortObserved,
-                    evidence: evidence({ artifactSpillFailed: true }),
+                    evidence: { ...failureEvidence, artifactSpillFailed: true },
+                    ...(error.infrastructureFailure
+                      ? { infrastructureFailure: error.infrastructureFailure }
+                      : {}),
                   }),
                 );
               }
@@ -1345,7 +1356,10 @@ export function createCodingToolHost(options: CodingToolHostOptions): CodingTool
               new ToolFailure(error.status, redact(error.modelContent), {
                 effectState: error.effectState,
                 abortObserved: error.abortObserved,
-                evidence: evidence(error.evidence ?? {}),
+                evidence: failureEvidence,
+                ...(error.infrastructureFailure
+                  ? { infrastructureFailure: error.infrastructureFailure }
+                  : {}),
               }),
               artifactRefs,
             );
@@ -1371,4 +1385,8 @@ export function createCodingToolHost(options: CodingToolHostOptions): CodingTool
       if (ownsArtifacts) await artifacts[Symbol.asyncDispose]();
     },
   };
+}
+
+export function createCodingToolHost(options: CodingToolHostOptions): CodingToolHost {
+  return createCodingToolHostWithPorts(options, createNodeLocalExecutionPorts());
 }

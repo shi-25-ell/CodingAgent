@@ -1,38 +1,26 @@
 import { createHash } from "node:crypto";
-
-export interface ToolArtifactWrite {
-  readonly bytes: Uint8Array;
-  readonly mediaType: "text/plain" | "application/json";
-  readonly provenance: string;
-}
-
-export interface ToolArtifactMetadata {
-  readonly id: string;
-  readonly byteLength: number;
-  readonly mediaType: ToolArtifactWrite["mediaType"];
-  readonly provenance: string;
-}
-
-export interface ToolArtifactStore extends AsyncDisposable {
-  put(input: ToolArtifactWrite): Promise<{ readonly id: string }>;
-  stat(id: string): Promise<ToolArtifactMetadata | undefined>;
-  read(id: string): Promise<Uint8Array | undefined>;
-}
+import type {
+  ArtifactMetadata,
+  ArtifactRef,
+  ArtifactStore,
+  ArtifactWriteInput,
+} from "@coding-agent/agent";
 
 interface StoredArtifact {
-  readonly metadata: ToolArtifactMetadata;
+  readonly metadata: ArtifactMetadata;
   readonly bytes: Uint8Array;
 }
 
-export function createEphemeralArtifactStore(): ToolArtifactStore {
+export function createEphemeralArtifactStore(): ArtifactStore {
   const artifacts = new Map<string, StoredArtifact>();
   let disposed = false;
   const assertAvailable = (): void => {
     if (disposed) throw new Error("ephemeral ArtifactStore 已释放");
   };
   return {
-    async put(input) {
+    async put(input: ArtifactWriteInput, options) {
       assertAvailable();
+      if (options?.signal?.aborted) throw new DOMException("Artifact write 已取消", "AbortError");
       const bytes = Uint8Array.from(input.bytes);
       const id = `ephemeral-sha256:${createHash("sha256").update(bytes).digest("hex")}`;
       artifacts.set(id, {
@@ -46,14 +34,25 @@ export function createEphemeralArtifactStore(): ToolArtifactStore {
       });
       return { id };
     },
-    async stat(id) {
+    async stat(ref: ArtifactRef) {
       assertAvailable();
-      return structuredClone(artifacts.get(id)?.metadata);
+      const metadata = artifacts.get(ref.id)?.metadata;
+      if (!metadata) throw new Error("Artifact 不存在");
+      return structuredClone(metadata);
     },
-    async read(id) {
+    async *read(ref: ArtifactRef, options) {
       assertAvailable();
-      const bytes = artifacts.get(id)?.bytes;
-      return bytes ? Uint8Array.from(bytes) : undefined;
+      if (options?.signal?.aborted) throw new DOMException("Artifact read 已取消", "AbortError");
+      const bytes = artifacts.get(ref.id)?.bytes;
+      if (!bytes) throw new Error("Artifact 不存在");
+      yield Uint8Array.from(bytes);
+    },
+    async verify(ref: ArtifactRef) {
+      assertAvailable();
+      const stored = artifacts.get(ref.id);
+      if (!stored) return { status: "missing" as const };
+      const expected = `ephemeral-sha256:${createHash("sha256").update(stored.bytes).digest("hex")}`;
+      return { status: expected === ref.id ? ("verified" as const) : ("corrupt" as const) };
     },
     async [Symbol.asyncDispose]() {
       disposed = true;

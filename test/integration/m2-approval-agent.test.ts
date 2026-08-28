@@ -10,6 +10,7 @@ import {
 } from "@coding-agent/agent";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
 import {
+  type CodingEvent,
   createApprovalBridge,
   createCodingAgent,
   createCodingToolHost,
@@ -42,12 +43,19 @@ function toolTurn(callId: string) {
   };
 }
 
+async function nextPermission(events: AsyncIterator<CodingEvent>) {
+  while (true) {
+    const event = await events.next();
+    if (event.done) throw new Error("permission request 未发布");
+    if (event.value.type === "permission_requested") return event.value.request;
+  }
+}
+
 describe("M2 CodingAgent approval integration", () => {
   it("deny 不启动 Adapter，ToolOutcome 对模型可见且 Run 可正常继续", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m2-approval-deny-"));
     temporaryDirectories.push(root);
     const approvals = createApprovalBridge();
-    const requests = approvals.requests()[Symbol.asyncIterator]();
     const sessions = new InMemorySessionRepository({
       clock: new ManualClock(500),
       ids: new SequentialIdFactory(),
@@ -91,14 +99,13 @@ describe("M2 CodingAgent approval integration", () => {
       workspace: { root, fingerprint: "fixture" },
     });
     const handle = await session.startRun({ task: "尝试创建文件" });
-    const request = await requests.next();
-    if (!request.value) throw new Error("permission request 未发布");
+    const request = await nextPermission(handle.events()[Symbol.asyncIterator]());
     await handle.dispatch({
       commandId: "deny-1",
       type: "respond_permission",
-      approvalId: request.value.approvalId,
+      approvalId: request.approvalId,
       decision: "deny",
-      planFingerprint: request.value.plan.fingerprint,
+      planFingerprint: request.plan.fingerprint,
     });
 
     await expect(handle.finished).resolves.toMatchObject({
@@ -116,7 +123,6 @@ describe("M2 CodingAgent approval integration", () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m2-approval-agent-"));
     temporaryDirectories.push(root);
     const approvals = createApprovalBridge();
-    const requests = approvals.requests()[Symbol.asyncIterator]();
     const sessions = new InMemorySessionRepository({
       clock: new ManualClock(1_000),
       ids: new SequentialIdFactory(),
@@ -159,16 +165,15 @@ describe("M2 CodingAgent approval integration", () => {
       workspace: { root, fingerprint: "fixture" },
     });
     const handle = await session.startRun({ task: "创建文件" });
-    const request = await requests.next();
-    if (!request.value) throw new Error("permission request 未发布");
+    const request = await nextPermission(handle.events()[Symbol.asyncIterator]());
 
     await expect(
       handle.dispatch({
         commandId: "permission-1",
         type: "respond_permission",
-        approvalId: request.value.approvalId,
+        approvalId: request.approvalId,
         decision: "allow_once",
-        planFingerprint: request.value.plan.fingerprint,
+        planFingerprint: request.plan.fingerprint,
       }),
     ).resolves.toEqual({ commandId: "permission-1", status: "accepted" });
     await expect(handle.finished).resolves.toMatchObject({
@@ -186,7 +191,6 @@ describe("M2 CodingAgent approval integration", () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m2-approval-abort-"));
     temporaryDirectories.push(root);
     const approvals = createApprovalBridge();
-    const requests = approvals.requests()[Symbol.asyncIterator]();
     const sessions = new InMemorySessionRepository({
       clock: new ManualClock(2_000),
       ids: new SequentialIdFactory(),
@@ -212,7 +216,7 @@ describe("M2 CodingAgent approval integration", () => {
       workspace: { root, fingerprint: "fixture" },
     });
     const handle = await session.startRun({ task: "创建后取消" });
-    await requests.next();
+    await nextPermission(handle.events()[Symbol.asyncIterator]());
     await expect(
       handle.dispatch({ commandId: "abort-pending-approval", type: "abort" }),
     ).resolves.toMatchObject({ status: "accepted" });

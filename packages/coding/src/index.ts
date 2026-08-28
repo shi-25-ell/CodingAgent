@@ -43,12 +43,7 @@ export {
   type ToolPrecondition,
   type ToolResource,
 } from "./tools/coding-tool-host.js";
-export {
-  createEphemeralArtifactStore,
-  type ToolArtifactMetadata,
-  type ToolArtifactStore,
-  type ToolArtifactWrite,
-} from "./tools/ephemeral-artifact-store.js";
+export { createEphemeralArtifactStore } from "./tools/ephemeral-artifact-store.js";
 export {
   type RegisteredTool,
   ToolRegistry,

@@ -68,6 +68,8 @@ describe("ApprovalBridge contract", () => {
     expect(bridge.respond(command)).toMatchObject({ status: "accepted" });
     expect(bridge.respond(command)).toMatchObject({ status: "already_applied" });
     await expect(pending).resolves.toMatchObject({ status: "succeeded" });
+    bridge.invalidate?.(command.approvalId);
+    expect(bridge.respond(command)).toMatchObject({ status: "stale" });
     await expect(readFile(path.join(root, "approved.txt"), "utf8")).resolves.toBe("approved");
   });
 

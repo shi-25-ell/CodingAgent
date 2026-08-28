@@ -60,6 +60,26 @@ export interface AgentHarness {
 
 export interface AgentHarnessOptions {
   readonly agent: Agent;
+  readonly redact?: (value: string) => string;
+}
+
+function redactValue<T>(value: T, redact: (text: string) => string): T {
+  if (typeof value === "string") return redact(value) as T;
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, redact)) as T;
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, redactValue(item, redact)]),
+    ) as T;
+  }
+  return value;
+}
+
+function freezeValue<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeValue(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function reportFromResult(
@@ -96,10 +116,11 @@ class DefaultAgentHarness implements AgentHarness {
   }
 
   async startRun(input: HarnessRunInput): Promise<HarnessRunHandle> {
+    const redact = this.#options.redact ?? ((value: string) => value);
     const lease = await input.session.beginRun({
       branchId: input.branchId,
-      initialMessages: input.initialMessages,
-      metadata: input.metadata,
+      initialMessages: redactValue(input.initialMessages, redact),
+      metadata: redactValue(input.metadata, redact),
     });
     const stream = new ReplayEventStream<HarnessEvent>();
     const controller = new AbortController();
@@ -110,26 +131,48 @@ class DefaultAgentHarness implements AgentHarness {
     const changedFiles: ChangedFileEvidence[] = [];
     const commands: CommandEvidence[] = [];
     let lifecycle: "active" | "finalizing" | "terminal" = "active";
+    let acceptsQueueMessages = true;
+    const policies: RunPolicies = Object.freeze({
+      ...input.policies,
+      budgets: Object.freeze({ ...input.policies.budgets }),
+    });
+    const toolDefinitions = freezeValue(structuredClone(input.tools.definitions()));
     stream.publish({ version: 1, type: "run_started", runId: lease.runId });
 
     const commit = async (event: AgentSemanticEvent): Promise<void> => {
-      if (event.type === "assistant_message") {
+      const safeEvent = redactValue(event, redact);
+      if (safeEvent.type === "assistant_message") {
         await lease.append([
-          { kind: "assistant_message", message: responseAsAssistantMessage(event.response) },
+          { kind: "assistant_message", message: responseAsAssistantMessage(safeEvent.response) },
         ]);
         stream.publish({ version: 1, type: "assistant_committed", runId: lease.runId });
-      } else if (event.type === "model_failure") {
-        await lease.append([{ kind: "model_failure", failure: event.failure }]);
+      } else if (safeEvent.type === "model_failure") {
+        await lease.append([{ kind: "model_failure", failure: safeEvent.failure }]);
         stream.publish({ version: 1, type: "model_failure_committed", runId: lease.runId });
       } else {
-        await lease.append([{ kind: "tool_outcome", outcome: event.outcome }]);
-        const evidence = event.outcome.evidence;
+        await lease.append([{ kind: "tool_outcome", outcome: safeEvent.outcome }]);
+        const evidence = safeEvent.outcome.evidence;
         if (evidence?.permissionRequested === true) {
+          const requested =
+            typeof evidence.permissionRequestCount === "number"
+              ? evidence.permissionRequestCount
+              : 1;
+          const allowed =
+            typeof evidence.permissionAllowedCount === "number"
+              ? evidence.permissionAllowedCount
+              : evidence.permissionDecision === "allowed"
+                ? 1
+                : 0;
+          const denied =
+            typeof evidence.permissionDeniedCount === "number"
+              ? evidence.permissionDeniedCount
+              : evidence.permissionDecision === "denied"
+                ? 1
+                : 0;
           permissionSummary = {
-            requested: permissionSummary.requested + 1,
-            allowed:
-              permissionSummary.allowed + (evidence.permissionDecision === "allowed" ? 1 : 0),
-            denied: permissionSummary.denied + (evidence.permissionDecision === "denied" ? 1 : 0),
+            requested: permissionSummary.requested + requested,
+            allowed: permissionSummary.allowed + allowed,
+            denied: permissionSummary.denied + denied,
           };
         }
         const changedFile = evidence?.changedFile;
@@ -160,8 +203,8 @@ class DefaultAgentHarness implements AgentHarness {
         toolSummary = {
           accepted: toolSummary.accepted + 1,
           settled: toolSummary.settled + 1,
-          succeeded: toolSummary.succeeded + (event.outcome.status === "succeeded" ? 1 : 0),
-          failed: toolSummary.failed + (event.outcome.status === "succeeded" ? 0 : 1),
+          succeeded: toolSummary.succeeded + (safeEvent.outcome.status === "succeeded" ? 1 : 0),
+          failed: toolSummary.failed + (safeEvent.outcome.status === "succeeded" ? 0 : 1),
         };
       }
     };
@@ -171,7 +214,7 @@ class DefaultAgentHarness implements AgentHarness {
         runId: lease.runId,
         model: input.model,
         tools: input.tools,
-        policies: input.policies,
+        policies,
         signal: controller.signal,
       },
       {
@@ -180,13 +223,17 @@ class DefaultAgentHarness implements AgentHarness {
           return input.context.prepare({
             ...request,
             branch,
-            tools: input.tools.definitions(),
+            tools: toolDefinitions,
           });
         },
         commit,
         drainSteering: () => lease.drainSteering(),
         takeFollowUp: () => lease.takeFollowUp(),
         reportProgress(event) {
+          if (event.type === "phase_changed") {
+            if (event.phase === "completion_candidate") acceptsQueueMessages = false;
+            if (event.phase === "preparing_context") acceptsQueueMessages = true;
+          }
           stream.publish({ version: 1, type: "progress", event });
         },
       },
@@ -204,16 +251,38 @@ class DefaultAgentHarness implements AgentHarness {
               unfinishedWork: ["Run 在 finalizing 前收到取消请求"],
             }
           : result;
-        const requestedReport = reportFromResult(
-          lease.runId,
-          arbitratedResult,
-          toolSummary,
-          permissionSummary,
-          changedFiles,
-          commands,
+        const requestedReport = redactValue(
+          reportFromResult(
+            lease.runId,
+            arbitratedResult,
+            toolSummary,
+            permissionSummary,
+            changedFiles,
+            commands,
+          ),
+          redact,
         );
-        const terminalCommit = await lease.finish(requestedReport);
-        const report = terminalCommit.report;
+        let report: RunReport;
+        try {
+          report = (await lease.finish(requestedReport)).report;
+        } catch (_error) {
+          const { finalAnswer: _discardedAnswer, ...reportWithoutAnswer } = requestedReport;
+          const persistenceFailure: RunReport = {
+            ...reportWithoutAnswer,
+            status: "failed",
+            terminationReason: "persistence_failure",
+            unfinishedWork: ["terminal transaction 失败，已执行 best-effort recovery"],
+            error: {
+              code: "TERMINAL_COMMIT_FAILURE",
+              message: "terminal transaction failed",
+            },
+          };
+          try {
+            report = (await lease.finish(persistenceFailure)).report;
+          } catch (_recoveryError) {
+            report = persistenceFailure;
+          }
+        }
         lifecycle = "terminal";
         stream.publish({
           version: 1,
@@ -243,10 +312,13 @@ class DefaultAgentHarness implements AgentHarness {
           controller.abort(command.reason);
           return { commandId: command.commandId, status: "accepted" };
         }
+        if (!acceptsQueueMessages) {
+          return { commandId: command.commandId, status: "not_active" };
+        }
         await input.session.enqueue({
           commandId: command.commandId,
           kind: command.type === "steer" ? "steering" : "follow_up",
-          text: command.text,
+          text: redact(command.text),
         });
         return { commandId: command.commandId, status: "accepted" };
       },

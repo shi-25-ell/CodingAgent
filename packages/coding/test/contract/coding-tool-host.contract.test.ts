@@ -179,7 +179,7 @@ describe("CodingToolHost ToolExecutor contract", () => {
         type: "tool_call",
         callId: "patch-safe",
         name: "apply_patch",
-        arguments: { path: "a.txt", oldText: "before", newText: "after" },
+        arguments: { path: "./a.txt", oldText: "before", newText: "after" },
       }),
     ).resolves.toMatchObject({ status: "succeeded", effectState: "committed" });
     expect(requests).toHaveLength(1);
@@ -191,6 +191,28 @@ describe("CodingToolHost ToolExecutor contract", () => {
       policyVersion: expect.any(String),
       fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
+
+    const secret = "registered-plan-secret";
+    const redactedRequests: ApprovalRequest[] = [];
+    const redacted = createCodingToolHost({
+      workspaceRoot: root,
+      permissionMode: "safe",
+      redactValues: [secret],
+      approvalPort: {
+        async request(request) {
+          redactedRequests.push(request);
+          return { decision: "deny", planFingerprint: request.plan.fingerprint };
+        },
+      },
+    });
+    await outcome(redacted, {
+      type: "tool_call",
+      callId: "redacted-plan",
+      name: "create_file",
+      arguments: { path: "secret.txt", content: secret },
+    });
+    expect(JSON.stringify(redactedRequests)).not.toContain(secret);
+    expect(JSON.stringify(redactedRequests)).toContain("[REDACTED]");
   });
 
   it("deny、wrong fingerprint 与 approval 后 precondition 变化均不启动 mutation", async () => {
@@ -237,11 +259,13 @@ describe("CodingToolHost ToolExecutor contract", () => {
     ).resolves.toMatchObject({ status: "rejected", effectState: "none" });
     await expect(readFile(target, "utf8")).resolves.toBe("before");
 
+    const racedFingerprints: string[] = [];
     const raced = createCodingToolHost({
       workspaceRoot: root,
       permissionMode: "safe",
       approvalPort: {
         async request(request) {
+          racedFingerprints.push(request.plan.fingerprint);
           await writeFile(target, "concurrent", "utf8");
           return { decision: "allow_once", planFingerprint: request.plan.fingerprint };
         },
@@ -255,6 +279,8 @@ describe("CodingToolHost ToolExecutor contract", () => {
         arguments: { path: "a.txt", oldText: "before", newText: "after" },
       }),
     ).resolves.toMatchObject({ status: "conflict", effectState: "none" });
+    expect(racedFingerprints).toHaveLength(2);
+    expect(racedFingerprints[1]).not.toBe(racedFingerprints[0]);
     await expect(readFile(target, "utf8")).resolves.toBe("concurrent");
   });
 
@@ -416,8 +442,18 @@ describe("CodingToolHost ToolExecutor contract", () => {
       },
     });
     expect(limited.artifacts).toHaveLength(1);
-    const artifact = await host.artifacts.read(limited.artifacts[0]?.id ?? "");
-    expect(Buffer.from(artifact ?? []).toString("utf8")).toContain("abcdefghij");
+    const artifactRef = limited.artifacts[0] ?? { id: "missing" };
+    await expect(host.artifacts.stat(artifactRef)).resolves.toMatchObject({
+      id: artifactRef.id,
+      mediaType: "text/plain",
+      byteLength: expect.any(Number),
+    });
+    await expect(host.artifacts.verify(artifactRef)).resolves.toEqual({ status: "verified" });
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of host.artifacts.read(artifactRef)) {
+      chunks.push(chunk);
+    }
+    expect(Buffer.concat(chunks).toString("utf8")).toContain("abcdefghij");
 
     const utf8Host = createCodingToolHost({ workspaceRoot: root, maxOutputBytes: 4 });
     await expect(
@@ -442,10 +478,11 @@ describe("CodingToolHost ToolExecutor contract", () => {
           throw new Error("private artifact failure");
         },
         async stat() {
-          return undefined;
+          throw new Error("private artifact missing");
         },
-        async read() {
-          return undefined;
+        async *read() {},
+        async verify() {
+          return { status: "missing" as const };
         },
         async [Symbol.asyncDispose]() {},
       },

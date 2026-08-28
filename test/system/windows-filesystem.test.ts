@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runId } from "@coding-agent/agent";
+import { createCodingToolHost } from "@coding-agent/coding";
 import type { ToolCall } from "@coding-agent/model";
 import { afterEach, describe, expect, it } from "vitest";
-import { createCodingToolHost } from "../../packages/coding/src/tools/coding-tool-host.js";
 
 const temporaryDirectories: string[] = [];
 

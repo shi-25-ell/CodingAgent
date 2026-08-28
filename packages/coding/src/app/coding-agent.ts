@@ -16,6 +16,7 @@ import type {
 } from "@coding-agent/agent";
 import type { Model, ModelDescriptor } from "@coding-agent/model";
 import type { ApprovalBridge } from "../permissions/approval-bridge.js";
+import type { ApprovalRequest } from "../tools/coding-tool-host.js";
 
 export interface CreateCodingSessionInput {
   readonly workspace: WorkspaceBinding;
@@ -46,7 +47,13 @@ export interface CodingSessionView extends CodingSessionSummary {
   readonly timeline: readonly CodingTimelineEntry[];
 }
 
-export type CodingEvent = HarnessEvent;
+export type CodingEvent =
+  | HarnessEvent
+  | {
+      readonly version: 1;
+      readonly type: "permission_requested";
+      readonly request: ApprovalRequest;
+    };
 export type CodingRunCommand =
   | HarnessCommand
   | {
@@ -104,6 +111,38 @@ export interface CodingAgentOptions {
   readonly policies: RunPolicies;
   readonly configurationRevision: string;
   readonly approvals?: ApprovalBridge;
+}
+
+class CodingEventStream {
+  readonly #events: CodingEvent[] = [];
+  readonly #waiters = new Set<() => void>();
+  #closed = false;
+
+  publish(event: CodingEvent): void {
+    if (this.#closed) return;
+    this.#events.push(event);
+    for (const wake of this.#waiters) wake();
+    this.#waiters.clear();
+  }
+
+  close(): void {
+    this.#closed = true;
+    for (const wake of this.#waiters) wake();
+    this.#waiters.clear();
+  }
+
+  async *read(): AsyncIterable<CodingEvent> {
+    let index = 0;
+    while (true) {
+      while (index < this.#events.length) {
+        const event = this.#events[index];
+        index += 1;
+        if (event) yield event;
+      }
+      if (this.#closed) return;
+      await new Promise<void>((resolve) => this.#waiters.add(resolve));
+    }
+  }
 }
 
 function assistantText(content: import("@coding-agent/model").AssistantMessage["content"]): string {
@@ -167,9 +206,37 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
           configurationRevision: options.configurationRevision,
         },
       });
+      const events = new CodingEventStream();
+      let runStarted = false;
+      const pendingPermissions: ApprovalRequest[] = [];
+      const unsubscribe = options.approvals?.subscribe((request) => {
+        if (request.runId === handle.runId) {
+          if (runStarted) {
+            events.publish({ version: 1, type: "permission_requested", request });
+          } else {
+            pendingPermissions.push(request);
+          }
+        }
+      });
+      void (async () => {
+        try {
+          for await (const event of handle.events()) {
+            events.publish(event);
+            if (event.type === "run_started") {
+              runStarted = true;
+              for (const request of pendingPermissions.splice(0)) {
+                events.publish({ version: 1, type: "permission_requested", request });
+              }
+            }
+          }
+        } finally {
+          unsubscribe?.();
+          events.close();
+        }
+      })();
       return {
         runId: handle.runId,
-        events: () => handle.events(),
+        events: () => events.read(),
         async dispatch(command) {
           if (command.type !== "respond_permission") return handle.dispatch(command);
           if (!options.approvals) {

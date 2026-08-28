@@ -15,6 +15,7 @@ export interface ApprovalResponseAck {
 
 export interface ApprovalBridge extends ApprovalPort {
   requests(): AsyncIterable<ApprovalRequest>;
+  subscribe(listener: (request: ApprovalRequest) => void): () => void;
   respond(command: ApprovalResponseCommand): ApprovalResponseAck;
 }
 
@@ -52,6 +53,8 @@ export function createApprovalBridge(): ApprovalBridge {
   const stream = new ApprovalRequestStream();
   const pending = new Map<string, PendingApproval>();
   const applied = new Set<string>();
+  const stale = new Set<string>();
+  const listeners = new Set<(request: ApprovalRequest) => void>();
   return {
     request(request, signal) {
       if (signal.aborted) {
@@ -68,10 +71,23 @@ export function createApprovalBridge(): ApprovalBridge {
         pending.set(request.approvalId, { request, signal, resolve, abort });
         signal.addEventListener("abort", abort, { once: true });
         stream.publish(request);
+        for (const listener of listeners) listener(request);
       });
     },
     requests: () => stream.events(),
+    subscribe(listener) {
+      listeners.add(listener);
+      for (const waiting of pending.values()) listener(waiting.request);
+      return () => listeners.delete(listener);
+    },
+    invalidate(approvalId) {
+      applied.delete(approvalId);
+      stale.add(approvalId);
+    },
     respond(command) {
+      if (stale.has(command.approvalId)) {
+        return { approvalId: command.approvalId, status: "stale" };
+      }
       if (applied.has(command.approvalId)) {
         return { approvalId: command.approvalId, status: "already_applied" };
       }

@@ -3,6 +3,37 @@ import type { RunId } from "../contracts/primitives.js";
 
 export type ToolDefinition = ModelToolDefinition;
 
+export interface ArtifactRef {
+  readonly id: string;
+}
+
+export interface ArtifactWriteInput {
+  readonly bytes: Uint8Array;
+  readonly mediaType: "text/plain" | "application/json";
+  readonly provenance: string;
+}
+
+export interface ArtifactMetadata extends ArtifactRef {
+  readonly byteLength: number;
+  readonly mediaType: ArtifactWriteInput["mediaType"];
+  readonly provenance: string;
+}
+
+export interface ArtifactIntegrity {
+  readonly status: "verified" | "missing" | "corrupt";
+}
+
+export interface ArtifactReadOptions {
+  readonly signal?: AbortSignal;
+}
+
+export interface ArtifactStore extends AsyncDisposable {
+  put(input: ArtifactWriteInput, options?: { readonly signal?: AbortSignal }): Promise<ArtifactRef>;
+  stat(ref: ArtifactRef): Promise<ArtifactMetadata>;
+  read(ref: ArtifactRef, options?: ArtifactReadOptions): AsyncIterable<Uint8Array>;
+  verify(ref: ArtifactRef): Promise<ArtifactIntegrity>;
+}
+
 export interface ToolExecutionContext {
   readonly runId: RunId;
   readonly signal: AbortSignal;
@@ -29,7 +60,11 @@ export interface ToolOutcome {
   readonly modelContent: string;
   readonly effectState: "none" | "committed" | "partial" | "unknown";
   readonly abortObserved: boolean;
-  readonly artifacts: readonly { readonly id: string }[];
+  readonly artifacts: readonly ArtifactRef[];
+  readonly infrastructureFailure?: {
+    readonly code: string;
+    readonly message: string;
+  };
   readonly evidence?: JsonObject;
 }
 

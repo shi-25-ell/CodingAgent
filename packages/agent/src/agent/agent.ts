@@ -360,6 +360,37 @@ class DefaultAgent implements Agent {
               ...counts,
               settledToolCallCount: counts.settledToolCallCount + 1,
             };
+            if (outcome.infrastructureFailure) {
+              for (const unsettledCall of calls.slice(callIndex + 1)) {
+                await callDependency("persistence", () =>
+                  host.commit({
+                    version: 1,
+                    type: "tool_outcome",
+                    outcome: {
+                      callId: unsettledCall.callId,
+                      status: "failed",
+                      isError: true,
+                      modelContent: "前序 ToolCall 发生 terminal infrastructure failure",
+                      effectState: "none",
+                      abortObserved: false,
+                      artifacts: [],
+                    },
+                  }),
+                );
+                counts = {
+                  ...counts,
+                  settledToolCallCount: counts.settledToolCallCount + 1,
+                };
+              }
+              return {
+                status: "failed",
+                terminationReason: "tool_infrastructure_failure",
+                counts,
+                usage,
+                unfinishedWork: ["Tool infrastructure 无法确认安全清理"],
+                error: outcome.infrastructureFailure,
+              };
+            }
           }
           if (input.signal.aborted) return aborted(counts, usage);
           transition({ version: 1, type: "phase_changed", phase: "safe_point" });
@@ -368,6 +399,9 @@ class DefaultAgent implements Agent {
         }
         if (input.signal.aborted) return aborted(counts, usage);
         transition({ version: 1, type: "phase_changed", phase: "completion_candidate" });
+        const steering = await callDependency("persistence", () => host.drainSteering());
+        if (input.signal.aborted) return aborted(counts, usage);
+        if (steering.length > 0) continue;
         const followUp = await callDependency("persistence", () => host.takeFollowUp());
         if (input.signal.aborted) return aborted(counts, usage);
         if (followUp) continue;

@@ -84,6 +84,190 @@ function expectExactlyOneTerminal(scenario: Scenario, expected: RunReport["statu
 }
 
 describe("AgentHarness terminal contract", () => {
+  it("completion candidate 关闭 queue acceptance，避免 accepted message 被 terminal race 遗失", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(625),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const stopGate = new ManualGate();
+    const basePolicies = createFixedRunPolicies({
+      maxModelTurns: 1,
+      maxModelAttempts: 1,
+      maxRetries: 0,
+    });
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "开始" }],
+      model: new ScriptedModel([{ outcome: { status: "completed", response: response("完成") } }]),
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: {
+        ...basePolicies,
+        stopPolicy: {
+          async evaluate() {
+            await stopGate.wait();
+            return { action: "complete" };
+          },
+        },
+      },
+      metadata: { task: "开始", configurationRevision: "m2-terminal-race" },
+    });
+    await stopGate.waitUntilBlocked();
+    await expect(
+      handle.dispatch({ commandId: "late-steer", type: "steer", text: "不得丢失" }),
+    ).resolves.toEqual({ commandId: "late-steer", status: "not_active" });
+    stopGate.open();
+    await expect(handle.finished).resolves.toMatchObject({ status: "completed" });
+    await repository[Symbol.asyncDispose]();
+  });
+
+  it("secret 在进入 Transcript、terminal event 与 RunReport 前统一脱敏", async () => {
+    const secret = "provider-secret-value";
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(650),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const handle = await createAgentHarness({
+      agent: createAgent(),
+      redact: (value) => value.split(secret).join("[REDACTED]"),
+    }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: `开始 ${secret}` }],
+      model: new ScriptedModel([
+        { outcome: { status: "completed", response: response(`结果 ${secret}`) } },
+      ]),
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
+      metadata: { task: `开始 ${secret}`, configurationRevision: "m2-redaction" },
+    });
+    const eventsPromise = collect(handle.events());
+    await expect(handle.finished).resolves.toMatchObject({ finalAnswer: "结果 [REDACTED]" });
+    const serializedEvents = JSON.stringify(await eventsPromise);
+    const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
+    const serializedTranscript = JSON.stringify(branch.records);
+    expect(serializedEvents).not.toContain(secret);
+    expect(serializedTranscript).not.toContain(secret);
+    expect(serializedTranscript).toContain("[REDACTED]");
+    await repository[Symbol.asyncDispose]();
+  });
+
+  it("首次 terminal commit 失败时 best-effort recovery 仍 resolve exactly-one failed RunReport", async () => {
+    let finishAttempts = 0;
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(675),
+      ids: new SequentialIdFactory(),
+      beforeFinish: async () => {
+        finishAttempts += 1;
+        if (finishAttempts === 1) throw new Error("injected terminal transaction failure");
+      },
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "开始" }],
+      model: new ScriptedModel([{ outcome: { status: "completed", response: response("完成") } }]),
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
+      metadata: { task: "开始", configurationRevision: "m2-terminal-recovery" },
+    });
+    const eventsPromise = collect(handle.events());
+    await expect(handle.finished).resolves.toMatchObject({
+      status: "failed",
+      terminationReason: "persistence_failure",
+      error: { code: "TERMINAL_COMMIT_FAILURE" },
+    });
+    expect((await eventsPromise).filter((event) => event.type === "terminal")).toHaveLength(1);
+    const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
+    expect(branch.records.filter((record) => record.kind === "run_terminal")).toHaveLength(1);
+    expect(finishAttempts).toBe(2);
+    await repository[Symbol.asyncDispose]();
+  });
+
+  it("adapter 报告 cleanup 不确定时结算完整 batch 并升级 terminal infrastructure failure", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(690),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    let starts = 0;
+    const tools: ToolExecutor = {
+      definitions: () => [],
+      execute(call) {
+        starts += 1;
+        return {
+          updates: (async function* () {})(),
+          outcome: Promise.resolve({
+            callId: call.callId,
+            status: "failed",
+            isError: true,
+            modelContent: "process tree cleanup 无法确认",
+            effectState: "unknown",
+            abortObserved: false,
+            artifacts: [],
+            infrastructureFailure: {
+              code: "PROCESS_CLEANUP_UNCONFIRMED",
+              message: "process tree cleanup 无法确认",
+            },
+          }),
+        };
+      },
+    };
+    const model = new ScriptedModel([
+      {
+        outcome: {
+          status: "completed",
+          response: {
+            version: 1,
+            content: [
+              { type: "tool_call", callId: "fatal", name: "run_command", arguments: {} },
+              { type: "tool_call", callId: "not-started", name: "read_file", arguments: {} },
+            ],
+            finishReason: "tool_calls",
+          },
+        },
+      },
+    ]);
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "开始" }],
+      model,
+      tools,
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
+      metadata: { task: "开始", configurationRevision: "m2-infrastructure" },
+    });
+    await expect(handle.finished).resolves.toMatchObject({
+      status: "failed",
+      terminationReason: "tool_infrastructure_failure",
+      counts: { toolCallCount: 2, settledToolCallCount: 2 },
+      tools: { accepted: 2, settled: 2, failed: 2 },
+      error: { code: "PROCESS_CLEANUP_UNCONFIRMED" },
+    });
+    expect(starts).toBe(1);
+    model.assertConsumed();
+    await repository[Symbol.asyncDispose]();
+  });
+
   it("Steering 在 tool batch 后的 safe point 按 FIFO durable delivery", async () => {
     const repository = new InMemorySessionRepository({
       clock: new ManualClock(700),

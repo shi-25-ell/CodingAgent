@@ -30,10 +30,11 @@ import {
   openAiProfile,
   openRouterProfile,
 } from "@coding-agent/model/providers/openai-compatible";
+import { createNodeLocalExecutionPorts } from "../adapters/local-execution-ports.js";
 import { type CodingAgent, createCodingAgent } from "../app/coding-agent.js";
 import { type ApprovalBridge, createApprovalBridge } from "../permissions/approval-bridge.js";
 import type { PermissionMode } from "../tools/coding-tool-host.js";
-import { createCodingToolHost } from "../tools/coding-tool-host.js";
+import { createCodingToolHostWithPorts } from "../tools/coding-tool-host.js";
 
 export interface OpenAiCodingAgentOptions {
   readonly workspaceRoot: string;
@@ -55,7 +56,6 @@ export type OpenRouterCodingAgentOptions = OpenAiCodingAgentOptions;
 export interface OpenAiCodingAgent {
   readonly agent: CodingAgent;
   readonly model: ModelDescriptor;
-  readonly approvals: ApprovalBridge;
   dispose(): Promise<void>;
 }
 
@@ -187,16 +187,20 @@ async function createCompatibleCodingAgent(
     } satisfies IdFactory);
   const sessions = new InMemorySessionRepository({ clock, ids });
   const approvals = options.approvalBridge ?? createApprovalBridge();
-  const tools = createCodingToolHost({
-    workspaceRoot: options.workspaceRoot,
-    permissionMode: options.permissionMode ?? "autonomous",
-    approvalPort: approvals,
-    redact: (value) =>
-      [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value),
-  });
+  const redact = (value: string): string =>
+    [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value);
+  const tools = createCodingToolHostWithPorts(
+    {
+      workspaceRoot: options.workspaceRoot,
+      permissionMode: options.permissionMode ?? "autonomous",
+      approvalPort: approvals,
+      redact,
+    },
+    createNodeLocalExecutionPorts(),
+  );
   const agent = createCodingAgent({
     sessions,
-    harness: createAgentHarness({ agent: createAgent() }),
+    harness: createAgentHarness({ agent: createAgent(), redact }),
     model,
     tools,
     context: createTranscriptContextManager({
@@ -212,7 +216,6 @@ async function createCompatibleCodingAgent(
   return {
     agent,
     model: model.descriptor,
-    approvals,
     async dispose() {
       await tools[Symbol.asyncDispose]();
       await sessions[Symbol.asyncDispose]();

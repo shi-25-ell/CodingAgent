@@ -4,9 +4,9 @@ import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runId } from "@coding-agent/agent";
+import { createCodingToolHost } from "@coding-agent/coding";
 import type { ToolCall } from "@coding-agent/model";
 import { afterEach, describe, expect, it } from "vitest";
-import { createCodingToolHost } from "../../packages/coding/src/tools/coding-tool-host.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -14,7 +14,9 @@ afterEach(async () => {
   await Promise.all(
     temporaryDirectories
       .splice(0)
-      .map((directory) => rm(directory, { recursive: true, force: true })),
+      .map((directory) =>
+        rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
+      ),
   );
 });
 
@@ -131,8 +133,11 @@ describe.skipIf(process.platform !== "win32")("Windows PowerShell process adapte
       },
     });
     expect(result.artifacts).toHaveLength(1);
-    const bytes = await host.artifacts.read(result.artifacts[0]?.id ?? "");
-    const artifact = Buffer.from(bytes ?? []).toString("utf8");
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of host.artifacts.read(result.artifacts[0] ?? { id: "missing" })) {
+      chunks.push(chunk);
+    }
+    const artifact = Buffer.concat(chunks).toString("utf8");
     expect(artifact).toContain("A".repeat(160));
     expect(artifact).toContain("B".repeat(192));
     expect(artifact).toContain("[REDACTED]");

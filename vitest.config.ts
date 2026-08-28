@@ -19,6 +19,7 @@ export default defineConfig({
         "packages/agent/src/policies/fixed-policies.ts",
         "packages/agent/src/session/in-memory-session-repository.ts",
         "packages/coding/src/app/coding-agent.ts",
+        "packages/coding/src/adapters/local-execution-ports.ts",
         "packages/coding/src/composition/openai-composition.ts",
         "packages/coding/src/modes/print/print-entry.ts",
         "packages/coding/src/permissions/approval-bridge.ts",
