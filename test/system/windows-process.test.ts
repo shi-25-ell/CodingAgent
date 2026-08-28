@@ -39,17 +39,26 @@ async function waitForFiles(root: string, names: readonly string[]): Promise<voi
       return false;
     }
   };
-  if (await ready()) return;
   await new Promise<void>((resolve, reject) => {
-    const watcher = watch(root, () => {
+    const watcher = watch(root);
+    let settled = false;
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      watcher.close();
+      reject(error);
+    };
+    const check = () => {
       void ready().then((found) => {
-        if (found) {
-          watcher.close();
-          resolve();
-        }
-      }, reject);
-    });
-    watcher.once("error", reject);
+        if (!found || settled) return;
+        settled = true;
+        watcher.close();
+        resolve();
+      }, fail);
+    };
+    watcher.on("change", check);
+    watcher.once("error", fail);
+    check();
   });
 }
 
