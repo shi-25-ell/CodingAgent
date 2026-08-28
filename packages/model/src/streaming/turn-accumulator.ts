@@ -33,6 +33,7 @@ export class ModelProtocolError extends Error {
 interface ActivePart {
   readonly header: PartHeader;
   text: string;
+  replayToken: string;
   completed: boolean;
   value?: AssistantContentPart;
 }
@@ -90,7 +91,12 @@ export class ModelTurnAccumulator {
         if (this.#parts.has(event.index)) {
           throw new ModelProtocolError("MODEL_EVENT_DUPLICATE_PART", `part ${event.index} 已存在`);
         }
-        this.#parts.set(event.index, { header: event.part, text: "", completed: false });
+        this.#parts.set(event.index, {
+          header: event.part,
+          text: "",
+          replayToken: "",
+          completed: false,
+        });
         if (event.part.type === "tool_call") this.#producedSemanticOutput = true;
         return;
       }
@@ -99,6 +105,10 @@ export class ModelTurnAccumulator {
         return;
       case "reasoning_delta":
         this.#appendDelta(event.index, "reasoning", event.delta);
+        if (event.replayTokenDelta !== undefined) {
+          const part = this.#activePart(event.index);
+          part.replayToken += event.replayTokenDelta;
+        }
         return;
       case "tool_call_delta":
         this.#appendDelta(event.index, "tool_call", event.delta.argumentsDelta);
@@ -160,7 +170,11 @@ export class ModelTurnAccumulator {
         part.value = { type: "text", text: part.text };
         break;
       case "reasoning":
-        part.value = { type: "reasoning", text: part.text };
+        part.value = {
+          type: "reasoning",
+          text: part.text,
+          ...(part.replayToken.length > 0 ? { replayToken: part.replayToken } : {}),
+        };
         break;
       case "tool_call":
         part.value = {

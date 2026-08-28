@@ -10,6 +10,9 @@ export const openAiProfile: OpenAiCompatibleProfile = {
   requestDialect: {
     instructionsRole: "developer",
     maxTokensField: "max_completion_tokens",
+    includeUsageStreamOption: true,
+    strictToolSchema: true,
+    parallelToolCallsField: true,
   },
   responseDialect: {},
 };
@@ -22,6 +25,44 @@ export const openRouterProfile: OpenAiCompatibleProfile = {
   requestDialect: {
     instructionsRole: "system",
     maxTokensField: "max_completion_tokens",
+    includeUsageStreamOption: true,
+    strictToolSchema: true,
+    parallelToolCallsField: true,
   },
   responseDialect: { terminalUsageRepeatsFinishReason: true },
+};
+
+export const deepSeekProfile: OpenAiCompatibleProfile = {
+  id: providerId("deepseek"),
+  displayName: "DeepSeek",
+  baseUrl: new URL("https://api.deepseek.com/"),
+  auth: { ref: credentialRef("deepseek.default"), kind: "bearer" },
+  requestDialect: {
+    instructionsRole: "system",
+    maxTokensField: "max_tokens",
+    reasoningReplayField: "reasoning_content",
+    includeUsageStreamOption: true,
+    strictToolSchema: false,
+    parallelToolCallsField: false,
+    additionalBody: { thinking: { type: "enabled" } },
+  },
+  responseDialect: { reasoningDeltaField: "reasoning_content" },
+};
+
+export const glmProfile: OpenAiCompatibleProfile = {
+  id: providerId("glm"),
+  displayName: "GLM",
+  baseUrl: new URL("https://open.bigmodel.cn/api/paas/v4/"),
+  auth: { ref: credentialRef("glm.default"), kind: "bearer" },
+  requestDialect: {
+    instructionsRole: "system",
+    maxTokensField: "max_tokens",
+    reasoningReplayField: "reasoning_content",
+    includeUsageStreamOption: false,
+    strictToolSchema: false,
+    parallelToolCallsField: false,
+    additionalBody: { thinking: { type: "enabled" } },
+    toolBody: { tool_stream: true },
+  },
+  responseDialect: { reasoningDeltaField: "reasoning_content" },
 };

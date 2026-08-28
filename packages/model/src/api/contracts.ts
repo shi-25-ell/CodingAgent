@@ -62,6 +62,8 @@ export interface AssistantTextPart {
 export interface AssistantReasoningPart {
   readonly type: "reasoning";
   readonly text: string;
+  /** Provider-neutral opaque material required to replay a verified reasoning block. */
+  readonly replayToken?: string;
 }
 
 export interface ToolCall {
@@ -107,6 +109,10 @@ export type ToolChoice =
 
 export interface ModelOutputPolicy {
   readonly maxTokens: number;
+  readonly reasoning?: {
+    readonly enabled: boolean;
+    readonly budgetTokens?: number;
+  };
 }
 
 export interface ModelRequest {
@@ -171,7 +177,12 @@ export type ModelEvent = { readonly version: 1 } & (
   | { readonly type: "turn_started"; readonly attemptId: string }
   | { readonly type: "part_started"; readonly index: number; readonly part: PartHeader }
   | { readonly type: "text_delta"; readonly index: number; readonly delta: string }
-  | { readonly type: "reasoning_delta"; readonly index: number; readonly delta: string }
+  | {
+      readonly type: "reasoning_delta";
+      readonly index: number;
+      readonly delta: string;
+      readonly replayTokenDelta?: string;
+    }
   | { readonly type: "tool_call_delta"; readonly index: number; readonly delta: ToolCallDelta }
   | { readonly type: "part_completed"; readonly index: number }
   | { readonly type: "turn_completed"; readonly response: ModelResponse }
@@ -180,6 +191,7 @@ export type ModelEvent = { readonly version: 1 } & (
 
 export interface ModelCallOptions {
   readonly signal: AbortSignal;
+  readonly timeoutMs?: number;
 }
 
 export interface Model {

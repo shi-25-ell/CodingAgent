@@ -99,7 +99,6 @@ function wireTools(tools: readonly ModelToolDefinition[]): readonly unknown[] {
       name: tool.name,
       description: tool.description,
       parameters: tool.inputSchema,
-      strict: true,
     },
   }));
 }
@@ -156,15 +155,25 @@ function requestBody(
   profile: OpenAiCompatibleProfile,
 ): string {
   const body: Record<string, unknown> = {
+    ...profile.requestDialect.additionalBody,
     model: descriptor.modelId,
     messages: wireMessages(request, profile),
     stream: true,
-    stream_options: { include_usage: true },
     [profile.requestDialect.maxTokensField]: request.output.maxTokens,
   };
+  if (profile.requestDialect.includeUsageStreamOption) {
+    body.stream_options = { include_usage: true };
+  }
   if (request.tools.length > 0) {
-    body.tools = wireTools(request.tools);
-    body.parallel_tool_calls = descriptor.capabilities.toolCalls === "multiple";
+    body.tools = wireTools(request.tools).map((tool) => {
+      if (!profile.requestDialect.strictToolSchema) return tool;
+      const value = tool as { readonly function: Record<string, unknown> };
+      return { ...value, function: { ...value.function, strict: true } };
+    });
+    if (profile.requestDialect.parallelToolCallsField) {
+      body.parallel_tool_calls = descriptor.capabilities.toolCalls === "multiple";
+    }
+    Object.assign(body, profile.requestDialect.toolBody);
   }
   const choice = toolChoice(request.toolChoice);
   if (choice !== undefined) body.tool_choice = choice;
@@ -672,9 +681,14 @@ class OpenAiCompatibleModel implements Model {
       yield { version: 1, type: "turn_failed", failure: validation };
       return;
     }
+    const timeoutSignal =
+      options.timeoutMs === undefined ? undefined : AbortSignal.timeout(options.timeoutMs);
     try {
+      const signal = timeoutSignal
+        ? AbortSignal.any([options.signal, timeoutSignal])
+        : options.signal;
       const resolution = await this.#credentials.resolve(this.#profile.auth, {
-        signal: options.signal,
+        signal,
       });
       if (resolution.status === "missing") {
         yield {
@@ -711,7 +725,7 @@ class OpenAiCompatibleModel implements Model {
           authorization: `Bearer ${resolution.credential.value.reveal()}`,
         },
         body: requestBody(request, this.descriptor, this.#profile),
-        signal: options.signal,
+        signal,
       });
       if (response.status < 200 || response.status >= 300) {
         yield {
@@ -726,7 +740,14 @@ class OpenAiCompatibleModel implements Model {
       yield {
         version: 1,
         type: "turn_failed",
-        failure: thrownFailure(error, options.signal, this.#profile),
+        failure:
+          !options.signal.aborted && timeoutSignal?.aborted
+            ? {
+                category: "timeout",
+                retryable: true,
+                message: `${this.#profile.displayName} transport timed out`,
+              }
+            : thrownFailure(error, options.signal, this.#profile),
       };
     }
   }

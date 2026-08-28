@@ -1,4 +1,9 @@
-import type { ModelDescriptor, ModelProvider, ProviderId } from "../../api/contracts.js";
+import type {
+  JsonObject,
+  ModelDescriptor,
+  ModelProvider,
+  ProviderId,
+} from "../../api/contracts.js";
 import type { CredentialRequest, CredentialResolver } from "../../auth/contracts.js";
 
 export interface OpenAiCompatibleProfile {
@@ -10,6 +15,11 @@ export interface OpenAiCompatibleProfile {
     readonly instructionsRole: "developer" | "system";
     readonly maxTokensField: "max_completion_tokens" | "max_tokens";
     readonly reasoningReplayField?: string;
+    readonly includeUsageStreamOption?: boolean;
+    readonly strictToolSchema?: boolean;
+    readonly parallelToolCallsField?: boolean;
+    readonly additionalBody?: JsonObject;
+    readonly toolBody?: JsonObject;
   };
   readonly responseDialect: {
     readonly reasoningDeltaField?: string;
