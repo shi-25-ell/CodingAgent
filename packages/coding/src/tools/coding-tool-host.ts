@@ -537,8 +537,11 @@ async function revalidatePreconditions(root: string, plan: ToolPlan): Promise<vo
 
 function decodeUtf8(bytes: Uint8Array): string {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (text.includes("\0")) throw new ToolFailure("rejected", "仅支持 UTF-8 text，binary 不可用");
+    return text;
   } catch (_error) {
+    if (_error instanceof ToolFailure) throw _error;
     throw new ToolFailure("rejected", "仅支持有效 UTF-8 text");
   }
 }

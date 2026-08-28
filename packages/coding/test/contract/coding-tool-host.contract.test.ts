@@ -548,6 +548,7 @@ describe("CodingToolHost ToolExecutor contract", () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-tools-"));
     temporaryDirectories.push(root);
     await writeFile(path.join(root, "binary.bin"), new Uint8Array([0xff, 0xfe]));
+    await writeFile(path.join(root, "nul.bin"), new Uint8Array([0x41, 0x00, 0x42]));
     await writeFile(path.join(root, "duplicate.txt"), "same same", "utf8");
     await mkdir(path.join(root, ".git"));
     const host = createCodingToolHost({
@@ -559,6 +560,7 @@ describe("CodingToolHost ToolExecutor contract", () => {
     for (const scenario of [
       { id: "missing", name: "read_file", arguments: { path: "missing.txt" }, status: "failed" },
       { id: "binary", name: "read_file", arguments: { path: "binary.bin" }, status: "rejected" },
+      { id: "nul", name: "read_file", arguments: { path: "nul.bin" }, status: "rejected" },
       {
         id: "duplicate",
         name: "apply_patch",
