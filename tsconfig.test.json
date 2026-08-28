@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node", "vitest/globals"],
+    "baseUrl": ".",
+    "paths": {
+      "@coding-agent/model": ["packages/model/src/index.ts"],
+      "@coding-agent/model/testing": ["packages/model/src/testing/index.ts"],
+      "@coding-agent/agent": ["packages/agent/src/index.ts"],
+      "@coding-agent/agent/session": ["packages/agent/src/session/index.ts"],
+      "@coding-agent/agent/context": ["packages/agent/src/context/index.ts"],
+      "@coding-agent/agent/testing": ["packages/agent/src/testing/index.ts"],
+      "@coding-agent/coding": ["packages/coding/src/index.ts"],
+      "@coding-agent/coding/print": ["packages/coding/src/modes/print/index.ts"],
+      "@coding-agent/coding/testing": ["packages/coding/src/testing/index.ts"]
+    }
+  },
+  "include": ["packages/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}

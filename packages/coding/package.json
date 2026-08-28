@@ -1,0 +1,29 @@
+{
+  "name": "@coding-agent/coding",
+  "version": "0.0.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./print": {
+      "types": "./dist/modes/print/index.d.ts",
+      "import": "./dist/modes/print/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
+  },
+  "dependencies": {
+    "@coding-agent/agent": "0.0.0",
+    "@coding-agent/model": "0.0.0"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}
