@@ -84,6 +84,144 @@ function expectExactlyOneTerminal(scenario: Scenario, expected: RunReport["statu
 }
 
 describe("AgentHarness terminal contract", () => {
+  it("Steering 在 tool batch 后的 safe point 按 FIFO durable delivery", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(700),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const toolGate = new ManualGate();
+    const model = new ScriptedModel([
+      {
+        outcome: {
+          status: "completed",
+          response: {
+            version: 1,
+            content: [
+              { type: "tool_call", callId: "read-queue", name: "read_file", arguments: {} },
+            ],
+            finishReason: "tool_calls",
+          },
+        },
+      },
+      {
+        assertRequest(request) {
+          expect(request.messages.slice(-3)).toEqual([
+            { role: "tool", callId: "read-queue", content: "done", isError: false },
+            { role: "user", content: [{ type: "text", text: "先检查边界" }] },
+            { role: "user", content: [{ type: "text", text: "再运行验证" }] },
+          ]);
+        },
+        outcome: { status: "completed", response: response("完成") },
+      },
+    ]);
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "开始" }],
+      model,
+      tools: {
+        definitions: () => [],
+        execute(call) {
+          return {
+            updates: (async function* () {})(),
+            outcome: toolGate.wait().then(() => ({
+              callId: call.callId,
+              status: "succeeded" as const,
+              isError: false,
+              modelContent: "done",
+              effectState: "none" as const,
+              abortObserved: false,
+              artifacts: [],
+            })),
+          };
+        },
+      },
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
+      metadata: { task: "开始", configurationRevision: "m2" },
+    });
+    await toolGate.waitUntilBlocked();
+
+    await expect(
+      handle.dispatch({ commandId: "steer-1", type: "steer", text: "先检查边界" }),
+    ).resolves.toEqual({ commandId: "steer-1", status: "accepted" });
+    await expect(
+      handle.dispatch({ commandId: "steer-2", type: "steer", text: "再运行验证" }),
+    ).resolves.toEqual({ commandId: "steer-2", status: "accepted" });
+    await expect(
+      handle.dispatch({ commandId: "steer-1", type: "steer", text: "不得重复" }),
+    ).resolves.toEqual({ commandId: "steer-1", status: "already_applied" });
+
+    toolGate.open();
+    await expect(handle.finished).resolves.toMatchObject({
+      status: "completed",
+      finalAnswer: "完成",
+    });
+    model.assertConsumed();
+    await repository[Symbol.asyncDispose]();
+  });
+
+  it("Follow-up 在 completion candidate 每次取一个并按 FIFO 延续同一 Run", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(750),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const modelGate = new ManualGate();
+    const model = new ScriptedModel([
+      {
+        before: (signal) => modelGate.wait(signal).then(() => undefined),
+        outcome: { status: "completed", response: response("第一段") },
+      },
+      {
+        assertRequest(request) {
+          expect(request.messages.at(-1)).toEqual({
+            role: "user",
+            content: [{ type: "text", text: "补充一" }],
+          });
+        },
+        outcome: { status: "completed", response: response("第二段") },
+      },
+      {
+        assertRequest(request) {
+          expect(request.messages.at(-1)).toEqual({
+            role: "user",
+            content: [{ type: "text", text: "补充二" }],
+          });
+        },
+        outcome: { status: "completed", response: response("最终完成") },
+      },
+    ]);
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "开始" }],
+      model,
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 3, maxModelAttempts: 3, maxRetries: 0 }),
+      metadata: { task: "开始", configurationRevision: "m2" },
+    });
+    await modelGate.waitUntilBlocked();
+    await handle.dispatch({ commandId: "follow-1", type: "follow_up", text: "补充一" });
+    await handle.dispatch({ commandId: "follow-2", type: "follow_up", text: "补充二" });
+    modelGate.open();
+
+    await expect(handle.finished).resolves.toMatchObject({
+      status: "completed",
+      finalAnswer: "最终完成",
+      counts: { modelTurnCount: 3 },
+    });
+    model.assertConsumed();
+    await repository[Symbol.asyncDispose]();
+  });
   it("Attempt 已产生 semantic output 后即使 failure retryable 也不重试", async () => {
     let attempts = 0;
     const descriptor = new ScriptedModel([]).descriptor;

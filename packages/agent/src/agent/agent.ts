@@ -19,13 +19,17 @@ import {
   type RunPolicies,
   type UsageSummary,
 } from "../runtime/contracts.js";
+import type { QueueItem } from "../session/contracts.js";
 import type { ToolExecutor, ToolOutcome } from "../tools/contracts.js";
+import { RunStateMachine } from "./run-state-machine.js";
 
 export interface AgentHost {
   prepareContext(
     input: Pick<ContextPrepareInput, "runId" | "modelAttemptCount">,
   ): Promise<PreparedContext>;
   commit(event: AgentSemanticEvent): Promise<void>;
+  drainSteering(): Promise<readonly QueueItem[]>;
+  takeFollowUp(): Promise<QueueItem | undefined>;
   reportProgress(event: AgentProgressEvent): void;
 }
 
@@ -138,11 +142,21 @@ function dependencyFailure(
 class DefaultAgent implements Agent {
   run(input: AgentRunInput, host: AgentHost): AgentExecution {
     const stream = new ReplayEventStream<AgentEvent>();
+    const state = new RunStateMachine();
     const publish = (event: AgentProgressEvent): void => {
       stream.publish(event);
       host.reportProgress(event);
     };
-    const result = this.#execute(input, host, publish).finally(() => stream.close());
+    const transition = (phase: AgentProgressEvent & { readonly type: "phase_changed" }) => {
+      state.transition(phase.phase);
+      publish(phase);
+    };
+    const result = this.#execute(input, host, publish, transition)
+      .then((value) => {
+        transition({ version: 1, type: "phase_changed", phase: "finalizing" });
+        return value;
+      })
+      .finally(() => stream.close());
     return { events: stream.events(), result };
   }
 
@@ -150,6 +164,7 @@ class DefaultAgent implements Agent {
     input: AgentRunInput,
     host: AgentHost,
     publish: (event: AgentProgressEvent) => void,
+    transition: (event: AgentProgressEvent & { readonly type: "phase_changed" }) => void,
   ): Promise<AgentRunResult> {
     let counts = initialCounts();
     let usage = emptyUsageSummary();
@@ -181,7 +196,7 @@ class DefaultAgent implements Agent {
             };
           }
           const nextAttemptCount = counts.modelAttemptCount + 1;
-          publish({ version: 1, type: "phase_changed", phase: "preparing_context" });
+          transition({ version: 1, type: "phase_changed", phase: "preparing_context" });
           const prepared = await callDependency("context", () =>
             host.prepareContext({
               runId: input.runId,
@@ -196,7 +211,7 @@ class DefaultAgent implements Agent {
             modelTurnCount: counts.modelTurnCount,
             modelAttemptCount: counts.modelAttemptCount,
           });
-          publish({ version: 1, type: "phase_changed", phase: "model_streaming" });
+          transition({ version: 1, type: "phase_changed", phase: "model_streaming" });
           const turn = await collectModelTurn(
             input.model.stream(prepared.request, { signal: input.signal }),
           );
@@ -275,13 +290,13 @@ class DefaultAgent implements Agent {
           };
         }
 
-        publish({ version: 1, type: "phase_changed", phase: "assistant_committing" });
+        transition({ version: 1, type: "phase_changed", phase: "assistant_committing" });
         await callDependency("persistence", () =>
           host.commit({ version: 1, type: "assistant_message", response }),
         );
         if (calls.length > 0) {
           counts = { ...counts, toolCallCount: counts.toolCallCount + calls.length };
-          publish({ version: 1, type: "phase_changed", phase: "tool_batch" });
+          transition({ version: 1, type: "phase_changed", phase: "tool_batch" });
           for (const [callIndex, call] of calls.entries()) {
             let outcome: ToolOutcome | undefined;
             if (input.signal.aborted) {
@@ -340,11 +355,15 @@ class DefaultAgent implements Agent {
             };
           }
           if (input.signal.aborted) return aborted(counts, usage);
-          publish({ version: 1, type: "phase_changed", phase: "safe_point" });
+          transition({ version: 1, type: "phase_changed", phase: "safe_point" });
+          await callDependency("persistence", () => host.drainSteering());
           continue;
         }
         if (input.signal.aborted) return aborted(counts, usage);
-        publish({ version: 1, type: "phase_changed", phase: "completion_candidate" });
+        transition({ version: 1, type: "phase_changed", phase: "completion_candidate" });
+        const followUp = await callDependency("persistence", () => host.takeFollowUp());
+        if (input.signal.aborted) return aborted(counts, usage);
+        if (followUp) continue;
         const stop = await callDependency("policy", () =>
           input.policies.stopPolicy.evaluate({ response, counts }),
         );

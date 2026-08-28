@@ -73,6 +73,19 @@ export interface AgentInputMessage {
   readonly text: string;
 }
 
+export type QueueKind = "steering" | "follow_up";
+
+export interface QueueInput {
+  readonly commandId: string;
+  readonly kind: QueueKind;
+  readonly text: string;
+}
+
+export interface QueueItem extends QueueInput {
+  readonly ordinal: number;
+  readonly status: "queued" | "delivered";
+}
+
 export interface RunMetadata {
   readonly task: string;
   readonly configurationRevision: string;
@@ -113,6 +126,8 @@ export interface RunLease extends AsyncDisposable {
   readonly sessionId: SessionId;
   readonly branchId: BranchId;
   append(entries: readonly NewLedgerRecord[]): Promise<CommitReceipt>;
+  drainSteering(): Promise<readonly QueueItem[]>;
+  takeFollowUp(): Promise<QueueItem | undefined>;
   /**
    * Durability seam for terminal arbitration. Implementations resolve only after a terminal report is
    * durable, returning that durable report (including an idempotently recovered existing report).
@@ -128,6 +143,7 @@ export interface SessionHandle extends AsyncDisposable {
   readBranch(input: ReadBranchInput): Promise<SessionBranchView>;
   selectBranch(branchId: BranchId, expectedRevision: number): Promise<SessionSnapshot>;
   forkBranch(input: ForkBranchInput): Promise<BranchRef>;
+  enqueue(input: QueueInput): Promise<QueueItem>;
   beginRun(input: BeginRunInput): Promise<RunLease>;
 }
 

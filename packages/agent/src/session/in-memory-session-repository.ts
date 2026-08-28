@@ -9,6 +9,8 @@ import type {
   ForkBranchInput,
   LedgerRecord,
   NewLedgerRecord,
+  QueueInput,
+  QueueItem,
   RunLease,
   SessionBranchSummary,
   SessionBranchView,
@@ -34,6 +36,7 @@ interface SessionState {
   readonly branches: Map<BranchId, BranchState>;
   readonly records: Map<string, LedgerRecord>;
   readonly terminalReports: Map<RunId, RunReport>;
+  readonly queue: QueueItem[];
   revision: number;
   currentBranchId: BranchId;
   activeRunId: RunId | undefined;
@@ -82,6 +85,7 @@ export class InMemorySessionRepository implements SessionRepository {
       branches: new Map([[initialBranch, { id: initialBranch, recordIds: [] }]]),
       records: new Map(),
       terminalReports: new Map(),
+      queue: [],
       revision: 1,
       currentBranchId: initialBranch,
       activeRunId: undefined,
@@ -183,11 +187,31 @@ export class InMemorySessionRepository implements SessionRepository {
         return this.#snapshot(state);
       },
       forkBranch: async (input) => this.#forkBranch(state, input, assertHandle),
+      enqueue: async (input) => this.#enqueue(state, input, assertHandle),
       beginRun: async (input) => this.#beginRun(state, input, assertHandle),
       [Symbol.asyncDispose]: async () => {
         disposed = true;
       },
     };
+  }
+
+  #enqueue(state: SessionState, input: QueueInput, assertHandle: () => void): QueueItem {
+    assertHandle();
+    if (!state.activeRunId) {
+      throw new SessionError("SESSION_LEASE_LOST", "没有 active Run 可接收 queue message");
+    }
+    if (input.commandId.trim().length === 0 || input.text.trim().length === 0) {
+      throw new TypeError("queue commandId 与 text 不能为空");
+    }
+    const existing = state.queue.find((item) => item.commandId === input.commandId);
+    if (existing) return clone(existing);
+    const item: QueueItem = {
+      ...input,
+      ordinal: state.queue.length + 1,
+      status: "queued",
+    };
+    state.queue.push(item);
+    return clone(item);
   }
 
   #assertRevision(state: SessionState, expected: number): void {
@@ -232,6 +256,7 @@ export class InMemorySessionRepository implements SessionRepository {
     if (!branch) throw new SessionError("SESSION_BRANCH_NOT_FOUND", "Conversation Branch 不存在");
     if (input.initialMessages.length === 0) throw new TypeError("Run 至少需要一条 initial message");
     const id = runId(this.#ids.next("run"));
+    state.queue.splice(0);
     state.activeRunId = id;
     state.revision += 1;
     this.#appendRecord(state, branch, id, { kind: "run_started", metadata: input.metadata });
@@ -257,6 +282,31 @@ export class InMemorySessionRepository implements SessionRepository {
         const first = state.ledgerSeq + 1;
         for (const entry of entries) this.#appendRecord(state, branch, id, entry);
         return { firstLedgerSeq: first, lastLedgerSeq: state.ledgerSeq };
+      },
+      drainSteering: async (): Promise<readonly QueueItem[]> => {
+        assertLease();
+        const items = state.queue.filter(
+          (item) => item.kind === "steering" && item.status === "queued",
+        );
+        for (const item of items) {
+          const index = state.queue.indexOf(item);
+          const delivered = { ...item, status: "delivered" as const };
+          state.queue[index] = delivered;
+          this.#appendRecord(state, branch, id, { kind: "user_message", text: item.text });
+        }
+        return clone(items.map((item) => ({ ...item, status: "delivered" as const })));
+      },
+      takeFollowUp: async (): Promise<QueueItem | undefined> => {
+        assertLease();
+        const item = state.queue.find(
+          (candidate) => candidate.kind === "follow_up" && candidate.status === "queued",
+        );
+        if (!item) return undefined;
+        const index = state.queue.indexOf(item);
+        const delivered = { ...item, status: "delivered" as const };
+        state.queue[index] = delivered;
+        this.#appendRecord(state, branch, id, { kind: "user_message", text: item.text });
+        return clone(delivered);
       },
       finish: async (report): Promise<TerminalCommit> => {
         const existing = state.terminalReports.get(id);

@@ -27,11 +27,10 @@ export interface HarnessRunInput {
   readonly metadata: RunMetadata;
 }
 
-export type HarnessCommand = {
-  readonly commandId: string;
-  readonly type: "abort";
-  readonly reason?: string;
-};
+export type HarnessCommand =
+  | { readonly commandId: string; readonly type: "abort"; readonly reason?: string }
+  | { readonly commandId: string; readonly type: "steer"; readonly text: string }
+  | { readonly commandId: string; readonly type: "follow_up"; readonly text: string };
 
 export interface CommandAck {
   readonly commandId: string;
@@ -96,6 +95,7 @@ class DefaultAgentHarness implements AgentHarness {
     const stream = new ReplayEventStream<HarnessEvent>();
     const controller = new AbortController();
     let abortApplied = false;
+    const appliedCommands = new Set<string>();
     let toolSummary: ToolSummary = { accepted: 0, settled: 0, succeeded: 0, failed: 0 };
     let lifecycle: "active" | "finalizing" | "terminal" = "active";
     stream.publish({ version: 1, type: "run_started", runId: lease.runId });
@@ -138,6 +138,8 @@ class DefaultAgentHarness implements AgentHarness {
           });
         },
         commit,
+        drainSteering: () => lease.drainSteering(),
+        takeFollowUp: () => lease.takeFollowUp(),
         reportProgress(event) {
           stream.publish({ version: 1, type: "progress", event });
         },
@@ -173,9 +175,21 @@ class DefaultAgentHarness implements AgentHarness {
       events: () => stream.events(),
       async dispatch(command) {
         if (lifecycle !== "active") return { commandId: command.commandId, status: "not_active" };
-        if (abortApplied) return { commandId: command.commandId, status: "already_applied" };
-        abortApplied = true;
-        controller.abort(command.reason);
+        if (appliedCommands.has(command.commandId)) {
+          return { commandId: command.commandId, status: "already_applied" };
+        }
+        appliedCommands.add(command.commandId);
+        if (command.type === "abort") {
+          if (abortApplied) return { commandId: command.commandId, status: "already_applied" };
+          abortApplied = true;
+          controller.abort(command.reason);
+          return { commandId: command.commandId, status: "accepted" };
+        }
+        await input.session.enqueue({
+          commandId: command.commandId,
+          kind: command.type === "steer" ? "steering" : "follow_up",
+          text: command.text,
+        });
         return { commandId: command.commandId, status: "accepted" };
       },
       finished,
