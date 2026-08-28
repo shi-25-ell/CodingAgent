@@ -9,10 +9,14 @@ export {
   type CodingSession,
   type CodingSessionSummary,
   type CodingSessionView,
+  CodingStartError,
+  type CodingStartErrorCode,
   type CodingTimelineEntry,
   type CreateCodingSessionInput,
   createCodingAgent,
+  type ForkConversationInput,
   type ModeDescriptor,
+  type SelectBranchInput,
   type StartCodingRunInput,
 } from "./app/coding-agent.js";
 export { createLocalCodingToolHost as createCodingToolHost } from "./composition/local-tool-composition.js";
@@ -25,12 +29,14 @@ export {
   type OpenRouterCodingAgent,
   type OpenRouterCodingAgentOptions,
 } from "./composition/openai-composition.js";
+export * from "./context/index.js";
 export {
   type ApprovalBridge,
   type ApprovalResponseAck,
   type ApprovalResponseCommand,
   createApprovalBridge,
 } from "./permissions/approval-bridge.js";
+export * from "./skills/index.js";
 export type {
   ApprovalPort,
   ApprovalRequest,
@@ -50,3 +56,11 @@ export {
   type ToolRegistrySnapshot,
   type ToolValidation,
 } from "./tools/tool-registry.js";
+export {
+  createGitWorkspaceService,
+  sameWorkspaceRoot,
+  WorkspaceError,
+  type WorkspaceErrorCode,
+  type WorkspaceService,
+  type WorkspaceSnapshot,
+} from "./workspace/workspace-service.js";

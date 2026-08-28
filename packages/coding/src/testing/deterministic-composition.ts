@@ -44,6 +44,17 @@ export function createDeterministicCodingAgent(
       options.policies ?? { maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 },
     ),
     configurationRevision: "deterministic-1",
+    workspace: {
+      async inspect(root) {
+        return {
+          binding: { root, fingerprint: "head:abc" },
+          head: "abc",
+          branch: "main",
+          clean: true,
+          changedPaths: [],
+        };
+      },
+    },
   });
   return {
     agent,

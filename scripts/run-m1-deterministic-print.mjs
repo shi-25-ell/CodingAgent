@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { createOpenAiCodingAgent } from "@coding-agent/coding";
+import { createGitWorkspaceService, createOpenAiCodingAgent } from "@coding-agent/coding";
 import { runPrintEntry } from "@coding-agent/coding/print";
 import { modelId, providerId } from "@coding-agent/model";
 import { createEnvironmentCredentialSource } from "@coding-agent/model/auth";
@@ -40,6 +40,8 @@ const application = await createOpenAiCodingAgent({
         toolChoice: ["auto", "none", "required", "specific"],
         reasoning: false,
         reasoningReplay: false,
+        contextWindow: 32_768,
+        maxOutputTokens: 4_096,
       },
       source: { kind: "testing", id: "raw-wire", revision: "1" },
     },
@@ -56,7 +58,7 @@ const application = await createOpenAiCodingAgent({
 try {
   const result = await runPrintEntry(process.argv.slice(2), {
     agent: application.agent,
-    workspace: { root: process.cwd(), fingerprint: "deterministic-m1" },
+    workspace: (await createGitWorkspaceService().inspect(process.cwd())).binding,
     io: {
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),

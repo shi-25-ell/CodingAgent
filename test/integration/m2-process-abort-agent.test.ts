@@ -11,11 +11,29 @@ import {
   InMemorySessionRepository,
 } from "@coding-agent/agent";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
-import { createCodingAgent, createCodingToolHost } from "@coding-agent/coding";
+import {
+  createCodingAgent,
+  createCodingToolHost,
+  type WorkspaceService,
+} from "@coding-agent/coding";
 import { ScriptedModel } from "@coding-agent/model/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const temporaryDirectories: string[] = [];
+
+function workspace(root: string): WorkspaceService {
+  return {
+    async inspect() {
+      return {
+        binding: { root, fingerprint: "fixture" },
+        head: "fixture",
+        branch: "main",
+        clean: true,
+        changedPaths: [],
+      };
+    },
+  };
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -118,6 +136,7 @@ describe.skipIf(process.platform !== "win32")("M2 Agent process abort integratio
       context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
       policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
       configurationRevision: "m2-process-abort",
+      workspace: workspace(root),
     });
     const session = await application.createSession({
       workspace: { root, fingerprint: "fixture" },

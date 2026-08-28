@@ -1,8 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
-import { createOpenAiCodingAgent } from "@coding-agent/coding";
+import { createGitWorkspaceService, createOpenAiCodingAgent } from "@coding-agent/coding";
 import { modelId, providerId } from "@coding-agent/model";
 import { createEnvironmentCredentialSource } from "@coding-agent/model/auth";
 import type { OpenAiTransport } from "@coding-agent/model/providers/openai-compatible";
@@ -50,6 +51,24 @@ describe("M3 production Artifact spill", () => {
     const dataDirectory = path.join(root, "data");
     const { mkdir } = await import("node:fs/promises");
     await mkdir(workspace);
+    expect(spawnSync("git", ["init", "-q"], { cwd: workspace }).status).toBe(0);
+    expect(
+      spawnSync(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "--allow-empty",
+          "-q",
+          "-m",
+          "fixture",
+        ],
+        { cwd: workspace },
+      ).status,
+    ).toBe(0);
     let attempt = 0;
     const transport: OpenAiTransport = {
       async send() {
@@ -85,6 +104,8 @@ describe("M3 production Artifact spill", () => {
             toolChoice: ["auto"],
             reasoning: false,
             reasoningReplay: false,
+            contextWindow: 32_768,
+            maxOutputTokens: 4_096,
           },
           source: { kind: "testing", id: "m3-artifact", revision: "1" },
         },
@@ -102,7 +123,7 @@ describe("M3 production Artifact spill", () => {
       permissionMode: "autonomous",
     });
     const session = await application.agent.createSession({
-      workspace: { root: workspace, fingerprint: "artifact-fixture" },
+      workspace: (await createGitWorkspaceService().inspect(workspace)).binding,
     });
     const run = await session.startRun({ task: "generate large command output" });
     const report = await run.finished;
@@ -145,5 +166,5 @@ describe("M3 production Artifact spill", () => {
 
     await reopened[Symbol.asyncDispose]();
     await rm(root, { recursive: true, force: true });
-  });
+  }, 15_000);
 });

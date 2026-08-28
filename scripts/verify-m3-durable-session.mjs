@@ -28,6 +28,8 @@ const application = await createOpenAiCodingAgent({
         toolChoice: ["auto"],
         reasoning: false,
         reasoningReplay: false,
+        contextWindow: 32_768,
+        maxOutputTokens: 4_096,
       },
       source: { kind: "testing", id: "m3-reopen-verifier", revision: "1" },
     },

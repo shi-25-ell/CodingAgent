@@ -1,13 +1,23 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
   type ArtifactStore,
   type Clock,
+  type ContextManager,
   createAgent,
   createAgentHarness,
+  createArtifactPreviewContextSource,
+  createCheckpointContextSource,
+  createContextManager,
+  createCurrentTaskContextSource,
   createFixedRunPolicies,
-  createTranscriptContextManager,
+  createQueueContextSource,
+  createRunBoundaryContextSource,
+  createSummaryCompactionStrategy,
+  createSystemToolContextSource,
+  createTranscriptContextSource,
   type IdFactory,
   type SessionRepository,
 } from "@coding-agent/agent";
@@ -35,9 +45,18 @@ import {
 import { createSqlitePersistence } from "@coding-agent/sqlite";
 import { createNodeLocalExecutionPorts } from "../adapters/node-local-execution-adapters.js";
 import { type CodingAgent, createCodingAgent } from "../app/coding-agent.js";
+import { createProjectInstructionsSnapshot } from "../context/project-instructions.js";
 import { type ApprovalBridge, createApprovalBridge } from "../permissions/approval-bridge.js";
+import {
+  createBuiltInSkillSource,
+  createProjectSkillSource,
+  createSkillRegistry,
+  createUserSkillSource,
+  type StaticSkillDefinition,
+} from "../skills/index.js";
 import type { PermissionMode } from "../tools/coding-tool-host.js";
 import { createCodingToolHost } from "../tools/coding-tool-host.js";
+import { createGitWorkspaceService, WorkspaceError } from "../workspace/workspace-service.js";
 
 export interface OpenAiCodingAgentOptions {
   readonly workspaceRoot: string;
@@ -50,6 +69,14 @@ export interface OpenAiCodingAgentOptions {
   readonly ids?: IdFactory;
   readonly instructions?: readonly InstructionPart[];
   readonly maxOutputTokens?: number;
+  readonly modelContextWindow?: number;
+  readonly safetyMarginTokens?: number;
+  readonly retainedTailTokens?: number;
+  readonly summaryOutputTokens?: number;
+  readonly selectedSkillIds?: readonly string[];
+  readonly builtInSkills?: readonly StaticSkillDefinition[];
+  readonly userSkillDirectory?: string;
+  readonly projectSkillDirectory?: string;
   readonly permissionMode?: PermissionMode;
   readonly approvalBridge?: ApprovalBridge;
   readonly dataDirectory?: string;
@@ -70,7 +97,12 @@ export interface OpenAiCodingAgent {
 export type OpenRouterCodingAgent = OpenAiCodingAgent;
 
 export class CodingCompositionError extends Error {
-  readonly code: "CREDENTIAL_UNAVAILABLE" | "CREDENTIAL_RESOLUTION_FAILED" | "UNSUPPORTED_PROVIDER";
+  readonly code:
+    | "CREDENTIAL_UNAVAILABLE"
+    | "CREDENTIAL_RESOLUTION_FAILED"
+    | "UNSUPPORTED_PROVIDER"
+    | "CONTEXT_CAPABILITY_UNAVAILABLE"
+    | "CONTEXT_CONFIGURATION_INVALID";
 
   constructor(code: CodingCompositionError["code"], message: string) {
     super(message);
@@ -89,6 +121,8 @@ const openAiProductionCatalog: readonly ModelDescriptor[] = [
       toolChoice: ["auto", "none", "required", "specific"],
       reasoning: true,
       reasoningReplay: false,
+      contextWindow: 128_000,
+      maxOutputTokens: 16_384,
     },
     source: { kind: "built_in", id: "openai", revision: "2026-08-28" },
   },
@@ -104,6 +138,8 @@ const openRouterProductionCatalog: readonly ModelDescriptor[] = [
       toolChoice: ["auto"],
       reasoning: false,
       reasoningReplay: false,
+      contextWindow: 32_768,
+      maxOutputTokens: 4_096,
     },
     source: { kind: "built_in", id: "openrouter", revision: "2026-08-28" },
   },
@@ -152,14 +188,44 @@ function defaultDataDirectory(): string {
     : path.join(os.homedir(), ".local", "share", "fast");
 }
 
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function contextConfigurationRevision(value: unknown): string {
+  return `m4-context-sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
+}
+
+async function canonicalCompositionRoot(root: string): Promise<string> {
+  const workspace = createGitWorkspaceService();
+  try {
+    return (await workspace.inspect(root)).binding.root;
+  } catch (error) {
+    // Composition-only diagnostics can be created before a Session. A successful Session will still
+    // require Git preflight; realpath keeps this non-Session path canonical without inventing a root.
+    if (error instanceof WorkspaceError && error.code === "WORKSPACE_NOT_REPOSITORY") {
+      return realpath(root);
+    }
+    throw error;
+  }
+}
+
 async function createCompatibleCodingAgent(
   options: OpenAiCodingAgentOptions,
   definition: CompositionDefinition,
 ): Promise<OpenAiCodingAgent> {
+  const workspaceRoot = await canonicalCompositionRoot(options.workspaceRoot);
   const resolvedSecrets = new Set<string>();
   const baseCredentials = createCredentialResolver(
     options.credentialSources ??
-      defaultSources(options.workspaceRoot, definition, options.localCredentialPath),
+      defaultSources(workspaceRoot, definition, options.localCredentialPath),
   );
   const credentials: CredentialResolver = {
     async resolve(request, resolveOptions) {
@@ -210,6 +276,65 @@ async function createCompatibleCodingAgent(
   const redact = (value: string): string =>
     [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value);
   const dataDirectory = options.dataDirectory ?? defaultDataDirectory();
+  const modelContextWindow = options.modelContextWindow ?? model.capabilities.contextWindow;
+  if (!modelContextWindow) {
+    throw new CodingCompositionError(
+      "CONTEXT_CAPABILITY_UNAVAILABLE",
+      `${model.descriptor.displayName} 未声明 context window，必须显式配置 modelContextWindow`,
+    );
+  }
+  const requestedOutputTokens = options.maxOutputTokens ?? 4_096;
+  if (
+    (model.capabilities.contextWindow !== undefined &&
+      modelContextWindow > model.capabilities.contextWindow) ||
+    (model.capabilities.maxOutputTokens !== undefined &&
+      requestedOutputTokens > model.capabilities.maxOutputTokens) ||
+    (options.summaryOutputTokens !== undefined &&
+      model.capabilities.maxOutputTokens !== undefined &&
+      options.summaryOutputTokens > model.capabilities.maxOutputTokens)
+  ) {
+    throw new CodingCompositionError(
+      "CONTEXT_CONFIGURATION_INVALID",
+      "Context window 或 output reserve 超过 active model 声明的 capability",
+    );
+  }
+  const skillRegistry = await createSkillRegistry(
+    [
+      createBuiltInSkillSource(options.builtInSkills ?? []),
+      createUserSkillSource(options.userSkillDirectory ?? path.join(dataDirectory, "skills")),
+      createProjectSkillSource(
+        options.projectSkillDirectory ?? path.join(workspaceRoot, ".fast", "skills"),
+      ),
+    ],
+    { workspaceRoot },
+  );
+  const selectedSkills = skillRegistry.select({ ids: options.selectedSkillIds ?? [] });
+  const projectInstructions = await createProjectInstructionsSnapshot({ workspaceRoot });
+  const contextRevision = contextConfigurationRevision({
+    version: 1,
+    baseRevision: definition.configurationRevision,
+    workspaceRoot,
+    model: {
+      providerId: model.descriptor.providerId,
+      modelId: model.descriptor.modelId,
+      sourceRevision: model.descriptor.source.revision,
+    },
+    permissionMode: options.permissionMode ?? "autonomous",
+    instructions: options.instructions ?? [
+      { type: "text", text: "你是 Fast coding agent。使用工具核验事实并完成 Coding Task。" },
+    ],
+    budget: {
+      modelContextWindow,
+      requestedOutputTokens,
+      safetyMarginTokens: options.safetyMarginTokens ?? 1_024,
+      retainedTailTokens: options.retainedTailTokens ?? 8_192,
+      summaryOutputTokens:
+        options.summaryOutputTokens ??
+        Math.min(2_048, model.capabilities.maxOutputTokens ?? requestedOutputTokens),
+    },
+    selectedSkills,
+    projectInstructions: projectInstructions.refs,
+  });
   const sqlite = options.persistence
     ? undefined
     : await createSqlitePersistence({
@@ -226,11 +351,46 @@ async function createCompatibleCodingAgent(
       });
   const persistence = options.persistence ?? sqlite;
   if (!persistence) throw new Error("SQLite persistence initialization 未返回 Adapter");
+  let context: ContextManager;
+  try {
+    context = createContextManager({
+      sources: [
+        createSystemToolContextSource(
+          options.instructions ?? [
+            { type: "text", text: "你是 Fast coding agent。使用工具核验事实并完成 Coding Task。" },
+          ],
+        ),
+        projectInstructions.source,
+        skillRegistry.contextSource(selectedSkills),
+        createCurrentTaskContextSource(),
+        createQueueContextSource(),
+        createTranscriptContextSource(),
+        createRunBoundaryContextSource(),
+        createCheckpointContextSource(persistence.artifacts),
+        createArtifactPreviewContextSource(persistence.artifacts),
+      ],
+      compaction: createSummaryCompactionStrategy({
+        model,
+        artifacts: persistence.artifacts,
+        ids,
+        summaryOutputTokens:
+          options.summaryOutputTokens ??
+          Math.min(2_048, model.capabilities.maxOutputTokens ?? requestedOutputTokens),
+      }),
+      modelContextWindow,
+      requestedOutputReserve: requestedOutputTokens,
+      safetyMargin: options.safetyMarginTokens ?? 1_024,
+      retainedTailTokens: options.retainedTailTokens ?? 8_192,
+    });
+  } catch (error) {
+    await sqlite?.[Symbol.asyncDispose]();
+    throw error;
+  }
   let tools: ReturnType<typeof createCodingToolHost>;
   try {
     tools = createCodingToolHost(
       {
-        workspaceRoot: options.workspaceRoot,
+        workspaceRoot,
         permissionMode: options.permissionMode ?? "autonomous",
         approvalPort: approvals,
         redact,
@@ -248,15 +408,11 @@ async function createCompatibleCodingAgent(
     harness: createAgentHarness({ agent: createAgent(), redact }),
     model,
     tools,
-    context: createTranscriptContextManager({
-      instructions: options.instructions ?? [
-        { type: "text", text: "你是 Fast coding agent。使用工具核验事实并完成 Coding Task。" },
-      ],
-      maxOutputTokens: options.maxOutputTokens ?? 4_096,
-    }),
+    context,
     policies: createFixedRunPolicies({ maxModelTurns: 16, maxModelAttempts: 20, maxRetries: 2 }),
-    configurationRevision: definition.configurationRevision,
+    configurationRevision: contextRevision,
     approvals,
+    workspace: createGitWorkspaceService(),
   });
   return {
     agent,

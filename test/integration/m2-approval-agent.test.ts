@@ -14,11 +14,26 @@ import {
   createApprovalBridge,
   createCodingAgent,
   createCodingToolHost,
+  type WorkspaceService,
 } from "@coding-agent/coding";
 import { ScriptedModel } from "@coding-agent/model/testing";
 import { afterEach, describe, expect, it } from "vitest";
 
 const temporaryDirectories: string[] = [];
+
+function workspace(root: string): WorkspaceService {
+  return {
+    async inspect() {
+      return {
+        binding: { root, fingerprint: "fixture" },
+        head: "fixture",
+        branch: "main",
+        clean: true,
+        changedPaths: [],
+      };
+    },
+  };
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -94,6 +109,7 @@ describe("M2 CodingAgent approval integration", () => {
       policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
       configurationRevision: "m2-approval-deny",
       approvals,
+      workspace: workspace(root),
     });
     const session = await application.createSession({
       workspace: { root, fingerprint: "fixture" },
@@ -160,6 +176,7 @@ describe("M2 CodingAgent approval integration", () => {
       policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
       configurationRevision: "m2-approval-integration",
       approvals,
+      workspace: workspace(root),
     });
     const session = await application.createSession({
       workspace: { root, fingerprint: "fixture" },
@@ -211,6 +228,7 @@ describe("M2 CodingAgent approval integration", () => {
       policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
       configurationRevision: "m2-approval-abort",
       approvals,
+      workspace: workspace(root),
     });
     const session = await application.createSession({
       workspace: { root, fingerprint: "fixture" },

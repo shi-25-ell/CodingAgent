@@ -15,6 +15,7 @@ import {
   createOpenRouterCodingAgent,
 } from "../../packages/coding/src/composition/openai-composition.js";
 import { runPrintEntry } from "../../packages/coding/src/modes/print/index.js";
+import { createGitWorkspaceService } from "../../packages/coding/src/workspace/workspace-service.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -34,6 +35,28 @@ async function temporaryDataDirectory(prefix: string): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), prefix));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+function initializeGit(root: string): void {
+  expect(spawnSync("git", ["init", "-q"], { cwd: root }).status).toBe(0);
+  expect(spawnSync("git", ["add", "-A"], { cwd: root }).status).toBe(0);
+  expect(
+    spawnSync(
+      "git",
+      [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-q",
+        "-m",
+        "fixture",
+      ],
+      { cwd: root },
+    ).status,
+  ).toBe(0);
 }
 
 describe("M1 OpenAI-compatible coding vertical slice", () => {
@@ -68,7 +91,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
         reasoningReplay: false,
       },
     });
-    expect(application.model.capabilities.contextWindow).toBeUndefined();
+    expect(application.model.capabilities.contextWindow).toBe(32_768);
     expect(JSON.stringify(application.model)).not.toContain("openrouter-local-secret");
     await application.dispose();
   });
@@ -82,6 +105,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
       `openrouter vertical slice ${credential}`,
       "utf8",
     );
+    initializeGit(root);
     let attempt = 0;
     const transport: OpenAiTransport = {
       async send(request) {
@@ -137,7 +161,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
 
     const result = await runPrintEntry(["--print", "读取 answer.txt"], {
       agent: application.agent,
-      workspace: { root, fingerprint: "openrouter-fixture" },
+      workspace: (await createGitWorkspaceService().inspect(root)).binding,
       io: { stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) },
     });
 
@@ -329,6 +353,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m1-process-"));
     temporaryDirectories.push(root);
     await writeFile(path.join(root, "answer.txt"), "process fixture", "utf8");
+    initializeGit(root);
     const entry = fileURLToPath(
       new URL("../../scripts/run-m1-deterministic-print.mjs", import.meta.url),
     );
@@ -356,6 +381,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
       FAST_OPENAI_API_KEY: initialCredential,
     };
     await writeFile(path.join(root, "answer.txt"), `vertical slice ${runtimeCredential}`, "utf8");
+    initializeGit(root);
     let attempt = 0;
     const transport: OpenAiTransport = {
       async send(request) {
@@ -413,6 +439,8 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
             toolChoice: ["auto", "none", "required", "specific"],
             reasoning: false,
             reasoningReplay: false,
+            contextWindow: 32_768,
+            maxOutputTokens: 1_024,
           },
           source: { kind: "testing", id: "raw-wire", revision: "1" },
         },
@@ -425,7 +453,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
 
     const result = await runPrintEntry(["--print", "读取 answer.txt"], {
       agent: application.agent,
-      workspace: { root, fingerprint: "fixture" },
+      workspace: (await createGitWorkspaceService().inspect(root)).binding,
       io: { stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) },
     });
 

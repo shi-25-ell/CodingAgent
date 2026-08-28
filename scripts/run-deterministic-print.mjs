@@ -16,7 +16,7 @@ if (scriptedResponse === undefined) {
   try {
     const result = await runPrintEntry(process.argv.slice(2), {
       agent: application.agent,
-      workspace: { root: process.cwd(), fingerprint: "deterministic-cli" },
+      workspace: { root: process.cwd(), fingerprint: "head:abc" },
       io: {
         stdout: (text) => process.stdout.write(text),
         stderr: (text) => process.stderr.write(text),

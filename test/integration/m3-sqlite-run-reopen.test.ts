@@ -9,10 +9,24 @@ import {
   createTranscriptContextManager,
 } from "@coding-agent/agent";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
-import { createCodingAgent } from "@coding-agent/coding";
+import { createCodingAgent, type WorkspaceService } from "@coding-agent/coding";
 import { ScriptedModel, scriptedTextResponse } from "@coding-agent/model/testing";
 import { createSqlitePersistence } from "@coding-agent/sqlite";
 import { describe, expect, it } from "vitest";
+
+function workspace(): WorkspaceService {
+  return {
+    async inspect(root) {
+      return {
+        binding: { root, fingerprint: "head:abc" },
+        head: "abc",
+        branch: "main",
+        clean: true,
+        changedPaths: [],
+      };
+    },
+  };
+}
 
 describe("M3 SQLite Run reopen", () => {
   it("CodingAgent 完成 Run 后，reopen 保持 Transcript、current branch 与 RunReport", async () => {
@@ -39,6 +53,7 @@ describe("M3 SQLite Run reopen", () => {
       context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 1_024 }),
       policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
       configurationRevision: "m3",
+      workspace: workspace(),
     });
     const session = await firstAgent.createSession({
       workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
@@ -63,6 +78,7 @@ describe("M3 SQLite Run reopen", () => {
       context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 1_024 }),
       policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
       configurationRevision: "m3",
+      workspace: workspace(),
     });
     const reopenedSession = await reopenedAgent.openSession(session.ref);
     const afterReopen = await reopenedSession.inspect();

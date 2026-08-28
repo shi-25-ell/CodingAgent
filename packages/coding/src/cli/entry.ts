@@ -1,33 +1,16 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   CodingCompositionError,
   createOpenAiCodingAgent,
   createOpenRouterCodingAgent,
 } from "../composition/openai-composition.js";
 import { runPrintEntry } from "../modes/print/print-entry.js";
-
-function workspaceFingerprint(root: string): string {
-  const head = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: root,
-    encoding: "utf8",
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
-  const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
-    cwd: root,
-    encoding: "utf8",
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  return createHash("sha256").update(head).update("\0").update(status).digest("hex");
-}
+import { createGitWorkspaceService } from "../workspace/workspace-service.js";
 
 const root = process.cwd();
 let application: Awaited<ReturnType<typeof createOpenAiCodingAgent>> | undefined;
 try {
-  const fingerprint = workspaceFingerprint(root);
+  const workspace = (await createGitWorkspaceService().inspect(root)).binding;
   const configuredProvider = process.env.FAST_MODEL_PROVIDER ?? "openai";
   if (configuredProvider !== "openai" && configuredProvider !== "openrouter") {
     throw new CodingCompositionError(
@@ -49,7 +32,7 @@ try {
         });
   const result = await runPrintEntry(process.argv.slice(2), {
     agent: application.agent,
-    workspace: { root, fingerprint },
+    workspace,
     io: {
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),

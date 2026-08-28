@@ -24,7 +24,7 @@
     "test:wire": "vitest run packages/model/test/contract/openai-compatible.contract.test.ts packages/model/test/unit/turn-accumulator.test.ts",
     "test:tools": "vitest run packages/coding/test/contract/coding-tool-host.contract.test.ts packages/agent/test/contract/agent-harness.contract.test.ts",
     "test:cli": "npm run build && node scripts/run-m1-deterministic-print.mjs --print \"read test/fixtures/openai/final-answer.sse\"",
-    "test:coverage": "vitest run --coverage && node scripts/check-m2-coverage.mjs m2 M3 80 70",
+    "test:coverage": "vitest run --coverage --maxWorkers=1 && node scripts/check-m2-coverage.mjs m2 M3 80 70",
     "test:boundary": "npm run build && node scripts/check-package-boundaries.mjs && node scripts/check-package-exports.mjs",
     "scan:production": "node scripts/check-production-readiness.mjs",
     "audit:dependencies": "npm audit --audit-level=moderate",
