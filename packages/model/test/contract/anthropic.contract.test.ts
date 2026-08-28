@@ -76,6 +76,7 @@ const request: ModelRequest = {
   ],
   toolChoice: { kind: "auto" },
   output: { maxTokens: 1_024, reasoning: { enabled: true, budgetTokens: 512 } },
+  metadata: { contextManifestId: "manifest-fixture" },
 };
 
 function credentials(source?: CredentialSource) {
@@ -204,6 +205,7 @@ describe("Anthropic native adapter", () => {
       thinking: { type: "enabled", budget_tokens: 512 },
       tool_choice: { type: "auto" },
     });
+    expect(body).not.toHaveProperty("metadata");
     expect(body.messages).toEqual([
       { role: "user", content: [{ type: "text", text: "continue" }] },
       {
@@ -220,6 +222,80 @@ describe("Anthropic native adapter", () => {
           { type: "tool_result", tool_use_id: "old-a", content: "A", is_error: false },
           { type: "tool_result", tool_use_id: "old-b", content: "B", is_error: true },
         ],
+      },
+    ]);
+  });
+
+  it("preserves native redacted reasoning as opaque canonical replay material", async () => {
+    let attempt = 0;
+    const sentBodies: Record<string, unknown>[] = [];
+    const model = await modelFor({
+      async send(value) {
+        attempt += 1;
+        sentBodies.push(JSON.parse(value.body) as Record<string, unknown>);
+        if (attempt === 1) {
+          return {
+            status: 200,
+            headers: {},
+            body: await chunks(
+              'event: message_start\ndata: {"type":"message_start","message":{"content":[]}}\n\n' +
+                'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque-redacted-data"}}\n\n' +
+                'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+                'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n' +
+                'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            ),
+          };
+        }
+        return {
+          status: 200,
+          headers: {},
+          body: await chunks(
+            'event: message_start\ndata: {"type":"message_start","message":{"content":[]}}\n\n' +
+              'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+              'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n' +
+              'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+              'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n' +
+              'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+          ),
+        };
+      },
+    });
+    const first = await collectModelTurn(
+      model.stream({ ...request, messages: [] }, { signal: new AbortController().signal }),
+    );
+    expect(first).toEqual({
+      status: "completed",
+      response: {
+        version: 1,
+        content: [
+          {
+            type: "reasoning",
+            text: "[Reasoning redacted]",
+            replayToken: "opaque-redacted-data",
+            redacted: true,
+          },
+        ],
+        finishReason: "stop",
+      },
+    });
+    if (first.status !== "completed") throw new Error("redacted fixture 未完成");
+    await collectModelTurn(
+      model.stream(
+        {
+          ...request,
+          messages: [
+            { role: "user", content: [{ type: "text", text: "continue" }] },
+            { role: "assistant", ...first.response },
+          ],
+        },
+        { signal: new AbortController().signal },
+      ),
+    );
+    expect(sentBodies[1]?.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "continue" }] },
+      {
+        role: "assistant",
+        content: [{ type: "redacted_thinking", data: "opaque-redacted-data" }],
       },
     ]);
   });

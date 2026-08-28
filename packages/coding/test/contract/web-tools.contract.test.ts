@@ -228,6 +228,35 @@ describe("M5 web safety and ToolExecutor contract", () => {
     });
   });
 
+  it.each([
+    "https://[::ffff:7f00:1]/",
+    "https://[64:ff9b::7f00:1]/",
+    "https://[64:ff9b:1::7f00:1]/",
+    "https://[2002:7f00:1::]/",
+  ])("rejects IPv4-embedded IPv6 SSRF address %s", async (url) => {
+    let sent = false;
+    const fetcher = createSafeWebFetchPort({
+      resolver: {
+        async resolve() {
+          throw new Error("literal must not resolve");
+        },
+      },
+      transport: {
+        async get() {
+          sent = true;
+          throw new Error("must not connect");
+        },
+      },
+    });
+    await expect(
+      fetcher.fetch({ url, signal: new AbortController().signal, timeoutMs: 1_000 }),
+    ).resolves.toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining("private/reserved/local"),
+    });
+    expect(sent).toBe(false);
+  });
+
   it("rejects HTTPS downgrade, redirect loops, unsupported content and body limits deterministically", async () => {
     const resolver: WebAddressResolver = {
       async resolve() {
@@ -376,6 +405,26 @@ describe("M5 web safety and ToolExecutor contract", () => {
         timeoutMs: 1_000,
       }),
     ).resolves.toMatchObject({ status: "cancelled" });
+
+    const stalledDns = createSafeWebFetchPort({
+      resolver: {
+        async resolve() {
+          return new Promise<never>(() => {});
+        },
+      },
+      transport: {
+        async get() {
+          throw new Error("must not connect");
+        },
+      },
+    });
+    await expect(
+      stalledDns.fetch({
+        url: "https://dns-stall.example/",
+        signal: new AbortController().signal,
+        timeoutMs: 5,
+      }),
+    ).resolves.toMatchObject({ status: "timed_out" });
 
     const secret = "search-timeout-secret";
     const search = createBraveWebSearchProvider({

@@ -174,6 +174,7 @@ export class ModelTurnAccumulator {
           type: "reasoning",
           text: part.text,
           ...(part.replayToken.length > 0 ? { replayToken: part.replayToken } : {}),
+          ...(part.header.redacted ? { redacted: true } : {}),
         };
         break;
       case "tool_call":

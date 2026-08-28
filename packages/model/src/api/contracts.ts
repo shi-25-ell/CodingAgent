@@ -64,6 +64,8 @@ export interface AssistantReasoningPart {
   readonly text: string;
   /** Provider-neutral opaque material required to replay a verified reasoning block. */
   readonly replayToken?: string;
+  /** The provider withheld the reasoning text and supplied only replay material. */
+  readonly redacted?: boolean;
 }
 
 export interface ToolCall {
@@ -166,7 +168,7 @@ export interface ModelFailure {
 
 export type PartHeader =
   | { readonly type: "text" }
-  | { readonly type: "reasoning" }
+  | { readonly type: "reasoning"; readonly redacted?: boolean }
   | { readonly type: "tool_call"; readonly callId: string; readonly name: string };
 
 export interface ToolCallDelta {

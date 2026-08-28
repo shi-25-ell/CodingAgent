@@ -116,6 +116,7 @@ function assistantBlocks(
   return message.content.map((part) => {
     if (part.type === "text") return { type: "text", text: part.text };
     if (part.type === "reasoning") {
+      if (part.redacted) return { type: "redacted_thinking", data: part.replayToken };
       return { type: "thinking", thinking: part.text, signature: part.replayToken };
     }
     return { type: "tool_use", id: part.callId, name: part.name, input: part.arguments };
@@ -190,7 +191,6 @@ function requestBody(request: ModelRequest, descriptor: ModelDescriptor): string
         request.output.reasoning.budgetTokens ?? Math.min(4_096, request.output.maxTokens - 1),
     };
   }
-  if (request.metadata) body.metadata = request.metadata;
   return JSON.stringify(body);
 }
 
@@ -278,6 +278,7 @@ interface MutablePart {
   readonly type: "text" | "reasoning" | "tool_call";
   text: string;
   replayToken: string;
+  readonly redacted: boolean;
   readonly callId?: string;
   readonly name?: string;
   completed: boolean;
@@ -290,6 +291,7 @@ function canonicalPart(part: MutablePart): AssistantContentPart {
       type: "reasoning",
       text: part.text,
       ...(part.replayToken ? { replayToken: part.replayToken } : {}),
+      ...(part.redacted ? { redacted: true } : {}),
     };
   }
   let parsed: unknown;
@@ -381,6 +383,7 @@ async function* successfulEvents(
           type: "text",
           text: typeof block.text === "string" ? block.text : "",
           replayToken: "",
+          redacted: false,
           completed: false,
         };
       } else if (blockType === "thinking" || blockType === "redacted_thinking") {
@@ -400,6 +403,7 @@ async function* successfulEvents(
               : typeof block.signature === "string"
                 ? block.signature
                 : "",
+          redacted: blockType === "redacted_thinking",
           completed: false,
         };
       } else if (blockType === "tool_use") {
@@ -419,6 +423,7 @@ async function* successfulEvents(
           type: "tool_call",
           text: Object.keys(input).length === 0 ? "" : JSON.stringify(input),
           replayToken: "",
+          redacted: false,
           callId: string(block.id, "tool use id"),
           name: string(block.name, "tool use name"),
           completed: false,
@@ -434,7 +439,9 @@ async function* successfulEvents(
         part:
           part.type === "tool_call"
             ? { type: "tool_call", callId: part.callId as string, name: part.name as string }
-            : { type: part.type },
+            : part.type === "reasoning" && part.redacted
+              ? { type: "reasoning", redacted: true }
+              : { type: part.type },
       };
       if (part.text) {
         yield {

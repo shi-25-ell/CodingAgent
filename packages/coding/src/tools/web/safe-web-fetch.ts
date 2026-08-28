@@ -58,6 +58,24 @@ function defaultResolver(): WebAddressResolver {
   };
 }
 
+function raceAbort<T>(operation: PromiseLike<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(operation).then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
 function defaultTransport(): PinnedHttpTransport {
   return {
     get(input) {
@@ -142,14 +160,74 @@ function normalizedIpv6(address: string): string {
   return address.toLowerCase().split("%")[0] ?? address.toLowerCase();
 }
 
+function ipv6Words(address: string): readonly number[] | undefined {
+  let value = normalizedIpv6(address);
+  const dotted = /(?:^|:)(\d+\.\d+\.\d+\.\d+)$/.exec(value)?.[1];
+  if (dotted) {
+    const bytes = ipv4Bytes(dotted);
+    if (!bytes) return undefined;
+    value =
+      value.slice(0, value.length - dotted.length) +
+      `${(((bytes[0] as number) << 8) | (bytes[1] as number)).toString(16)}:` +
+      `${(((bytes[2] as number) << 8) | (bytes[3] as number)).toString(16)}`;
+  }
+  const halves = value.split("::");
+  if (halves.length > 2) return undefined;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || missing < 0) return undefined;
+  const words = [...left, ...Array.from({ length: missing }, () => "0"), ...right];
+  if (words.length !== 8 || words.some((word) => !/^[0-9a-f]{1,4}$/i.test(word))) {
+    return undefined;
+  }
+  return words.map((word) => Number.parseInt(word, 16));
+}
+
+function embeddedIpv4IsPublic(high: number, low: number): boolean {
+  return isPublicIpv4(`${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`);
+}
+
 function isPublicIpv6(address: string): boolean {
   const value = normalizedIpv6(address);
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(value)?.[1];
-  if (mapped) return isPublicIpv4(mapped);
+  const words = ipv6Words(value);
+  if (!words) return false;
   if (value === "::" || value === "::1") return false;
   if (/^f[cd]/.test(value) || /^fe[89ab]/.test(value) || /^ff/.test(value)) return false;
   if (/^2001:db8(?::|$)/.test(value)) return false;
   if (/^2001:(?:0|1[0-9a-f])(?::|$)/.test(value)) return false;
+  const [
+    first = 0,
+    second = 0,
+    third = 0,
+    fourth = 0,
+    fifth = 0,
+    sixth = 0,
+    seventh = 0,
+    eighth = 0,
+  ] = words;
+  if (
+    first === 0 &&
+    second === 0 &&
+    third === 0 &&
+    fourth === 0 &&
+    fifth === 0 &&
+    sixth === 0xffff
+  ) {
+    return embeddedIpv4IsPublic(seventh, eighth);
+  }
+  if (
+    first === 0x64 &&
+    second === 0xff9b &&
+    third === 0 &&
+    fourth === 0 &&
+    fifth === 0 &&
+    sixth === 0
+  ) {
+    return embeddedIpv4IsPublic(seventh, eighth);
+  }
+  if (first === 0x64 && second === 0xff9b && third === 1) return false;
+  if (first === 0x2002) return embeddedIpv4IsPublic(second, third);
   return true;
 }
 
@@ -186,7 +264,7 @@ async function resolvePublicAddress(
   const literalFamily = isIP(hostname);
   const addresses: readonly WebAddress[] = literalFamily
     ? [{ address: hostname, family: literalFamily as 4 | 6 }]
-    : await resolver.resolve(hostname, signal);
+    : await raceAbort(resolver.resolve(hostname, signal), signal);
   if (addresses.length === 0) throw new TypeError("web_fetch DNS 未返回地址");
   if (addresses.some((address) => !isPublicAddress(address))) {
     throw new TypeError("web_fetch 拒绝 private/reserved/local address");
@@ -250,13 +328,16 @@ export function createSafeWebFetchPort(options?: {
           if (visited.has(url.toString())) throw new TypeError("web_fetch redirect loop");
           visited.add(url.toString());
           const address = await resolvePublicAddress(url, resolver, signal);
-          const response = await transport.get({
-            url,
-            address,
+          const response = await raceAbort(
+            transport.get({
+              url,
+              address,
+              signal,
+              maximumHeaderBytes: limits.maximumHeaderBytes,
+              headerTimeoutMs: Math.min(limits.headerTimeoutMs, request.timeoutMs),
+            }),
             signal,
-            maximumHeaderBytes: limits.maximumHeaderBytes,
-            headerTimeoutMs: Math.min(limits.headerTimeoutMs, request.timeoutMs),
-          });
+          );
           if ([301, 302, 303, 307, 308].includes(response.status)) {
             const location = response.headers.location;
             if (!location) throw new TypeError("web_fetch redirect 缺少 Location");
@@ -288,12 +369,26 @@ export function createSafeWebFetchPort(options?: {
           }
           const chunks: Uint8Array[] = [];
           let bodyBytes = 0;
-          for await (const chunk of response.body) {
-            bodyBytes += chunk.byteLength;
-            if (bodyBytes > limits.maximumBodyBytes) {
-              return { status: "output_limit", message: "web_fetch body 超过上限" };
+          const iterator = response.body[Symbol.asyncIterator]();
+          let iteratorCompleted = false;
+          try {
+            while (true) {
+              const next = await raceAbort(iterator.next(), signal);
+              if (next.done) {
+                iteratorCompleted = true;
+                break;
+              }
+              const chunk = next.value;
+              bodyBytes += chunk.byteLength;
+              if (bodyBytes > limits.maximumBodyBytes) {
+                return { status: "output_limit", message: "web_fetch body 超过上限" };
+              }
+              chunks.push(chunk);
             }
-            chunks.push(chunk);
+          } finally {
+            if (!iteratorCompleted && iterator.return) {
+              void Promise.resolve(iterator.return()).catch(() => {});
+            }
           }
           const bytes = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
           let text: string;
