@@ -59,7 +59,7 @@ try {
 } catch (error) {
   if (error instanceof CodingCompositionError) {
     process.stderr.write(`${error.message}\n`);
-    process.exitCode = 3;
+    process.exitCode = error.code === "UNSUPPORTED_PROVIDER" ? 2 : 3;
   } else {
     process.stderr.write(
       "当前目录不是可用的 Git workspace，或 production composition 无法启动。\n",

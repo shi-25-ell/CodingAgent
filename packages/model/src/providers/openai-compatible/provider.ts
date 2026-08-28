@@ -380,6 +380,7 @@ function canonicalContent(parts: readonly MutablePart[]): readonly AssistantCont
 async function* successfulEvents(
   response: OpenAiTransportResponse,
   profile: OpenAiCompatibleProfile,
+  descriptor: ModelDescriptor,
 ): AsyncIterable<ModelEvent> {
   const parts: MutablePart[] = [];
   const tools = new Map<number, MutableToolPart>();
@@ -453,6 +454,12 @@ async function* successfulEvents(
         let part = tools.get(wireIndex);
         const fn = object(call.function, "tool call function");
         if (!part) {
+          if (descriptor.capabilities.toolCalls === "none") {
+            throw new OpenAiWireError("model capability 不允许 tool call response");
+          }
+          if (descriptor.capabilities.toolCalls === "single" && tools.size > 0) {
+            throw new OpenAiWireError("model capability 只允许单一 tool call");
+          }
           if (typeof call.id !== "string" || typeof fn.name !== "string") {
             throw new OpenAiWireError("首个 tool call delta 必须包含 id 与 name");
           }
@@ -714,7 +721,7 @@ class OpenAiCompatibleModel implements Model {
         };
         return;
       }
-      yield* successfulEvents(response, this.#profile);
+      yield* successfulEvents(response, this.#profile, this.descriptor);
     } catch (error) {
       yield {
         version: 1,

@@ -442,6 +442,45 @@ describe("OpenAI-compatible Model contract", () => {
     expect(calls).toBe(0);
   });
 
+  it("single tool-call capability 拒绝 provider 返回多个 calls", async () => {
+    const model = await createTestModel(
+      {
+        async send() {
+          return {
+            status: 200,
+            headers: {},
+            body: fragments([
+              'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":\\"a.txt\\"}"}},{"index":1,"id":"call-2","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":\\"b.txt\\"}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n',
+            ]),
+          };
+        },
+      },
+      "single",
+    );
+    const request: ModelRequest = {
+      ...minimalRequest,
+      tools: [
+        {
+          name: "read_file",
+          description: "读取文件",
+          inputSchema: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+            additionalProperties: false,
+          },
+        },
+      ],
+    };
+
+    await expect(
+      collectModelTurn(model.stream(request, { signal: new AbortController().signal })),
+    ).resolves.toMatchObject({
+      status: "failed",
+      failure: { category: "invalid_response", retryable: false },
+    });
+  });
+
   it.each([
     { status: 401, body: "{}", category: "authentication", retryable: false },
     { status: 403, body: "{}", category: "permission", retryable: false },

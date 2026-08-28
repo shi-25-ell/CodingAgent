@@ -263,7 +263,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
       env: { ...process.env, FAST_MODEL_PROVIDER: "typo-provider" },
     });
 
-    expect(result.status).toBe(3);
+    expect(result.status).toBe(2);
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe("不支持的 model provider: typo-provider\n");
   });
