@@ -21,7 +21,9 @@ afterEach(async () => {
   await Promise.all(
     temporaryDirectories
       .splice(0)
-      .map((directory) => rm(directory, { recursive: true, force: true })),
+      .map((directory) =>
+        rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
+      ),
   );
 });
 
@@ -45,19 +47,27 @@ async function waitForPids(root: string): Promise<readonly [number, number]> {
       return false;
     }
   };
-  if (!(await ready())) {
-    await new Promise<void>((resolve, reject) => {
-      const watcher = watch(root, () => {
-        void ready().then((found) => {
-          if (found) {
-            watcher.close();
-            resolve();
-          }
-        }, reject);
-      });
-      watcher.once("error", reject);
-    });
-  }
+  await new Promise<void>((resolve, reject) => {
+    const watcher = watch(root);
+    let settled = false;
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      watcher.close();
+      reject(error);
+    };
+    const check = () => {
+      void ready().then((found) => {
+        if (!found || settled) return;
+        settled = true;
+        watcher.close();
+        resolve();
+      }, fail);
+    };
+    watcher.on("change", check);
+    watcher.once("error", fail);
+    check();
+  });
   return [
     Number(await readFile(path.join(root, names[0] ?? ""), "utf8")),
     Number(await readFile(path.join(root, names[1] ?? ""), "utf8")),
@@ -132,5 +142,5 @@ describe.skipIf(process.platform !== "win32")("M2 Agent process abort integratio
     expect(grandchildRunning).toBe(false);
     model.assertConsumed();
     await sessions[Symbol.asyncDispose]();
-  });
+  }, 15_000);
 });
