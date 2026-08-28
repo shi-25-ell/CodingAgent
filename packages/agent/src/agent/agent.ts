@@ -213,6 +213,7 @@ class DefaultAgent implements Agent {
                 modelTurnCount: counts.modelTurnCount,
                 modelAttemptCount: counts.modelAttemptCount,
                 retriesInTurn,
+                attemptProducedSemanticOutput: turn.producedSemanticOutput === true,
               }),
             );
             if (input.signal.aborted) return aborted(counts, usage);
@@ -281,8 +282,8 @@ class DefaultAgent implements Agent {
         if (calls.length > 0) {
           counts = { ...counts, toolCallCount: counts.toolCallCount + calls.length };
           publish({ version: 1, type: "phase_changed", phase: "tool_batch" });
-          for (const call of calls) {
-            let outcome: ToolOutcome;
+          for (const [callIndex, call] of calls.entries()) {
+            let outcome: ToolOutcome | undefined;
             if (input.signal.aborted) {
               outcome = {
                 callId: call.callId,
@@ -294,21 +295,42 @@ class DefaultAgent implements Agent {
                 artifacts: [],
               };
             } else {
-              let execution: ReturnType<ToolExecutor["execute"]>;
               try {
-                execution = input.tools.execute(call, { signal: input.signal });
+                const execution = input.tools.execute(call, { signal: input.signal });
+                const updates = (async () => {
+                  for await (const update of execution.updates) {
+                    publish({ version: 1, type: "tool_update", callId: call.callId, update });
+                  }
+                })();
+                [outcome] = await Promise.all([execution.outcome, updates]);
+                if (outcome.callId !== call.callId) throw new AgentDependencyFailure("tool");
               } catch (_error) {
+                const cancelled = input.signal.aborted;
+                for (const [offset, unsettledCall] of calls.slice(callIndex).entries()) {
+                  const settlement: ToolOutcome = {
+                    callId: unsettledCall.callId,
+                    status: cancelled ? "cancelled" : "failed",
+                    isError: true,
+                    modelContent: cancelled
+                      ? "ToolCall 已取消"
+                      : "Tool executor infrastructure failed",
+                    effectState: offset === 0 ? "unknown" : "none",
+                    abortObserved: cancelled,
+                    artifacts: [],
+                  };
+                  await callDependency("persistence", () =>
+                    host.commit({ version: 1, type: "tool_outcome", outcome: settlement }),
+                  );
+                  counts = {
+                    ...counts,
+                    settledToolCallCount: counts.settledToolCallCount + 1,
+                  };
+                }
+                if (cancelled) break;
                 throw new AgentDependencyFailure("tool");
               }
-              const updates = callDependency("tool", async () => {
-                for await (const update of execution.updates) {
-                  publish({ version: 1, type: "tool_update", callId: call.callId, update });
-                }
-              });
-              outcome = await callDependency("tool", () => execution.outcome);
-              await updates;
             }
-            if (outcome.callId !== call.callId) throw new AgentDependencyFailure("tool");
+            if (!outcome) break;
             await callDependency("persistence", () =>
               host.commit({ version: 1, type: "tool_outcome", outcome }),
             );

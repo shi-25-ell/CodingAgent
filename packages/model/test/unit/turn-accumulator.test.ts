@@ -129,4 +129,21 @@ describe("ModelTurnAccumulator", () => {
       }),
     ).toThrowError(expect.objectContaining({ code: "MODEL_EVENT_AFTER_TERMINAL" }));
   });
+
+  it("failed Turn 保留是否已经产生 semantic output 的 retry 证据", () => {
+    const accumulator = new ModelTurnAccumulator();
+    accumulator.accept({ version: 1, type: "turn_started", attemptId: "attempt-partial" });
+    accumulator.accept({ version: 1, type: "part_started", index: 0, part: { type: "text" } });
+    accumulator.accept({ version: 1, type: "text_delta", index: 0, delta: "partial" });
+    accumulator.accept({
+      version: 1,
+      type: "turn_failed",
+      failure: { category: "network", retryable: true, message: "连接中断" },
+    });
+
+    expect(accumulator.result()).toMatchObject({
+      status: "failed",
+      producedSemanticOutput: true,
+    });
+  });
 });

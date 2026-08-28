@@ -33,6 +33,7 @@ function invalidRequest(message: string): ModelFailure {
 function validateRequest(
   request: ModelRequest,
   descriptor: ModelDescriptor,
+  profile: OpenAiCompatibleProfile,
 ): ModelFailure | undefined {
   const capabilities = descriptor.capabilities;
   if (request.tools.length > 0 && capabilities.toolCalls === "none") {
@@ -54,14 +55,15 @@ function validateRequest(
   if (!Number.isSafeInteger(request.output.maxTokens) || request.output.maxTokens <= 0) {
     return invalidRequest("maxTokens 必须是正安全整数");
   }
+  const hasReasoningReplay = request.messages.some(
+    (message) =>
+      message.role === "assistant" && message.content.some((part) => part.type === "reasoning"),
+  );
   if (
-    !capabilities.reasoningReplay &&
-    request.messages.some(
-      (message) =>
-        message.role === "assistant" && message.content.some((part) => part.type === "reasoning"),
-    )
+    hasReasoningReplay &&
+    (!capabilities.reasoningReplay || !profile.requestDialect.reasoningReplayField)
   ) {
-    return invalidRequest("所选 model 不支持 reasoning replay");
+    return invalidRequest("所选 model/profile 不支持 reasoning replay");
   }
   const names = new Set<string>();
   for (const tool of request.tools) {
@@ -92,7 +94,10 @@ function wireTools(tools: readonly ModelToolDefinition[]): readonly unknown[] {
   }));
 }
 
-function assistantWireMessage(message: Extract<ModelMessage, { role: "assistant" }>): unknown {
+function assistantWireMessage(
+  message: Extract<ModelMessage, { role: "assistant" }>,
+  profile: OpenAiCompatibleProfile,
+): unknown {
   const text = message.content
     .filter((part) => part.type === "text")
     .map((part) => part.text)
@@ -104,10 +109,17 @@ function assistantWireMessage(message: Extract<ModelMessage, { role: "assistant"
       type: "function",
       function: { name: part.name, arguments: JSON.stringify(part.arguments) },
     }));
+  const reasoning = message.content
+    .filter((part) => part.type === "reasoning")
+    .map((part) => part.text)
+    .join("");
   return {
     role: "assistant",
     content: text.length > 0 ? text : null,
     ...(calls.length > 0 ? { tool_calls: calls } : {}),
+    ...(reasoning.length > 0 && profile.requestDialect.reasoningReplayField
+      ? { [profile.requestDialect.reasoningReplayField]: reasoning }
+      : {}),
   };
 }
 
@@ -120,7 +132,7 @@ function wireMessages(request: ModelRequest, profile: OpenAiCompatibleProfile): 
     if (message.role === "user") {
       messages.push({ role: "user", content: message.content.map((part) => part.text).join("") });
     } else if (message.role === "assistant") {
-      messages.push(assistantWireMessage(message));
+      messages.push(assistantWireMessage(message, profile));
     } else {
       messages.push({ role: "tool", tool_call_id: message.callId, content: message.content });
     }
@@ -516,7 +528,7 @@ class OpenAiCompatibleModel implements Model {
 
   async *stream(request: ModelRequest, options: ModelCallOptions): AsyncIterable<ModelEvent> {
     yield { version: 1, type: "turn_started", attemptId: crypto.randomUUID() };
-    const validation = validateRequest(request, this.descriptor);
+    const validation = validateRequest(request, this.descriptor, this.#profile);
     if (validation) {
       yield { version: 1, type: "turn_failed", failure: validation };
       return;

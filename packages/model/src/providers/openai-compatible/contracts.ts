@@ -8,6 +8,7 @@ export interface OpenAiCompatibleProfile {
   readonly requestDialect: {
     readonly instructionsRole: "developer" | "system";
     readonly maxTokensField: "max_completion_tokens" | "max_tokens";
+    readonly reasoningReplayField?: string;
   };
   readonly responseDialect: {
     readonly reasoningDeltaField?: string;

@@ -28,6 +28,48 @@ async function* body(value: string): AsyncIterable<string> {
 }
 
 describe("M1 OpenAI-compatible coding vertical slice", () => {
+  it("production CLI process 在 credential 缺失时以稳定 exit code 退出", async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), "fast-m1-cli-"));
+    temporaryDirectories.push(repositoryRoot);
+    expect(spawnSync("git", ["init", "-q"], { cwd: repositoryRoot }).status).toBe(0);
+    expect(
+      spawnSync(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "fixture",
+          "-q",
+        ],
+        { cwd: repositoryRoot },
+      ).status,
+    ).toBe(0);
+    const entry = fileURLToPath(
+      new URL("../../packages/coding/dist/cli/entry.js", import.meta.url),
+    );
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      FAST_OPENAI_API_KEY: "",
+      OPENAI_API_KEY: "",
+    };
+    delete env.FAST_OPENAI_MODEL;
+
+    const result = spawnSync(process.execPath, [entry, "--print", "status"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env,
+    });
+
+    expect(result.status).toBe(3);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("OpenAI credential 未配置\n");
+  });
+
   it("composition 对 missing/failed credential 给出稳定错误码", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m1-auth-"));
     temporaryDirectories.push(root);
@@ -98,12 +140,17 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
   it("print mode 通过 production facade 执行工具并继续 Model Turn", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m1-"));
     temporaryDirectories.push(root);
-    await writeFile(path.join(root, "answer.txt"), "vertical slice", "utf8");
-    const runtimeCredential = `credential-${randomUUID()}`;
+    const initialCredential = `credential-initial-${randomUUID()}`;
+    const runtimeCredential = `credential-rotated-${randomUUID()}`;
+    const credentialValues: Record<string, string | undefined> = {
+      FAST_OPENAI_API_KEY: initialCredential,
+    };
+    await writeFile(path.join(root, "answer.txt"), `vertical slice ${runtimeCredential}`, "utf8");
     let attempt = 0;
     const transport: OpenAiTransport = {
       async send(request) {
         attempt += 1;
+        expect(request.headers.authorization).toBe(`Bearer ${runtimeCredential}`);
         const wire = JSON.parse(request.body);
         if (attempt === 1) {
           expect(wire.messages.at(-1)).toEqual({ role: "user", content: "读取 answer.txt" });
@@ -121,6 +168,8 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
           tool_call_id: "call-read",
           content: expect.stringContaining("vertical slice"),
         });
+        expect(wire.messages.at(-1).content).toContain("[REDACTED]");
+        expect(wire.messages.at(-1).content).not.toContain(runtimeCredential);
         return {
           status: 200,
           headers: {},
@@ -137,7 +186,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
       credentialSources: [
         createEnvironmentCredentialSource({
           id: "test-environment",
-          values: { FAST_OPENAI_API_KEY: runtimeCredential },
+          values: credentialValues,
           variables: { "openai.default": "FAST_OPENAI_API_KEY" },
         }),
       ],
@@ -159,6 +208,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
       ],
       maxOutputTokens: 128,
     });
+    credentialValues.FAST_OPENAI_API_KEY = runtimeCredential;
     const stdout: string[] = [];
     const stderr: string[] = [];
 
@@ -180,6 +230,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     expect(stdout).toEqual(["已完成真实工具链\n"]);
     expect(stderr).toEqual([]);
     expect(JSON.stringify(result)).not.toContain(runtimeCredential);
+    expect(JSON.stringify(result)).not.toContain(initialCredential);
     expect(attempt).toBe(2);
     await application.dispose();
   });

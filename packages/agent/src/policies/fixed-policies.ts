@@ -23,7 +23,9 @@ export function createFixedRunPolicies(options: FixedRunPolicyOptions): RunPolic
     },
     retryPolicy: {
       async decide(input) {
-        return input.failure.retryable && input.retriesInTurn < options.maxRetries
+        return input.failure.retryable &&
+          !input.attemptProducedSemanticOutput &&
+          input.retriesInTurn < options.maxRetries
           ? { action: "retry" }
           : { action: "fail" };
       },

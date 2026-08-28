@@ -1,4 +1,4 @@
-import type { ModelFailure, ModelResponse } from "@coding-agent/model";
+import type { Model, ModelFailure, ModelResponse } from "@coding-agent/model";
 import { ScriptedModel } from "@coding-agent/model/testing";
 import { describe, expect, it } from "vitest";
 import {
@@ -43,7 +43,7 @@ async function collect<T>(values: AsyncIterable<T>): Promise<readonly T[]> {
 }
 
 async function runScenario(
-  model: ScriptedModel,
+  model: Model,
   policyOptions = { maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 },
 ): Promise<Scenario> {
   const clock = new ManualClock(1_000);
@@ -84,6 +84,34 @@ function expectExactlyOneTerminal(scenario: Scenario, expected: RunReport["statu
 }
 
 describe("AgentHarness terminal contract", () => {
+  it("Attempt 已产生 semantic output 后即使 failure retryable 也不重试", async () => {
+    let attempts = 0;
+    const descriptor = new ScriptedModel([]).descriptor;
+    const model: Model = {
+      descriptor,
+      capabilities: descriptor.capabilities,
+      async *stream() {
+        attempts += 1;
+        yield { version: 1, type: "turn_started", attemptId: `partial-${attempts}` };
+        yield { version: 1, type: "part_started", index: 0, part: { type: "text" } };
+        yield { version: 1, type: "text_delta", index: 0, delta: "partial" };
+        yield {
+          version: 1,
+          type: "turn_failed",
+          failure: { category: "network", retryable: true, message: "stream interrupted" },
+        };
+      },
+    };
+    const scenario = await runScenario(model, {
+      maxModelTurns: 1,
+      maxModelAttempts: 2,
+      maxRetries: 1,
+    });
+
+    expect(attempts).toBe(1);
+    expect(scenario.report).toMatchObject({ status: "failed", terminationReason: "model_failure" });
+  });
+
   it("retry 获批但 Attempt budget 用尽时进入明确 limited 终态", async () => {
     const scenario = await runScenario(
       new ScriptedModel([
@@ -251,7 +279,9 @@ describe("AgentHarness terminal contract", () => {
             response: {
               version: 1,
               content: [
+                { type: "tool_call", callId: "call-ok", name: "ok", arguments: {} },
                 { type: "tool_call", callId: "call-broken", name: "broken", arguments: {} },
+                { type: "tool_call", callId: "call-unstarted", name: "later", arguments: {} },
               ],
               finishReason: "tool_calls",
             },
@@ -260,8 +290,21 @@ describe("AgentHarness terminal contract", () => {
       ]),
       tools: {
         definitions: () => [],
-        execute() {
-          throw new Error("private executor detail");
+        execute(call) {
+          if (call.callId === "call-broken") throw new Error("private executor detail");
+          if (call.callId === "call-unstarted") throw new Error("unstarted call 不得执行");
+          return {
+            updates: (async function* () {})(),
+            outcome: Promise.resolve({
+              callId: call.callId,
+              status: "succeeded" as const,
+              isError: false,
+              modelContent: "ok",
+              effectState: "none" as const,
+              abortObserved: false,
+              artifacts: [],
+            }),
+          };
         },
       },
       context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
@@ -274,6 +317,8 @@ describe("AgentHarness terminal contract", () => {
       status: "failed",
       terminationReason: "tool_infrastructure_failure",
       error: { code: "TOOL_INFRASTRUCTURE_FAILURE" },
+      counts: { toolCallCount: 3, settledToolCallCount: 3 },
+      tools: { accepted: 3, settled: 3, succeeded: 1, failed: 2 },
     });
     expect(JSON.stringify(report)).not.toContain("private executor detail");
     await repository[Symbol.asyncDispose]();

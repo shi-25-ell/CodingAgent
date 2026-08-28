@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { watch } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ToolCall } from "@coding-agent/model";
@@ -157,6 +158,36 @@ describe("CodingToolHost ToolExecutor contract", () => {
     ).resolves.toMatchObject({ status: "output_limit", effectState: "none" });
   });
 
+  it("run_command 在 path preflight 期间收到 abort 时不启动 process", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-tools-abort-"));
+    temporaryDirectories.push(root);
+    const host = createCodingToolHost({ workspaceRoot: root, commandTimeoutMs: 5_000 });
+    const controller = new AbortController();
+    const command =
+      process.platform === "win32"
+        ? "Set-Content -LiteralPath marker.txt -Value started"
+        : "printf started > marker.txt";
+
+    const pending = outcome(
+      host,
+      {
+        type: "tool_call",
+        callId: "abort-during-preflight",
+        name: "run_command",
+        arguments: { command },
+      },
+      controller.signal,
+    );
+    controller.abort();
+
+    await expect(pending).resolves.toMatchObject({
+      status: "cancelled",
+      abortObserved: true,
+      effectState: "none",
+    });
+    await expect(access(path.join(root, "marker.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("registered secret 在 ToolOutcome 前被脱敏", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-tools-"));
     temporaryDirectories.push(root);
@@ -177,6 +208,37 @@ describe("CodingToolHost ToolExecutor contract", () => {
 
     expect(result.modelContent).toContain("[REDACTED]");
     expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  it("apply_patch 在 atomic replace 前重新校验 content precondition", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-tools-race-"));
+    temporaryDirectories.push(root);
+    const target = path.join(root, "race.txt");
+    await writeFile(target, "before", "utf8");
+    let changed = false;
+    let resolveChange: (() => void) | undefined;
+    const changeCommitted = new Promise<void>((resolve) => {
+      resolveChange = resolve;
+    });
+    const watcher = watch(root, (_event, filename) => {
+      if (!changed && filename?.startsWith(".race.txt.") && filename.endsWith(".tmp")) {
+        changed = true;
+        void writeFile(target, "concurrent", "utf8").then(() => resolveChange?.());
+      }
+    });
+    const host = createCodingToolHost({ workspaceRoot: root });
+
+    const result = await outcome(host, {
+      type: "tool_call",
+      callId: "patch-race",
+      name: "apply_patch",
+      arguments: { path: "race.txt", oldText: "before", newText: "after" },
+    });
+    watcher.close();
+    await changeCommitted;
+
+    expect(result).toMatchObject({ status: "conflict", effectState: "none" });
+    await expect(readFile(target, "utf8")).resolves.toBe("concurrent");
   });
 
   it("依赖失败、invalid UTF-8、受保护路径、command non-zero 与 timeout 都有确定 outcome", async () => {

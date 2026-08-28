@@ -60,6 +60,7 @@ export class ModelTurnAccumulator {
   readonly #parts = new Map<number, ActivePart>();
   #started = false;
   #terminal?: ModelTurnResult;
+  #producedSemanticOutput = false;
 
   accept(event: ModelEvent): void {
     if (this.#terminal) {
@@ -108,7 +109,11 @@ export class ModelTurnAccumulator {
         this.#completeTurn(event.response);
         return;
       case "turn_failed":
-        this.#terminal = { status: "failed", failure: event.failure };
+        this.#terminal = {
+          status: "failed",
+          failure: event.failure,
+          ...(this.#producedSemanticOutput ? { producedSemanticOutput: true } : {}),
+        };
         return;
     }
   }
@@ -118,6 +123,10 @@ export class ModelTurnAccumulator {
       throw new ModelProtocolError("MODEL_EVENT_NOT_TERMINAL", "事件流尚未到达 terminal");
     }
     return this.#terminal;
+  }
+
+  producedSemanticOutput(): boolean {
+    return this.#producedSemanticOutput;
   }
 
   #activePart(index: number): ActivePart {
@@ -140,6 +149,7 @@ export class ModelTurnAccumulator {
       );
     }
     part.text += delta;
+    if (delta.length > 0) this.#producedSemanticOutput = true;
   }
 
   #completePart(index: number): void {
@@ -197,6 +207,7 @@ export async function collectModelTurn(
         retryable: false,
         message: error instanceof Error ? error.message : "Model adapter 抛出未知错误",
       },
+      ...(accumulator.producedSemanticOutput() ? { producedSemanticOutput: true } : {}),
     };
   }
 }

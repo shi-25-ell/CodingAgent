@@ -523,4 +523,81 @@ describe("OpenAI-compatible Model contract", () => {
       name: "AbortError",
     });
   });
+
+  it("reasoning replay 只有 profile 声明 wire field 时才允许且不会静默丢弃", async () => {
+    let calls = 0;
+    const credentials = createCredentialResolver([
+      createEnvironmentCredentialSource({
+        id: "environment",
+        values: { FAST_OPENAI_API_KEY: "test-secret" },
+        variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+      }),
+    ]);
+    const replayDescriptor = {
+      ...testDescriptor(),
+      capabilities: { ...testDescriptor().capabilities, reasoningReplay: true },
+    };
+    const transport: OpenAiTransport = {
+      async send(request) {
+        calls += 1;
+        expect(JSON.parse(request.body).messages[0]).toMatchObject({
+          role: "assistant",
+          reasoning: "prior reasoning",
+        });
+        return {
+          status: 200,
+          headers: {},
+          body: fragments([
+            'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+          ]),
+        };
+      },
+    };
+    const replayRequest: ModelRequest = {
+      ...minimalRequest,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "reasoning", text: "prior reasoning" }],
+          finishReason: "stop",
+        },
+      ],
+    };
+    const unsupported = createOpenAiCompatibleProvider({
+      profile: openAiProfile,
+      credentials,
+      transport,
+      models: [replayDescriptor],
+    });
+    const unsupportedModel = await unsupported.createModel({
+      providerId: providerId("openai"),
+      modelId: modelId("gpt-test"),
+    });
+    await expect(
+      collectModelTurn(
+        unsupportedModel.stream(replayRequest, { signal: new AbortController().signal }),
+      ),
+    ).resolves.toMatchObject({ status: "failed", failure: { category: "invalid_request" } });
+    expect(calls).toBe(0);
+
+    const supported = createOpenAiCompatibleProvider({
+      profile: {
+        ...openAiProfile,
+        requestDialect: { ...openAiProfile.requestDialect, reasoningReplayField: "reasoning" },
+      },
+      credentials,
+      transport,
+      models: [replayDescriptor],
+    });
+    const supportedModel = await supported.createModel({
+      providerId: providerId("openai"),
+      modelId: modelId("gpt-test"),
+    });
+    await expect(
+      collectModelTurn(
+        supportedModel.stream(replayRequest, { signal: new AbortController().signal }),
+      ),
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(calls).toBe(1);
+  });
 });

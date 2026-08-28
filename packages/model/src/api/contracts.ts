@@ -225,4 +225,8 @@ export interface ModelRegistry {
 
 export type ModelTurnResult =
   | { readonly status: "completed"; readonly response: ModelResponse }
-  | { readonly status: "failed"; readonly failure: ModelFailure };
+  | {
+      readonly status: "failed";
+      readonly failure: ModelFailure;
+      readonly producedSemanticOutput?: boolean;
+    };

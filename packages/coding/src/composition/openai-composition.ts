@@ -17,6 +17,7 @@ import {
   providerId,
 } from "@coding-agent/model";
 import {
+  type CredentialResolver,
   type CredentialSource,
   createCredentialResolver,
   createEnvironmentCredentialSource,
@@ -97,9 +98,19 @@ function defaultSources(
 export async function createOpenAiCodingAgent(
   options: OpenAiCodingAgentOptions,
 ): Promise<OpenAiCodingAgent> {
-  const credentials = createCredentialResolver(
+  const resolvedSecrets = new Set<string>();
+  const baseCredentials = createCredentialResolver(
     options.credentialSources ?? defaultSources(options.workspaceRoot, options.localCredentialPath),
   );
+  const credentials: CredentialResolver = {
+    async resolve(request, resolveOptions) {
+      const resolution = await baseCredentials.resolve(request, resolveOptions);
+      if (resolution.status === "found") {
+        resolvedSecrets.add(resolution.credential.value.reveal());
+      }
+      return resolution;
+    },
+  };
   const preflight = await credentials.resolve(openAiProfile.auth);
   if (preflight.status === "missing") {
     throw new CodingCompositionError("CREDENTIAL_UNAVAILABLE", "OpenAI credential 未配置");
@@ -134,7 +145,8 @@ export async function createOpenAiCodingAgent(
     model,
     tools: createCodingToolHost({
       workspaceRoot: options.workspaceRoot,
-      redactValues: [preflight.credential.value.reveal()],
+      redact: (value) =>
+        [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value),
     }),
     context: createTranscriptContextManager({
       instructions: options.instructions ?? [

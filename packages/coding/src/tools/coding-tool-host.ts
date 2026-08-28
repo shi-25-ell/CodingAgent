@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { lstat, open, opendir, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -16,6 +17,7 @@ export interface CodingToolHostOptions {
   readonly maxOutputBytes?: number;
   readonly commandTimeoutMs?: number;
   readonly redactValues?: readonly string[];
+  readonly redact?: (value: string) => string;
 }
 
 type FailureStatus =
@@ -328,6 +330,18 @@ async function applyPatchTool(
   }
   try {
     checkAbort(signal);
+    await mutationTarget(root, relative);
+    let current: string;
+    try {
+      current = decodeUtf8(await readFile(target, { signal }));
+    } catch (error) {
+      if (error instanceof ToolFailure) throw error;
+      throw new ToolFailure("conflict", "patch 目标在提交前不可访问");
+    }
+    if (current !== original) {
+      throw new ToolFailure("conflict", "patch 目标在提交前已变化");
+    }
+    checkAbort(signal);
     await rename(temporary, target);
   } finally {
     await rm(temporary, { force: true });
@@ -356,6 +370,7 @@ async function runCommandTool(
   checkAbort(signal);
   const cwd = await readTarget(root, relativeCwd);
   if (!(await lstat(cwd)).isDirectory()) throw new ToolFailure("rejected", "cwd 必须是 directory");
+  checkAbort(signal);
   const executable = process.platform === "win32" ? "powershell.exe" : "/bin/bash";
   const shellArgs =
     process.platform === "win32"
@@ -452,12 +467,17 @@ function outcomeFromFailure(callId: string, failure: ToolFailure): ToolOutcome {
 }
 
 export function createCodingToolHost(options: CodingToolHostOptions): ToolExecutor {
-  const root = path.resolve(options.workspaceRoot);
+  const root = realpathSync.native(path.resolve(options.workspaceRoot));
   const maximum = options.maxOutputBytes ?? 128 * 1024;
   const timeoutMs = options.commandTimeoutMs ?? 30_000;
   const redactValues = (options.redactValues ?? []).filter((value) => value.length > 0);
-  const redact = (value: string): string =>
-    redactValues.reduce((text, secret) => text.split(secret).join("[REDACTED]"), value);
+  const redact = (value: string): string => {
+    const staticallyRedacted = redactValues.reduce(
+      (text, secret) => text.split(secret).join("[REDACTED]"),
+      value,
+    );
+    return options.redact?.(staticallyRedacted) ?? staticallyRedacted;
+  };
   if (!Number.isSafeInteger(maximum) || maximum <= 0) {
     throw new TypeError("maxOutputBytes 必须是正安全整数");
   }

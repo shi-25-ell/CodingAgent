@@ -97,6 +97,7 @@ export interface RetryPolicyInput {
   readonly modelTurnCount: number;
   readonly modelAttemptCount: number;
   readonly retriesInTurn: number;
+  readonly attemptProducedSemanticOutput: boolean;
 }
 
 export type RetryDecision = { readonly action: "retry" } | { readonly action: "fail" };
