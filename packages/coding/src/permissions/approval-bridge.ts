@@ -16,6 +16,7 @@ export interface ApprovalResponseAck {
 export interface ApprovalBridge extends ApprovalPort {
   requests(): AsyncIterable<ApprovalRequest>;
   subscribe(listener: (request: ApprovalRequest) => void): () => void;
+  diagnostics(): { readonly listenerFailureCount: number };
   respond(command: ApprovalResponseCommand): ApprovalResponseAck;
 }
 
@@ -55,6 +56,7 @@ export function createApprovalBridge(): ApprovalBridge {
   const applied = new Set<string>();
   const stale = new Set<string>();
   const listeners = new Set<(request: ApprovalRequest) => void>();
+  let listenerFailureCount = 0;
   return {
     request(request, signal) {
       if (signal.aborted) {
@@ -71,13 +73,26 @@ export function createApprovalBridge(): ApprovalBridge {
         pending.set(request.approvalId, { request, signal, resolve, abort });
         signal.addEventListener("abort", abort, { once: true });
         stream.publish(request);
-        for (const listener of listeners) listener(request);
+        for (const listener of listeners) {
+          try {
+            listener(request);
+          } catch (_error) {
+            listenerFailureCount += 1;
+          }
+        }
       });
     },
     requests: () => stream.events(),
+    diagnostics: () => ({ listenerFailureCount }),
     subscribe(listener) {
       listeners.add(listener);
-      for (const waiting of pending.values()) listener(waiting.request);
+      for (const waiting of pending.values()) {
+        try {
+          listener(waiting.request);
+        } catch (_error) {
+          listenerFailureCount += 1;
+        }
+      }
       return () => listeners.delete(listener);
     },
     invalidate(approvalId) {

@@ -30,11 +30,11 @@ import {
   openAiProfile,
   openRouterProfile,
 } from "@coding-agent/model/providers/openai-compatible";
-import { createNodeLocalExecutionPorts } from "../adapters/local-execution-ports.js";
+import { createNodeLocalExecutionPorts } from "../adapters/node-local-execution-adapters.js";
 import { type CodingAgent, createCodingAgent } from "../app/coding-agent.js";
 import { type ApprovalBridge, createApprovalBridge } from "../permissions/approval-bridge.js";
 import type { PermissionMode } from "../tools/coding-tool-host.js";
-import { createCodingToolHostWithPorts } from "../tools/coding-tool-host.js";
+import { createCodingToolHost } from "../tools/coding-tool-host.js";
 
 export interface OpenAiCodingAgentOptions {
   readonly workspaceRoot: string;
@@ -189,12 +189,13 @@ async function createCompatibleCodingAgent(
   const approvals = options.approvalBridge ?? createApprovalBridge();
   const redact = (value: string): string =>
     [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value);
-  const tools = createCodingToolHostWithPorts(
+  const tools = createCodingToolHost(
     {
       workspaceRoot: options.workspaceRoot,
       permissionMode: options.permissionMode ?? "autonomous",
       approvalPort: approvals,
       redact,
+      registeredSecrets: () => [...resolvedSecrets],
     },
     createNodeLocalExecutionPorts(),
   );

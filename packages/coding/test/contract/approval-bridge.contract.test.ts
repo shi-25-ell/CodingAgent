@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { runId } from "@coding-agent/agent";
 import { afterEach, describe, expect, it } from "vitest";
+import { createCodingToolHost } from "../../src/index.js";
 import { createApprovalBridge } from "../../src/permissions/approval-bridge.js";
-import { createCodingToolHost } from "../../src/tools/coding-tool-host.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -21,6 +21,9 @@ describe("ApprovalBridge contract", () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-approval-bridge-"));
     temporaryDirectories.push(root);
     const bridge = createApprovalBridge();
+    bridge.subscribe(() => {
+      throw new Error("injected observer failure");
+    });
     const requests = bridge.requests()[Symbol.asyncIterator]();
     const activeRun = runId("approval-run");
     const host = createCodingToolHost({
@@ -38,6 +41,7 @@ describe("ApprovalBridge contract", () => {
       { runId: activeRun, signal: new AbortController().signal },
     ).outcome;
     const event = await requests.next();
+    expect(bridge.diagnostics()).toEqual({ listenerFailureCount: 1 });
     expect(event.done).toBe(false);
     if (!event.value) throw new Error("approval request 未发布");
 

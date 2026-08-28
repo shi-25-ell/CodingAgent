@@ -15,6 +15,7 @@ export {
   type ModeDescriptor,
   type StartCodingRunInput,
 } from "./app/coding-agent.js";
+export { createLocalCodingToolHost as createCodingToolHost } from "./composition/local-tool-composition.js";
 export {
   CodingCompositionError,
   createOpenAiCodingAgent,
@@ -30,18 +31,17 @@ export {
   type ApprovalResponseCommand,
   createApprovalBridge,
 } from "./permissions/approval-bridge.js";
-export {
-  type ApprovalPort,
-  type ApprovalRequest,
-  type ApprovalResponse,
-  type CodingToolHost,
-  type CodingToolHostOptions,
-  createCodingToolHost,
-  type PermissionMode,
-  type ToolEffect,
-  type ToolPlan,
-  type ToolPrecondition,
-  type ToolResource,
+export type {
+  ApprovalPort,
+  ApprovalRequest,
+  ApprovalResponse,
+  CodingToolHost,
+  CodingToolHostOptions,
+  PermissionMode,
+  ToolEffect,
+  ToolPlan,
+  ToolPrecondition,
+  ToolResource,
 } from "./tools/coding-tool-host.js";
 export { createEphemeralArtifactStore } from "./tools/ephemeral-artifact-store.js";
 export {

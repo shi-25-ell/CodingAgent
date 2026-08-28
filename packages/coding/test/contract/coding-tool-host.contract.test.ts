@@ -7,8 +7,7 @@ import path from "node:path";
 import { runId } from "@coding-agent/agent";
 import type { ToolCall } from "@coding-agent/model";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ApprovalRequest } from "../../src/tools/coding-tool-host.js";
-import { createCodingToolHost } from "../../src/tools/coding-tool-host.js";
+import { type ApprovalRequest, createCodingToolHost } from "../../src/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -144,6 +143,21 @@ describe("CodingToolHost ToolExecutor contract", () => {
     ).resolves.toMatchObject({
       status: "succeeded",
       modelContent: expect.stringContaining("+after"),
+    });
+
+    await writeFile(path.join(root, "a.txt"), "changed\n".repeat(2_000), "utf8");
+    const limitedHost = createCodingToolHost({ workspaceRoot: root, maxOutputBytes: 64 });
+    await expect(
+      outcome(limitedHost, {
+        type: "tool_call",
+        callId: "diff-output-limit",
+        name: "git_diff",
+        arguments: { path: "a.txt" },
+      }),
+    ).resolves.toMatchObject({
+      status: "output_limit",
+      evidence: { truncated: true, captureComplete: false },
+      artifacts: [expect.objectContaining({ id: expect.any(String) })],
     });
   });
   it("Safe Mode 自动允许 read，mutation 绑定 immutable ToolPlan fingerprint 审批", async () => {

@@ -2,82 +2,14 @@ import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { lstat, open, opendir, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import type { JsonObject, JsonValue } from "@coding-agent/model";
-
-export interface LocalFileInfo {
-  readonly directory: boolean;
-  readonly symbolicLink: boolean;
-  readonly device: number;
-  readonly inode: number;
-}
-
-export interface LocalDirectoryEntry {
-  readonly name: string;
-  readonly directory: boolean;
-  readonly file: boolean;
-  readonly symbolicLink: boolean;
-}
-
-export interface LocalAtomicFile extends AsyncDisposable {
-  write(content: string): Promise<void>;
-  sync(): Promise<void>;
-  stat(): Promise<Pick<LocalFileInfo, "device" | "inode">>;
-}
-
-export interface LocalFilesystemPort {
-  captureWorkspaceRoot(input: string): string;
-  realpath(input: string): Promise<string>;
-  inspect(input: string): Promise<LocalFileInfo>;
-  read(input: string, signal?: AbortSignal): Promise<Uint8Array>;
-  list(input: string): Promise<readonly LocalDirectoryEntry[]>;
-  openExclusive(input: string): Promise<LocalAtomicFile>;
-  rename(source: string, destination: string): Promise<void>;
-  remove(input: string): Promise<void>;
-}
-
-export interface LocalProcessRequest {
-  readonly command: string;
-  readonly cwd: string;
-  readonly signal: AbortSignal;
-  readonly timeoutMs: number;
-  readonly inlineOutputBytes: number;
-  readonly registeredSecrets: readonly string[];
-}
-
-export interface LocalProcessResult {
-  readonly status: "succeeded" | "rejected" | "failed" | "timed_out" | "output_limit" | "cancelled";
-  readonly modelContent: string;
-  readonly effectState: "unknown";
-  readonly abortObserved: boolean;
-  readonly artifactBytes?: Uint8Array;
-  readonly evidence?: JsonObject;
-  readonly infrastructureFailure?: { readonly code: string; readonly message: string };
-}
-
-export interface LocalProcessPort {
-  runPowerShell(request: LocalProcessRequest): Promise<LocalProcessResult>;
-}
-
-export interface LocalGitPort {
-  run(
-    root: string,
-    arguments_: readonly string[],
-    signal: AbortSignal,
-    maximumBytes: number,
-  ): Promise<{
-    readonly status: "succeeded" | "failed" | "output_limit" | "cancelled";
-    readonly modelContent: string;
-    readonly artifactBytes?: Uint8Array;
-    readonly evidence?: JsonObject;
-    readonly abortObserved: boolean;
-  }>;
-}
-
-export interface LocalExecutionPorts {
-  readonly filesystem: LocalFilesystemPort;
-  readonly process: LocalProcessPort;
-  readonly git: LocalGitPort;
-}
+import type { JsonValue } from "@coding-agent/model";
+import type {
+  LocalDirectoryEntry,
+  LocalExecutionPorts,
+  LocalGitPort,
+  LocalProcessRequest,
+  LocalProcessResult,
+} from "../tools/local-execution-ports.js";
 
 function decodeUtf8(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -284,10 +216,13 @@ function runGit(
   arguments_: readonly string[],
   signal: AbortSignal,
   maximumBytes: number,
+  registeredSecrets: readonly string[],
 ): Promise<Awaited<ReturnType<LocalGitPort["run"]>>> {
   return new Promise((resolve) => {
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
+    const captureMaximum = Math.max(maximumBytes, Math.min(maximumBytes * 16, 8 * 1024 * 1024));
+    let captureExceeded = false;
     let settled = false;
     const settle = (result: Awaited<ReturnType<LocalGitPort["run"]>>): void => {
       if (settled) return;
@@ -296,15 +231,24 @@ function runGit(
     };
     const child = spawn("git", arguments_, {
       cwd: root,
-      env: sanitizedEnvironment([]),
+      env: sanitizedEnvironment(registeredSecrets),
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const append = (current: Buffer<ArrayBufferLike>, chunk: Buffer<ArrayBufferLike>) => {
+      const remaining = Math.max(0, captureMaximum + 1 - current.length);
+      const next = Buffer.concat([current, chunk.subarray(0, remaining)]);
+      if (next.length > captureMaximum) {
+        captureExceeded = true;
+        child.kill();
+      }
+      return next;
+    };
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout = Buffer.concat([stdout, chunk]);
+      stdout = append(stdout, chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr = Buffer.concat([stderr, chunk]);
+      stderr = append(stderr, chunk);
     });
     const abort = () => child.kill();
     signal.addEventListener("abort", abort, { once: true });
@@ -322,28 +266,43 @@ function runGit(
         settle({ status: "cancelled", modelContent: "Git evidence 已取消", abortObserved: true });
         return;
       }
-      const result = JSON.stringify({
-        exitCode: code,
-        stdout: decodeUtf8(stdout),
-        stderr: decodeUtf8(stderr),
-      });
-      const bytes = Buffer.from(result, "utf8");
-      if (bytes.length > maximumBytes) {
+      try {
+        const result = JSON.stringify({
+          exitCode: code,
+          stdout: captureExceeded ? decodeUtf8Prefix(stdout) : decodeUtf8(stdout),
+          stderr: captureExceeded ? decodeUtf8Prefix(stderr) : decodeUtf8(stderr),
+        });
+        const bytes = Buffer.from(result, "utf8");
+        if (captureExceeded || bytes.length > maximumBytes) {
+          settle({
+            status: "output_limit",
+            modelContent: decodeUtf8Prefix(bytes.subarray(0, maximumBytes)),
+            artifactBytes: bytes,
+            evidence: {
+              truncated: true,
+              stdoutBytes: stdout.length,
+              stderrBytes: stderr.length,
+              originalBytes: bytes.length,
+              captureComplete: !captureExceeded,
+              budget: "modelContent",
+            },
+            abortObserved: false,
+          });
+          return;
+        }
         settle({
-          status: "output_limit",
-          modelContent: decodeUtf8Prefix(bytes.subarray(0, maximumBytes)),
-          artifactBytes: bytes,
-          evidence: { truncated: true, originalBytes: bytes.length, budget: "modelContent" },
+          status: code === 0 ? "succeeded" : "failed",
+          modelContent: result,
+          evidence: { exitCode: code as JsonValue },
           abortObserved: false,
         });
-        return;
+      } catch (_error) {
+        settle({
+          status: "failed",
+          modelContent: "Git output 不是有效 UTF-8",
+          abortObserved: false,
+        });
       }
-      settle({
-        status: code === 0 ? "succeeded" : "failed",
-        modelContent: result,
-        evidence: { exitCode: code as JsonValue },
-        abortObserved: false,
-      });
     });
   });
 }

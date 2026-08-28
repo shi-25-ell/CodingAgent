@@ -1,5 +1,6 @@
 import type { JsonObject, Model } from "@coding-agent/model";
 import type { Agent } from "../agent/agent.js";
+import { RunStateMachine } from "../agent/run-state-machine.js";
 import type { ContextManager } from "../context/contracts.js";
 import { responseAsAssistantMessage } from "../context/transcript-context.js";
 import type { BranchId, RunId } from "../contracts/primitives.js";
@@ -123,6 +124,7 @@ class DefaultAgentHarness implements AgentHarness {
       metadata: redactValue(input.metadata, redact),
     });
     const stream = new ReplayEventStream<HarnessEvent>();
+    const state = new RunStateMachine();
     const controller = new AbortController();
     let abortApplied = false;
     const appliedCommands = new Set<string>();
@@ -231,6 +233,7 @@ class DefaultAgentHarness implements AgentHarness {
         takeFollowUp: () => lease.takeFollowUp(),
         reportProgress(event) {
           if (event.type === "phase_changed") {
+            state.transition(event.phase);
             if (event.phase === "completion_candidate") acceptsQueueMessages = false;
             if (event.phase === "preparing_context") acceptsQueueMessages = true;
           }
@@ -280,10 +283,11 @@ class DefaultAgentHarness implements AgentHarness {
           try {
             report = (await lease.finish(persistenceFailure)).report;
           } catch (_recoveryError) {
-            report = persistenceFailure;
+            throw new Error("terminal persistence recovery failed");
           }
         }
         lifecycle = "terminal";
+        state.transition("terminal");
         stream.publish({
           version: 1,
           type: "progress",

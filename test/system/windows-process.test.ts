@@ -69,14 +69,17 @@ describe.skipIf(process.platform !== "win32")("Windows PowerShell process adapte
     const nested = path.join(root, "nested path");
     await import("node:fs/promises").then(({ mkdir }) => mkdir(nested));
     const secret = "registered-secret-value";
-    const prior = process.env.FAST_M2_VALUE;
-    process.env.FAST_M2_VALUE = secret;
+    const prior = process.env.APPDATA;
+    process.env.APPDATA = secret;
     try {
-      const host = createCodingToolHost({ workspaceRoot: root, redactValues: [secret] });
+      const host = createCodingToolHost({
+        workspaceRoot: root,
+        registeredSecrets: () => [secret],
+      });
       const command =
         "[Console]::Out.Write((Get-Location).Path + [Environment]::NewLine); " +
         "[Console]::Out.Write('space \" quote'); " +
-        "$v = if ($null -eq $env:FAST_M2_VALUE) { '<missing>' } else { $env:FAST_M2_VALUE }; " +
+        "$v = if ($null -eq $env:APPDATA) { '<missing>' } else { $env:APPDATA }; " +
         "[Console]::Error.Write($v)";
       const result = await host.execute(
         {
@@ -96,8 +99,8 @@ describe.skipIf(process.platform !== "win32")("Windows PowerShell process adapte
         stderr: "<missing>",
       });
     } finally {
-      if (prior === undefined) delete process.env.FAST_M2_VALUE;
-      else process.env.FAST_M2_VALUE = prior;
+      if (prior === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = prior;
     }
   });
 

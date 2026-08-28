@@ -199,6 +199,35 @@ describe("AgentHarness terminal contract", () => {
     await repository[Symbol.asyncDispose]();
   });
 
+  it("terminal commit 与 recovery 都失败时不发布未持久化 semantic terminal", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(680),
+      ids: new SequentialIdFactory(),
+      beforeFinish: async () => {
+        throw new Error("persistent terminal transaction failure");
+      },
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "开始" }],
+      model: new ScriptedModel([{ outcome: { status: "completed", response: response("完成") } }]),
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
+      metadata: { task: "开始", configurationRevision: "m2-terminal-invariant" },
+    });
+    const eventsPromise = collect(handle.events());
+    await expect(handle.finished).rejects.toThrow("terminal persistence recovery failed");
+    expect((await eventsPromise).filter((event) => event.type === "terminal")).toHaveLength(0);
+    expect((await session.inspect()).activeRunId).toBe(handle.runId);
+    await repository[Symbol.asyncDispose]();
+  });
+
   it("adapter 报告 cleanup 不确定时结算完整 batch 并升级 terminal infrastructure failure", async () => {
     const repository = new InMemorySessionRepository({
       clock: new ManualClock(690),

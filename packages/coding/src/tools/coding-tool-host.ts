@@ -10,12 +10,8 @@ import type {
   ToolUpdate,
 } from "@coding-agent/agent";
 import type { JsonObject, JsonValue, ToolCall } from "@coding-agent/model";
-import {
-  createNodeLocalExecutionPorts,
-  type LocalExecutionPorts,
-  type LocalFilesystemPort,
-} from "../adapters/local-execution-ports.js";
 import { createEphemeralArtifactStore } from "./ephemeral-artifact-store.js";
+import type { LocalExecutionPorts, LocalFilesystemPort } from "./local-execution-ports.js";
 import { ToolRegistry, type ToolRegistrySnapshot } from "./tool-registry.js";
 
 export type PermissionMode = "safe" | "autonomous";
@@ -63,6 +59,7 @@ export interface CodingToolHostOptions {
   readonly maxOutputBytes?: number;
   readonly commandTimeoutMs?: number;
   readonly redactValues?: readonly string[];
+  readonly registeredSecrets?: () => readonly string[];
   readonly redact?: (value: string) => string;
   readonly permissionMode?: PermissionMode;
   readonly approvalPort?: ApprovalPort;
@@ -1033,12 +1030,14 @@ async function gitStatusTool(
   signal: AbortSignal,
   maximum: number,
   ports: LocalExecutionPorts,
+  registeredSecrets: readonly string[],
 ): Promise<string> {
   const result = await ports.git.run(
     root,
     ["status", "--porcelain=v1", "--untracked-files=all"],
     signal,
     maximum,
+    registeredSecrets,
   );
   if (result.status !== "succeeded") {
     throw new ToolFailure(result.status, result.modelContent, {
@@ -1056,6 +1055,7 @@ async function gitDiffTool(
   signal: AbortSignal,
   maximum: number,
   ports: LocalExecutionPorts,
+  registeredSecrets: readonly string[],
 ): Promise<string> {
   const gitArgs = ["diff", "--no-ext-diff", "--no-textconv"];
   if (args.cached === true) gitArgs.push("--cached");
@@ -1063,7 +1063,7 @@ async function gitDiffTool(
   if (args.path !== undefined && args.path !== ".") {
     gitArgs.push(stringArgument(args, "path"));
   }
-  const result = await ports.git.run(root, gitArgs, signal, maximum);
+  const result = await ports.git.run(root, gitArgs, signal, maximum, registeredSecrets);
   if (result.status !== "succeeded") {
     throw new ToolFailure(result.status, result.modelContent, {
       abortObserved: result.abortObserved,
@@ -1094,7 +1094,7 @@ function outcomeFromFailure(
   };
 }
 
-export function createCodingToolHostWithPorts(
+export function createCodingToolHost(
   options: CodingToolHostOptions,
   ports: LocalExecutionPorts,
 ): CodingToolHost {
@@ -1107,6 +1107,10 @@ export function createCodingToolHostWithPorts(
   const artifacts = options.artifactStore ?? createEphemeralArtifactStore();
   const ownsArtifacts = options.artifactStore === undefined;
   const redactValues = (options.redactValues ?? []).filter((value) => value.length > 0);
+  const registeredSecrets = (): readonly string[] =>
+    [...redactValues, ...(options.registeredSecrets?.() ?? [])].filter(
+      (value, index, values) => value.length > 0 && values.indexOf(value) === index,
+    );
   const redact = (value: string): string => {
     const staticallyRedacted = redactValues.reduce(
       (text, secret) => text.split(secret).join("[REDACTED]"),
@@ -1280,16 +1284,29 @@ export function createCodingToolHostWithPorts(
                 context.signal,
                 maximum,
                 timeoutMs,
-                redactValues,
+                registeredSecrets(),
                 ports,
               );
               effectState = "unknown";
               break;
             case "git_status":
-              modelContent = await gitStatusTool(root, context.signal, maximum, ports);
+              modelContent = await gitStatusTool(
+                root,
+                context.signal,
+                maximum,
+                ports,
+                registeredSecrets(),
+              );
               break;
             case "git_diff":
-              modelContent = await gitDiffTool(root, args, context.signal, maximum, ports);
+              modelContent = await gitDiffTool(
+                root,
+                args,
+                context.signal,
+                maximum,
+                ports,
+                registeredSecrets(),
+              );
               break;
             default:
               throw new ToolFailure("rejected", `未知 tool: ${call.name}`);
@@ -1385,8 +1402,4 @@ export function createCodingToolHostWithPorts(
       if (ownsArtifacts) await artifacts[Symbol.asyncDispose]();
     },
   };
-}
-
-export function createCodingToolHost(options: CodingToolHostOptions): CodingToolHost {
-  return createCodingToolHostWithPorts(options, createNodeLocalExecutionPorts());
 }
