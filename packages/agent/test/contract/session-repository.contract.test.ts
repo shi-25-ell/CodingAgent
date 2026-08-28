@@ -35,6 +35,25 @@ describe("InMemorySessionRepository storage uncertainty", () => {
       initialMessages: [{ role: "user", text: "first" }],
       metadata: { task: "first", configurationRevision: "m2" },
     });
+    await lease.markModelTurnStarted(1);
+    await lease.commitContext({
+      version: 1,
+      id: `${lease.runId}:attempt-1`,
+      runId: lease.runId,
+      modelAttemptCount: 1,
+      selectedRecordIds: [],
+      omitted: [],
+    });
+    await lease.append([
+      {
+        kind: "assistant_message",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "not durable" }],
+          finishReason: "stop",
+        },
+      },
+    ]);
 
     const requestedReport = {
       version: 1 as const,
@@ -45,7 +64,7 @@ describe("InMemorySessionRepository storage uncertainty", () => {
       counts: {
         modelTurnCount: 1,
         modelAttemptCount: 1,
-        contextDerivationCount: 1,
+        contextDerivationCount: 0,
         toolCallCount: 0,
         settledToolCallCount: 0,
       },

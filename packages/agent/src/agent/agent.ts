@@ -25,7 +25,7 @@ import { RunStateMachine } from "./run-state-machine.js";
 
 export interface AgentHost {
   prepareContext(
-    input: Pick<ContextPrepareInput, "runId" | "modelAttemptCount">,
+    input: Pick<ContextPrepareInput, "runId" | "modelTurnCount" | "modelAttemptCount">,
   ): Promise<PreparedContext>;
   commit(event: AgentSemanticEvent): Promise<void>;
   drainSteering(): Promise<readonly QueueItem[]>;
@@ -200,6 +200,7 @@ class DefaultAgent implements Agent {
           const prepared = await callDependency("context", () =>
             host.prepareContext({
               runId: input.runId,
+              modelTurnCount: counts.modelTurnCount,
               modelAttemptCount: nextAttemptCount,
             }),
           );

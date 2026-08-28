@@ -10,7 +10,6 @@ export interface SessionRef {
 
 export interface OpenSessionOptions {
   readonly mode?: "read_write" | "read_only";
-  readonly recover?: boolean;
 }
 
 export interface BranchRef {
@@ -157,7 +156,9 @@ export interface RunLease extends AsyncDisposable {
   readonly runId: RunId;
   readonly sessionId: SessionId;
   readonly branchId: BranchId;
+  readonly heartbeatIntervalMs: number;
   heartbeat(): Promise<void>;
+  markModelTurnStarted(modelTurnCount: number): Promise<void>;
   append(entries: readonly NewLedgerRecord[]): Promise<CommitReceipt>;
   markToolCallStarted(callId: string): Promise<void>;
   drainSteering(): Promise<readonly QueueItem[]>;

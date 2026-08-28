@@ -39,6 +39,8 @@ interface SessionState {
   readonly records: Map<string, LedgerRecord>;
   readonly terminalReports: Map<RunId, RunReport>;
   readonly contextManifests: Map<RunId, ContextManifest[]>;
+  readonly compactionCheckpointIds: Map<RunId, Set<string>>;
+  readonly modelTurnCounts: Map<RunId, number>;
   readonly toolCalls: Map<RunId, Map<string, "planned" | "started" | "succeeded" | "failed">>;
   readonly queue: StoredQueueItem[];
   revision: number;
@@ -116,6 +118,8 @@ export class InMemorySessionRepository implements SessionRepository {
       records: new Map(),
       terminalReports: new Map(),
       contextManifests: new Map(),
+      compactionCheckpointIds: new Map(),
+      modelTurnCounts: new Map(),
       toolCalls: new Map(),
       queue: [],
       revision: 1,
@@ -363,6 +367,8 @@ export class InMemorySessionRepository implements SessionRepository {
     state.activeRunId = id;
     state.toolCalls.set(id, new Map());
     state.contextManifests.set(id, []);
+    state.compactionCheckpointIds.set(id, new Set());
+    state.modelTurnCounts.set(id, 0);
     state.revision += 1;
     this.#appendRecord(state, branch, id, { kind: "run_started", metadata: input.metadata });
     for (const message of input.initialMessages) {
@@ -379,8 +385,23 @@ export class InMemorySessionRepository implements SessionRepository {
       runId: id,
       sessionId: state.id,
       branchId: branch.id,
+      heartbeatIntervalMs: 10_000,
       heartbeat: async () => {
         assertLease();
+      },
+      markModelTurnStarted: async (modelTurnCount) => {
+        assertLease();
+        if (!Number.isInteger(modelTurnCount) || modelTurnCount <= 0) {
+          throw new TypeError("modelTurnCount 必须是正整数");
+        }
+        const current = state.modelTurnCounts.get(id) ?? 0;
+        if (modelTurnCount < current || modelTurnCount > current + 1) {
+          throw new SessionError(
+            "SESSION_TERMINAL_CONFLICT",
+            "modelTurnCount durable transition 非连续",
+          );
+        }
+        state.modelTurnCounts.set(id, modelTurnCount);
       },
       append: async (entries): Promise<CommitReceipt> => {
         assertLease();
@@ -445,7 +466,7 @@ export class InMemorySessionRepository implements SessionRepository {
         this.#appendRecord(state, branch, id, { kind: "user_message", text: item.text });
         return publicQueueItem(delivered);
       },
-      commitContext: async (manifest) => {
+      commitContext: async (manifest, checkpoint) => {
         assertLease();
         if (manifest.runId !== id) throw new TypeError("Context Manifest runId 与 lease 不一致");
         if (manifest.selectedRecordIds.some((selected) => !state.records.has(selected))) {
@@ -463,9 +484,15 @@ export class InMemorySessionRepository implements SessionRepository {
           if (JSON.stringify(existing) !== JSON.stringify(manifest)) {
             throw new SessionError("SESSION_TERMINAL_CONFLICT", "Context Manifest CAS 冲突");
           }
-          return;
+        } else {
+          manifests.push(clone(manifest));
         }
-        manifests.push(clone(manifest));
+        if (checkpoint) {
+          if (checkpoint.runId !== id) {
+            throw new TypeError("Compaction Checkpoint runId 与 lease 不一致");
+          }
+          state.compactionCheckpointIds.get(id)?.add(checkpoint.checkpointId);
+        }
       },
       finish: async (report): Promise<TerminalCommit> => {
         const existing = state.terminalReports.get(id);
@@ -478,6 +505,9 @@ export class InMemorySessionRepository implements SessionRepository {
         const succeeded = [...calls.values()].filter((value) => value === "succeeded").length;
         const failed = [...calls.values()].filter((value) => value === "failed").length;
         const settled = succeeded + failed;
+        const modelTurns = state.modelTurnCounts.get(id) ?? 0;
+        const modelAttempts = state.contextManifests.get(id)?.length ?? 0;
+        const contextDerivations = state.compactionCheckpointIds.get(id)?.size ?? 0;
         if (calls.size !== settled) {
           throw new SessionError(
             "SESSION_TERMINAL_CONFLICT",
@@ -485,6 +515,9 @@ export class InMemorySessionRepository implements SessionRepository {
           );
         }
         if (
+          report.counts.modelTurnCount !== modelTurns ||
+          report.counts.modelAttemptCount !== modelAttempts ||
+          report.counts.contextDerivationCount !== contextDerivations ||
           report.counts.toolCallCount !== calls.size ||
           report.counts.settledToolCallCount !== settled ||
           report.tools.accepted !== calls.size ||

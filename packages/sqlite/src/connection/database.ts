@@ -103,12 +103,16 @@ function migrate(
   now: () => number,
   beforeCommit?: (version: number) => void,
 ): void {
-  validateMigrationHistory(database);
-  let currentVersion = database.pragma("user_version", { simple: true }) as number;
-  for (const migration of migrations) {
-    if (migration.version <= currentVersion) continue;
+  while (true) {
     try {
       database.exec("BEGIN EXCLUSIVE");
+      validateMigrationHistory(database);
+      const currentVersion = database.pragma("user_version", { simple: true }) as number;
+      const migration = migrations.find((candidate) => candidate.version > currentVersion);
+      if (!migration) {
+        database.exec("COMMIT");
+        return;
+      }
       database.exec(migration.sql);
       database
         .prepare(
@@ -118,16 +122,18 @@ function migrate(
       database.pragma(`user_version = ${migration.version}`);
       beforeCommit?.(migration.version);
       database.exec("COMMIT");
-      currentVersion = migration.version;
     } catch (error) {
       if (database.inTransaction) database.exec("ROLLBACK");
       if (error instanceof SqliteStorageError) throw error;
-      throw new SqliteStorageError("SQLITE_MIGRATION", `migration ${migration.version} 失败`, {
+      const code = sqliteCode(error);
+      if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") {
+        translateSqliteError(error, "SQLite migration");
+      }
+      throw new SqliteStorageError("SQLITE_MIGRATION", "migration 失败", {
         cause: error,
       });
     }
   }
-  validateMigrationHistory(database);
 }
 
 export async function openDatabase(options: OpenDatabaseOptions): Promise<SqliteDatabase> {

@@ -79,7 +79,7 @@ export interface SqliteSessionRepositoryOptions {
   readonly clock: Clock;
   readonly ids: IdFactory;
   readonly lease: SqliteLeaseOptions;
-  readonly recoverSession: (sessionId: string) => void;
+  readonly recoverSession: (sessionId: string) => Promise<void>;
   readonly verifyArtifactRef: (ref: ArtifactRef) => Promise<ArtifactIntegrity>;
   readonly disposeDatabase: () => void;
 }
@@ -138,7 +138,7 @@ export class SqliteSessionRepository implements SessionRepository {
   readonly #clock: Clock;
   readonly #ids: IdFactory;
   readonly #lease: SqliteLeaseOptions;
-  readonly #recoverSession: (sessionId: string) => void;
+  readonly #recoverSession: (sessionId: string) => Promise<void>;
   readonly #verifyArtifactRef: (ref: ArtifactRef) => Promise<ArtifactIntegrity>;
   readonly #disposeDatabase: () => void;
   #disposed = false;
@@ -191,8 +191,8 @@ export class SqliteSessionRepository implements SessionRepository {
     options?: import("@coding-agent/agent").OpenSessionOptions,
   ): Promise<SessionHandle> {
     this.#assertAvailable();
-    if (options?.mode !== "read_only" && options?.recover !== false) {
-      this.#recoverSession(ref.sessionId);
+    if (options?.mode !== "read_only") {
+      await this.#recoverSession(ref.sessionId);
     }
     const state = this.#sessionRow(ref.sessionId);
     return this.#handle(ref, options?.mode === "read_only" || state.degraded_reason !== null);
@@ -715,10 +715,37 @@ export class SqliteSessionRepository implements SessionRepository {
       runId: identity.run,
       sessionId: identity.session,
       branchId: identity.branch,
+      heartbeatIntervalMs: Math.max(1, Math.floor(this.#lease.durationMs / 3)),
       heartbeat: async () => {
         assertCapability();
         this.#database.immediate(() => {
           this.#assertLease(identity);
+          this.#heartbeat(identity);
+        });
+      },
+      markModelTurnStarted: async (modelTurnCount) => {
+        assertCapability();
+        if (!Number.isInteger(modelTurnCount) || modelTurnCount <= 0) {
+          throw new TypeError("modelTurnCount 必须是正整数");
+        }
+        this.#database.immediate(() => {
+          this.#assertLease(identity);
+          const current = this.#raw
+            .prepare("SELECT model_turn_count FROM runs WHERE run_id = ? AND status = 'active'")
+            .get(identity.run) as { readonly model_turn_count: number } | undefined;
+          if (
+            !current ||
+            modelTurnCount < current.model_turn_count ||
+            modelTurnCount > current.model_turn_count + 1
+          ) {
+            throw new SessionError(
+              "SESSION_TERMINAL_CONFLICT",
+              "modelTurnCount durable transition 非连续",
+            );
+          }
+          this.#raw
+            .prepare("UPDATE runs SET model_turn_count = ? WHERE run_id = ?")
+            .run(modelTurnCount, identity.run);
           this.#heartbeat(identity);
         });
       },
@@ -1136,6 +1163,15 @@ export class SqliteSessionRepository implements SessionRepository {
       const outcomes = this.#raw
         .prepare("SELECT outcome_json FROM tool_calls WHERE run_id = ? ORDER BY source_order")
         .all(identity.run) as { readonly outcome_json: string }[];
+      const semantic = this.#raw
+        .prepare("SELECT model_turn_count AS model_turns FROM runs WHERE run_id = ?")
+        .get(identity.run) as { readonly model_turns: number };
+      const attempts = this.#raw
+        .prepare("SELECT COUNT(*) AS count FROM context_manifests WHERE run_id = ?")
+        .get(identity.run) as { readonly count: number };
+      const derivations = this.#raw
+        .prepare("SELECT COUNT(*) AS count FROM compaction_checkpoints WHERE run_id = ?")
+        .get(identity.run) as { readonly count: number };
       const succeeded = outcomes.filter(
         (row) =>
           decode<{ readonly status: string }>(row.outcome_json, "ToolOutcome").status ===
@@ -1143,6 +1179,9 @@ export class SqliteSessionRepository implements SessionRepository {
       ).length;
       const failed = outcomes.length - succeeded;
       if (
+        report.counts.modelTurnCount !== semantic.model_turns ||
+        report.counts.modelAttemptCount !== attempts.count ||
+        report.counts.contextDerivationCount !== derivations.count ||
         report.counts.toolCallCount !== facts.accepted ||
         report.counts.settledToolCallCount !== facts.settled ||
         report.tools.accepted !== facts.accepted ||

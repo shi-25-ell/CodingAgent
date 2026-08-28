@@ -1144,4 +1144,52 @@ describe("AgentHarness terminal contract", () => {
     model.assertConsumed();
     await repository[Symbol.asyncDispose]();
   });
+
+  it("model dependency 长时间未返回时按 lease cadence heartbeat", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(2_200),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const modelGate = new ManualGate();
+    const heartbeatObserved = new ManualGate();
+    const heartbeatSession = {
+      ...session,
+      async beginRun(input: Parameters<typeof session.beginRun>[0]) {
+        const lease = await session.beginRun(input);
+        return {
+          ...lease,
+          heartbeatIntervalMs: 1,
+          async heartbeat() {
+            await lease.heartbeat();
+            heartbeatObserved.open();
+          },
+        };
+      },
+    };
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session: heartbeatSession,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "等待 heartbeat" }],
+      model: new ScriptedModel([
+        {
+          before: (signal) => modelGate.wait(signal).then(() => undefined),
+          outcome: { status: "completed", response: response("late") },
+        },
+      ]),
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
+      metadata: { task: "等待 heartbeat", configurationRevision: "m3-heartbeat" },
+    });
+    await modelGate.waitUntilBlocked();
+    await heartbeatObserved.wait();
+    await handle.dispatch({ commandId: "stop-after-heartbeat", type: "abort" });
+    modelGate.open();
+    await expect(handle.finished).resolves.toMatchObject({ status: "aborted" });
+    await repository[Symbol.asyncDispose]();
+  });
 });

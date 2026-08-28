@@ -4,6 +4,7 @@ import type { SessionBranchView } from "../session/contracts.js";
 
 export interface ContextPrepareInput {
   readonly runId: RunId;
+  readonly modelTurnCount: number;
   readonly modelAttemptCount: number;
   readonly branch: SessionBranchView;
   readonly tools: readonly ModelToolDefinition[];

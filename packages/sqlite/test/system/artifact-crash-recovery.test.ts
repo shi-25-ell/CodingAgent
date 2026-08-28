@@ -139,6 +139,15 @@ describe("Artifact crash recovery", () => {
       initialMessages: [{ role: "user", text: "produce artifact" }],
       metadata: { task: "produce artifact", configurationRevision: "m3" },
     });
+    await lease.markModelTurnStarted(1);
+    await lease.commitContext({
+      version: 1,
+      id: `${lease.runId}:attempt-1`,
+      runId: lease.runId,
+      modelAttemptCount: 1,
+      selectedRecordIds: [],
+      omitted: [],
+    });
     await lease.append([
       {
         kind: "assistant_message",
@@ -169,8 +178,8 @@ describe("Artifact crash recovery", () => {
     const target = path.join(artifactDirectory, "sha256", digest.slice(0, 2), digest);
     await writeFile(target, "tampered", { encoding: "utf8" });
     await expect(persistence.artifacts.verify(artifact)).resolves.toEqual({ status: "corrupt" });
-    const recovery = await persistence.recover();
-    expect(recovery.integrity).toMatchObject({
+    const integrity = await persistence.checkIntegrity();
+    expect(integrity).toMatchObject({
       ok: false,
       issues: [expect.objectContaining({ code: "ARTIFACT_CORRUPT", severity: "degraded" })],
     });

@@ -75,8 +75,8 @@ export async function createSqlitePersistence(
     clock,
     ids,
     lease: options.lease,
-    recoverSession: (sessionId) => {
-      recovery.recoverSession(sessionId);
+    recoverSession: async (sessionId) => {
+      await recovery.recoverSession(sessionId);
     },
     verifyArtifactRef: (ref) => artifacts.verify(ref),
     disposeDatabase: close,

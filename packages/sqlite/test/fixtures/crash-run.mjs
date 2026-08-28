@@ -23,6 +23,15 @@ const lease = await session.beginRun({
   initialMessages: [{ role: "user", text: "perform one external effect" }],
   metadata: { task: "perform one external effect", configurationRevision: "m3-crash" },
 });
+await lease.markModelTurnStarted(1);
+await lease.commitContext({
+  version: 1,
+  id: `${lease.runId}:attempt-1`,
+  runId: lease.runId,
+  modelAttemptCount: 1,
+  selectedRecordIds: [],
+  omitted: [],
+});
 await lease.append([
   {
     kind: "assistant_message",

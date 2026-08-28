@@ -195,7 +195,13 @@ ALTER TABLE sessions
   ADD COLUMN lease_epoch INTEGER NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0);
 `;
 
+const durableModelTurnCount = `
+ALTER TABLE runs
+  ADD COLUMN model_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (model_turn_count >= 0);
+`;
+
 export const migrations: readonly Migration[] = [
   migration(1, initialSchema),
   migration(2, durableLeaseEpoch),
+  migration(3, durableModelTurnCount),
 ];

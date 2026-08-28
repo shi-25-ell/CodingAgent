@@ -16,7 +16,12 @@ import type {
   RunReport,
   ToolSummary,
 } from "../runtime/contracts.js";
-import type { AgentInputMessage, RunMetadata, SessionHandle } from "../session/contracts.js";
+import type {
+  AgentInputMessage,
+  RunLease,
+  RunMetadata,
+  SessionHandle,
+} from "../session/contracts.js";
 import type { ToolExecutor } from "../tools/contracts.js";
 
 export interface HarnessRunInput {
@@ -109,6 +114,44 @@ function reportFromResult(
   };
 }
 
+function startLeaseHeartbeat(
+  lease: RunLease,
+  controller: AbortController,
+): {
+  readonly failure: Promise<never>;
+  stop(): Promise<void>;
+} {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let inFlight: Promise<void> | undefined;
+  let rejectFailure: (reason: unknown) => void = () => {};
+  const failure = new Promise<never>((_resolve, reject) => {
+    rejectFailure = reject;
+  });
+  const schedule = (): void => {
+    timer = setTimeout(() => {
+      inFlight = lease
+        .heartbeat()
+        .then(() => {
+          if (!stopped) schedule();
+        })
+        .catch((error: unknown) => {
+          controller.abort(error);
+          rejectFailure(error);
+        });
+    }, lease.heartbeatIntervalMs);
+  };
+  schedule();
+  return {
+    failure,
+    async stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      await inFlight;
+    },
+  };
+}
+
 class DefaultAgentHarness implements AgentHarness {
   readonly #options: AgentHarnessOptions;
 
@@ -126,6 +169,7 @@ class DefaultAgentHarness implements AgentHarness {
     const stream = new ReplayEventStream<HarnessEvent>();
     const state = new RunStateMachine();
     const controller = new AbortController();
+    const heartbeat = startLeaseHeartbeat(lease, controller);
     let abortApplied = false;
     const appliedCommands = new Set<string>();
     let toolSummary: ToolSummary = { accepted: 0, settled: 0, succeeded: 0, failed: 0 };
@@ -223,6 +267,7 @@ class DefaultAgentHarness implements AgentHarness {
       },
       {
         async prepareContext(request) {
+          await lease.markModelTurnStarted(request.modelTurnCount);
           const branch = await input.session.readBranch({ branchId: input.branchId });
           const prepared = await input.context.prepare({
             ...request,
@@ -246,8 +291,9 @@ class DefaultAgentHarness implements AgentHarness {
       },
     );
 
-    const finished = execution.result
+    const finished = Promise.race([execution.result, heartbeat.failure])
       .then(async (result) => {
+        await heartbeat.stop();
         lifecycle = "finalizing";
         const arbitratedResult: AgentRunResult = abortApplied
           ? {
@@ -281,6 +327,7 @@ class DefaultAgentHarness implements AgentHarness {
         return report;
       })
       .finally(async () => {
+        await heartbeat.stop();
         stream.close();
         await lease[Symbol.asyncDispose]();
       });

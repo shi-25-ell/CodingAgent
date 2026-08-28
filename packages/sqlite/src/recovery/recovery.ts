@@ -6,6 +6,7 @@ import {
   type RunReport,
   recordId,
   runId,
+  SessionError,
   sessionId,
   type ToolOutcome,
 } from "@coding-agent/agent";
@@ -114,19 +115,14 @@ function recoveryOutcome(call: ToolCallRow): ToolOutcome {
 }
 
 function recoveredReport(raw: Database.Database, orphan: OrphanRow): RunReport {
-  const semantic = raw
-    .prepare(
-      `SELECT
-        SUM(CASE WHEN kind = 'assistant_message' THEN 1 ELSE 0 END) AS assistant_count,
-        SUM(CASE WHEN kind = 'model_failure' THEN 1 ELSE 0 END) AS failure_count
-       FROM ledger_records WHERE run_id = ?`,
-    )
-    .get(orphan.run_id) as {
-    readonly assistant_count: number | null;
-    readonly failure_count: number | null;
-  };
+  const run = raw
+    .prepare("SELECT model_turn_count FROM runs WHERE run_id = ?")
+    .get(orphan.run_id) as { readonly model_turn_count: number };
   const manifest = raw
     .prepare("SELECT COUNT(*) AS count FROM context_manifests WHERE run_id = ?")
+    .get(orphan.run_id) as { readonly count: number };
+  const derivations = raw
+    .prepare("SELECT COUNT(*) AS count FROM compaction_checkpoints WHERE run_id = ?")
     .get(orphan.run_id) as { readonly count: number };
   const outcomes = raw
     .prepare("SELECT outcome_json FROM tool_calls WHERE run_id = ? ORDER BY source_order")
@@ -143,12 +139,9 @@ function recoveredReport(raw: Database.Database, orphan: OrphanRow): RunReport {
     status: "failed",
     terminationReason: "recovered_interruption",
     counts: {
-      modelTurnCount: Number(semantic.assistant_count ?? 0) + Number(semantic.failure_count ?? 0),
-      modelAttemptCount: Math.max(
-        Number(semantic.assistant_count ?? 0) + Number(semantic.failure_count ?? 0),
-        manifest.count,
-      ),
-      contextDerivationCount: 0,
+      modelTurnCount: run.model_turn_count,
+      modelAttemptCount: manifest.count,
+      contextDerivationCount: derivations.count,
       toolCallCount: accepted,
       settledToolCallCount: settled,
     },
@@ -186,7 +179,7 @@ export class SqliteRecovery {
     this.#verifyArtifactRef = options.verifyArtifactRef;
   }
 
-  recoverSession(requestedSession: string): RecoveryAction | undefined {
+  async recoverSession(requestedSession: string): Promise<RecoveryAction | undefined> {
     const orphan = this.#raw
       .prepare(
         `SELECT s.session_id, r.run_id, r.branch_id
@@ -196,8 +189,26 @@ export class SqliteRecovery {
          WHERE s.session_id = ? AND (l.session_id IS NULL OR l.expires_at <= ?)`,
       )
       .get(requestedSession, this.#clock.now()) as OrphanRow | undefined;
-    if (!orphan) return undefined;
-    return this.#database.immediate(() => this.#settleOrphan(orphan));
+    const action = orphan ? this.#database.immediate(() => this.#settleOrphan(orphan)) : undefined;
+    const integrity = await this.checkIntegrity();
+    const fatal = integrity.issues.find((issue) => issue.severity === "fatal");
+    if (fatal) {
+      throw new SessionError("SESSION_CORRUPT", fatal.message);
+    }
+    this.#database.immediate(() => {
+      this.#raw
+        .prepare("UPDATE sessions SET degraded_reason = NULL WHERE session_id = ?")
+        .run(requestedSession);
+      const degraded = integrity.issues.find(
+        (issue) => issue.severity === "degraded" && issue.sessionId === requestedSession,
+      );
+      if (degraded) {
+        this.#raw
+          .prepare("UPDATE sessions SET degraded_reason = ? WHERE session_id = ?")
+          .run(degraded.code, requestedSession);
+      }
+    });
+    return action;
   }
 
   async recover(): Promise<RecoveryReport> {

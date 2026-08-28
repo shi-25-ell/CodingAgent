@@ -20,7 +20,7 @@ function completedReport(lease: RunLease, toolCount = 0): RunReport {
     counts: {
       modelTurnCount: toolCount === 0 ? 1 : 2,
       modelAttemptCount: toolCount === 0 ? 1 : 2,
-      contextDerivationCount: toolCount === 0 ? 1 : 2,
+      contextDerivationCount: 0,
       toolCallCount: toolCount,
       settledToolCallCount: toolCount,
     },
@@ -32,6 +32,27 @@ function completedReport(lease: RunLease, toolCount = 0): RunReport {
     unfinishedWork: [],
     lastPhase: "finalizing",
   };
+}
+
+async function commitAttempt(lease: RunLease, modelAttemptCount: number): Promise<void> {
+  await lease.markModelTurnStarted(modelAttemptCount);
+  await lease.commitContext({
+    version: 1,
+    id: `${lease.runId}:attempt-${modelAttemptCount}`,
+    runId: lease.runId,
+    modelAttemptCount,
+    selectedRecordIds: [],
+    omitted: [],
+  });
+}
+
+async function commitFinalAssistant(lease: RunLease, text: string): Promise<void> {
+  await lease.append([
+    {
+      kind: "assistant_message",
+      message: { role: "assistant", content: [{ type: "text", text }], finishReason: "stop" },
+    },
+  ]);
 }
 
 async function createSession(repository: SessionRepository) {
@@ -103,6 +124,10 @@ export function sessionRepositoryConformance(
           initialMessages: [{ role: "user", text: "parallel" }],
           metadata: { task: "parallel", configurationRevision: "m3" },
         });
+        await commitAttempt(first, 1);
+        await commitFinalAssistant(first, "first done");
+        await commitAttempt(second, 1);
+        await commitFinalAssistant(second, "second done");
         await first.finish(completedReport(first));
         await second.finish(completedReport(second));
       } finally {
@@ -120,6 +145,7 @@ export function sessionRepositoryConformance(
           initialMessages: [{ role: "user", text: "inspect" }],
           metadata: { task: "inspect", configurationRevision: "m3" },
         });
+        await commitAttempt(lease, 1);
         await lease.append([
           {
             kind: "assistant_message",
@@ -170,6 +196,8 @@ export function sessionRepositoryConformance(
             },
           },
         ]);
+        await commitAttempt(lease, 2);
+        await commitFinalAssistant(lease, "done");
         const report = completedReport(lease, 1);
         const terminal = await lease.finish(report);
         expect(terminal).toEqual({ committed: true, report });
@@ -185,6 +213,7 @@ export function sessionRepositoryConformance(
           "assistant_message",
           "user_message",
           "tool_outcome",
+          "assistant_message",
           "run_boundary",
           "run_terminal",
         ]);

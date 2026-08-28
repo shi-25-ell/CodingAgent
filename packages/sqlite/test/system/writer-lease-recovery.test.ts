@@ -14,8 +14,8 @@ function completedReport(lease: RunLease): RunReport {
     terminationReason: "natural_completion",
     finalAnswer: "continued safely",
     counts: {
-      modelTurnCount: 1,
-      modelAttemptCount: 1,
+      modelTurnCount: 0,
+      modelAttemptCount: 0,
       contextDerivationCount: 0,
       toolCallCount: 0,
       settledToolCallCount: 0,
@@ -53,6 +53,15 @@ describe("SQLite writer lease and recovery", () => {
       branchId: initial.currentBranchId,
       initialMessages: [{ role: "user", text: "run before crash" }],
       metadata: { task: "run before crash", configurationRevision: "m3" },
+    });
+    await staleLease.markModelTurnStarted(1);
+    await staleLease.commitContext({
+      version: 1,
+      id: `${staleLease.runId}:attempt-1`,
+      runId: staleLease.runId,
+      modelAttemptCount: 1,
+      selectedRecordIds: [],
+      omitted: [],
     });
     await staleLease.append([
       {
