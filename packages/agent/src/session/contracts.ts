@@ -141,6 +141,7 @@ export interface SessionHandle extends AsyncDisposable {
   readonly ref: SessionRef;
   inspect(): Promise<SessionSnapshot>;
   readBranch(input: ReadBranchInput): Promise<SessionBranchView>;
+  readRunReport(runId: RunId): Promise<RunReport | undefined>;
   selectBranch(branchId: BranchId, expectedRevision: number): Promise<SessionSnapshot>;
   forkBranch(input: ForkBranchInput): Promise<BranchRef>;
   enqueue(input: QueueInput): Promise<QueueItem>;

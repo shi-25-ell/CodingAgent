@@ -10,8 +10,8 @@ export type SessionErrorCode =
 export class SessionError extends Error {
   readonly code: SessionErrorCode;
 
-  constructor(code: SessionErrorCode, message: string) {
-    super(message);
+  constructor(code: SessionErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "SessionError";
     this.code = code;
   }

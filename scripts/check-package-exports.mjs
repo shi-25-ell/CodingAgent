@@ -7,6 +7,7 @@ const expected = [
   "@coding-agent/agent/session",
   "@coding-agent/agent/context",
   "@coding-agent/agent/testing",
+  "@coding-agent/sqlite",
   "@coding-agent/coding",
   "@coding-agent/coding/print",
   "@coding-agent/coding/testing",

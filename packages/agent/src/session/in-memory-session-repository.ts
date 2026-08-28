@@ -187,6 +187,11 @@ export class InMemorySessionRepository implements SessionRepository {
           records: branch.recordIds.map((id) => state.records.get(id)).filter(Boolean),
         } as SessionBranchView);
       },
+      readRunReport: async (id) => {
+        assertHandle();
+        const report = state.terminalReports.get(id);
+        return report ? clone(report) : undefined;
+      },
       selectBranch: async (selected, expectedRevision) => {
         assertHandle();
         this.#assertRevision(state, expectedRevision);

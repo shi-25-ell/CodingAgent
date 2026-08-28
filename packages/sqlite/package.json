@@ -1,0 +1,24 @@
+{
+  "name": "@coding-agent/sqlite",
+  "version": "0.0.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@coding-agent/agent": "0.0.0",
+    "better-sqlite3": "13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

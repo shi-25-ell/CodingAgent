@@ -18,6 +18,7 @@
       "@coding-agent/agent/session": ["packages/agent/src/session/index.ts"],
       "@coding-agent/agent/context": ["packages/agent/src/context/index.ts"],
       "@coding-agent/agent/testing": ["packages/agent/src/testing/index.ts"],
+      "@coding-agent/sqlite": ["packages/sqlite/src/index.ts"],
       "@coding-agent/coding": ["packages/coding/src/index.ts"],
       "@coding-agent/coding/print": ["packages/coding/src/modes/print/index.ts"],
       "@coding-agent/coding/testing": ["packages/coding/src/testing/index.ts"]

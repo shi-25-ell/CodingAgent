@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/model" },
     { "path": "./packages/agent" },
+    { "path": "./packages/sqlite" },
     { "path": "./packages/coding" }
   ]
 }

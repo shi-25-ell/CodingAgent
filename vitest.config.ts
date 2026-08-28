@@ -64,6 +64,7 @@ export default defineConfig({
         replacement: `${root}packages/agent/src/testing/index.ts`,
       },
       { find: "@coding-agent/agent", replacement: `${root}packages/agent/src/index.ts` },
+      { find: "@coding-agent/sqlite", replacement: `${root}packages/sqlite/src/index.ts` },
       {
         find: "@coding-agent/coding/print",
         replacement: `${root}packages/coding/src/modes/print/index.ts`,
