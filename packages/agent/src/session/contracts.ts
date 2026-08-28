@@ -110,6 +110,12 @@ export interface RunLease extends AsyncDisposable {
   readonly sessionId: SessionId;
   readonly branchId: BranchId;
   append(entries: readonly NewLedgerRecord[]): Promise<CommitReceipt>;
+  /**
+   * Durability seam for terminal arbitration. Implementations resolve only after a terminal report is
+   * durable, returning that durable report (including an idempotently recovered existing report).
+   * Expected storage uncertainty is settled inside the persistence Adapter; rejection denotes an
+   * Adapter contract/invariant failure that cannot be represented as a Run terminal.
+   */
   finish(report: RunReport): Promise<TerminalCommit>;
 }
 

@@ -210,10 +210,15 @@ describe("AgentHarness terminal contract", () => {
     await repository[Symbol.asyncDispose]();
   });
 
-  it("failed：terminal commit 首次失败时以唯一 persistence failure 收敛", async () => {
+  it("finalizing：terminal commit 开始后 abort 明确返回 not_active", async () => {
+    const finishGate = new ManualGate();
     const clock = new ManualClock(1_900);
     const ids = new SequentialIdFactory();
-    const repository = new InMemorySessionRepository({ clock, ids, finishFailures: 1 });
+    const repository = new InMemorySessionRepository({
+      clock,
+      ids,
+      beforeFinish: () => finishGate.wait().then(() => undefined),
+    });
     const session = await repository.create({
       workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
     });
@@ -232,20 +237,19 @@ describe("AgentHarness terminal contract", () => {
       metadata: { task: "terminal fault", configurationRevision: "m0" },
     });
     const eventsPromise = collect(handle.events());
+    await finishGate.waitUntilBlocked();
 
+    const ack = await handle.dispatch({ commandId: "abort-finalizing", type: "abort" });
+    finishGate.open();
     const report = await handle.finished;
     const events = await eventsPromise;
     const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
 
-    expect(report).toMatchObject({
-      status: "failed",
-      terminationReason: "persistence_failure",
-      error: { code: "SESSION_TERMINAL_COMMIT_FAILURE", message: "Terminal commit failed" },
-    });
-    expect(report.finalAnswer).toBeUndefined();
+    expect(ack).toEqual({ commandId: "abort-finalizing", status: "not_active" });
+    expect(report).toMatchObject({ status: "completed", terminationReason: "natural_completion" });
     expectExactlyOneTerminal(
       { report, events, ledgerKinds: branch.records.map((record) => record.kind) },
-      "failed",
+      "completed",
     );
     await repository[Symbol.asyncDispose]();
   });

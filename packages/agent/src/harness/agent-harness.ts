@@ -79,20 +79,6 @@ function reportFromResult(run: RunId, result: AgentRunResult): RunReport {
   };
 }
 
-function terminalCommitFailure(report: RunReport): RunReport {
-  const { finalAnswer: _omittedFinalAnswer, ...withoutFinalAnswer } = report;
-  return {
-    ...withoutFinalAnswer,
-    status: "failed",
-    terminationReason: "persistence_failure",
-    unfinishedWork: [...report.unfinishedWork, "terminal commit 首次失败，已执行保守重试"],
-    error: {
-      code: "SESSION_TERMINAL_COMMIT_FAILURE",
-      message: "Terminal commit failed",
-    },
-  };
-}
-
 class DefaultAgentHarness implements AgentHarness {
   readonly #options: AgentHarnessOptions;
 
@@ -109,7 +95,7 @@ class DefaultAgentHarness implements AgentHarness {
     const stream = new ReplayEventStream<HarnessEvent>();
     const controller = new AbortController();
     let abortApplied = false;
-    let terminal = false;
+    let lifecycle: "active" | "finalizing" | "terminal" = "active";
     stream.publish({ version: 1, type: "run_started", runId: lease.runId });
 
     const commit = async (event: AgentSemanticEvent): Promise<void> => {
@@ -150,28 +136,20 @@ class DefaultAgentHarness implements AgentHarness {
 
     const finished = execution.result
       .then(async (result) => {
-        let report = reportFromResult(lease.runId, result);
-        try {
-          await lease.finish(report);
-        } catch (_error) {
-          report = terminalCommitFailure(report);
-          try {
-            await lease.finish(report);
-          } catch (_retryError) {
-            report = {
-              ...report,
-              unfinishedWork: [
-                ...report.unfinishedWork,
-                "terminal 持久化状态未知，需要 persistence recovery",
-              ],
-              error: {
-                code: "SESSION_TERMINAL_STATE_UNKNOWN",
-                message: "Terminal persistence state is unknown",
-              },
-            };
-          }
-        }
-        terminal = true;
+        lifecycle = "finalizing";
+        const arbitratedResult: AgentRunResult = abortApplied
+          ? {
+              status: "aborted",
+              terminationReason: "user_abort",
+              counts: result.counts,
+              usage: result.usage,
+              unfinishedWork: ["Run 在 finalizing 前收到取消请求"],
+            }
+          : result;
+        const requestedReport = reportFromResult(lease.runId, arbitratedResult);
+        const terminalCommit = await lease.finish(requestedReport);
+        const report = terminalCommit.report;
+        lifecycle = "terminal";
         stream.publish({ version: 1, type: "terminal", report });
         return report;
       })
@@ -184,7 +162,7 @@ class DefaultAgentHarness implements AgentHarness {
       runId: lease.runId,
       events: () => stream.events(),
       async dispatch(command) {
-        if (terminal) return { commandId: command.commandId, status: "not_active" };
+        if (lifecycle !== "active") return { commandId: command.commandId, status: "not_active" };
         if (abortApplied) return { commandId: command.commandId, status: "already_applied" };
         abortApplied = true;
         controller.abort(command.reason);
