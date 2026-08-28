@@ -1,35 +1,49 @@
 #!/usr/bin/env node
 import {
   CodingCompositionError,
-  createOpenAiCodingAgent,
-  createOpenRouterCodingAgent,
+  createProviderCodingAgent,
+  type ProductionProviderId,
 } from "../composition/openai-composition.js";
 import { runPrintEntry } from "../modes/print/print-entry.js";
 import { createGitWorkspaceService } from "../workspace/workspace-service.js";
 
 const root = process.cwd();
-let application: Awaited<ReturnType<typeof createOpenAiCodingAgent>> | undefined;
+const supportedProviders = new Set<ProductionProviderId>([
+  "openai",
+  "openrouter",
+  "deepseek",
+  "glm",
+  "anthropic",
+]);
+
+function configuredModel(provider: ProductionProviderId): string | undefined {
+  const variables: Record<ProductionProviderId, string> = {
+    openai: "FAST_OPENAI_MODEL",
+    openrouter: "FAST_OPENROUTER_MODEL",
+    deepseek: "FAST_DEEPSEEK_MODEL",
+    glm: "FAST_GLM_MODEL",
+    anthropic: "FAST_ANTHROPIC_MODEL",
+  };
+  return process.env[variables[provider]];
+}
+
+let application: Awaited<ReturnType<typeof createProviderCodingAgent>> | undefined;
 try {
   const workspace = (await createGitWorkspaceService().inspect(root)).binding;
   const configuredProvider = process.env.FAST_MODEL_PROVIDER ?? "openai";
-  if (configuredProvider !== "openai" && configuredProvider !== "openrouter") {
+  if (!supportedProviders.has(configuredProvider as ProductionProviderId)) {
     throw new CodingCompositionError(
       "UNSUPPORTED_PROVIDER",
       `不支持的 model provider: ${configuredProvider}`,
     );
   }
-  application =
-    configuredProvider === "openrouter"
-      ? await createOpenRouterCodingAgent({
-          workspaceRoot: root,
-          ...(process.env.FAST_OPENROUTER_MODEL
-            ? { modelId: process.env.FAST_OPENROUTER_MODEL }
-            : {}),
-        })
-      : await createOpenAiCodingAgent({
-          workspaceRoot: root,
-          ...(process.env.FAST_OPENAI_MODEL ? { modelId: process.env.FAST_OPENAI_MODEL } : {}),
-        });
+  const provider = configuredProvider as ProductionProviderId;
+  const selectedModel = configuredModel(provider);
+  application = await createProviderCodingAgent({
+    workspaceRoot: root,
+    provider,
+    ...(selectedModel ? { modelId: selectedModel } : {}),
+  });
   const result = await runPrintEntry(process.argv.slice(2), {
     agent: application.agent,
     workspace,

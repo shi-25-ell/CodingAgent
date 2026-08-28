@@ -51,7 +51,7 @@ export interface LocalProcessResult {
 }
 
 export interface LocalProcessPort {
-  runPowerShell(request: LocalProcessRequest): Promise<LocalProcessResult>;
+  run(request: LocalProcessRequest): Promise<LocalProcessResult>;
 }
 
 export interface LocalGitResult {

@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { lstat, open, opendir, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { JsonValue } from "@coding-agent/model";
 import type {
   LocalDirectoryEntry,
   LocalExecutionPorts,
+  LocalFilesystemPort,
   LocalGitPort,
   LocalProcessRequest,
   LocalProcessResult,
@@ -26,23 +27,30 @@ function decodeUtf8Prefix(bytes: Uint8Array): string {
   return "";
 }
 
-function sanitizedEnvironment(registeredSecrets: readonly string[]): NodeJS.ProcessEnv {
-  const allowed = new Set([
-    "APPDATA",
-    "COMSPEC",
-    "LOCALAPPDATA",
-    "NUMBER_OF_PROCESSORS",
-    "OS",
-    "PATH",
-    "PATHEXT",
-    "PROCESSOR_ARCHITECTURE",
-    "PROCESSOR_IDENTIFIER",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "WINDIR",
-  ]);
+function sanitizedEnvironment(
+  platform: "windows" | "linux",
+  registeredSecrets: readonly string[],
+): NodeJS.ProcessEnv {
+  const allowed = new Set(
+    platform === "windows"
+      ? [
+          "APPDATA",
+          "COMSPEC",
+          "LOCALAPPDATA",
+          "NUMBER_OF_PROCESSORS",
+          "OS",
+          "PATH",
+          "PATHEXT",
+          "PROCESSOR_ARCHITECTURE",
+          "PROCESSOR_IDENTIFIER",
+          "SYSTEMROOT",
+          "TEMP",
+          "TMP",
+          "USERPROFILE",
+          "WINDIR",
+        ]
+      : ["HOME", "LANG", "LC_ALL", "LC_CTYPE", "PATH", "SHELL", "TMPDIR", "USER"],
+  );
   return Object.fromEntries(
     Object.entries(process.env).filter(
       ([name, value]) =>
@@ -55,22 +63,105 @@ function sanitizedEnvironment(registeredSecrets: readonly string[]): NodeJS.Proc
 
 function terminateWindowsProcessTree(pid: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
     const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
       windowsHide: true,
       stdio: "ignore",
     });
-    killer.once("error", () => resolve(false));
-    killer.once("close", (code) => resolve(code === 0));
+    const timer = setTimeout(() => {
+      killer.kill();
+      finish(false);
+    }, 10_000);
+    killer.once("error", () => finish(false));
+    killer.once("close", (code) => finish(code === 0));
   });
 }
 
-function runPowerShell(request: LocalProcessRequest): Promise<LocalProcessResult> {
-  if (process.platform !== "win32") {
+function linuxProcessGroupHasLiveMembers(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+  try {
+    for (const entry of readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      let stat: string;
+      try {
+        stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      } catch {
+        continue;
+      }
+      const closingParenthesis = stat.lastIndexOf(")");
+      if (closingParenthesis < 0) continue;
+      const fields = stat.slice(closingParenthesis + 2).split(" ");
+      const state = fields[0];
+      const processGroup = Number(fields[2]);
+      if (processGroup === pid && state !== "Z") return true;
+    }
+    return false;
+  } catch {
+    // Non-/proc Linux environments fall back to the conservative process-group probe above.
+    return true;
+  }
+}
+
+async function terminateLinuxProcessTree(pid: number): Promise<boolean> {
+  if (pid <= 0) return false;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "ESRCH") {
+      return true;
+    }
+    return false;
+  }
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  if (linuxProcessGroupHasLiveMembers(pid)) {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch (error) {
+      if (
+        !(error !== null && typeof error === "object" && "code" in error && error.code === "ESRCH")
+      ) {
+        return false;
+      }
+    }
+  }
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (!linuxProcessGroupHasLiveMembers(pid)) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  return !linuxProcessGroupHasLiveMembers(pid);
+}
+
+interface ShellExecution {
+  readonly executable: string;
+  readonly arguments: readonly string[];
+  readonly platform: "windows" | "linux";
+  readonly detached: boolean;
+  terminate(pid: number): Promise<boolean>;
+}
+
+function runShell(
+  request: LocalProcessRequest,
+  shell: ShellExecution,
+): Promise<LocalProcessResult> {
+  if (request.signal.aborted) {
     return Promise.resolve({
-      status: "rejected",
-      modelContent: "M2 run_command 仅支持 Windows PowerShell",
+      status: "cancelled",
+      modelContent: "command 已取消",
       effectState: "unknown",
-      abortObserved: false,
+      abortObserved: true,
     });
   }
   return new Promise<LocalProcessResult>((resolve) => {
@@ -84,27 +175,28 @@ function runPowerShell(request: LocalProcessRequest): Promise<LocalProcessResult
     let timedOut = false;
     let termination: Promise<boolean> | undefined;
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort = (): void => {};
     const settle = (result: LocalProcessResult): void => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
+      request.signal.removeEventListener("abort", abort);
       resolve(result);
     };
-    const child = spawn(
-      "powershell.exe",
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", request.command],
-      {
-        cwd: request.cwd,
-        env: sanitizedEnvironment(request.registeredSecrets),
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(shell.executable, [...shell.arguments, request.command], {
+      cwd: request.cwd,
+      env: sanitizedEnvironment(shell.platform, request.registeredSecrets),
+      windowsHide: true,
+      detached: shell.detached,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     const append = (current: Buffer<ArrayBufferLike>, chunk: Buffer<ArrayBufferLike>) => {
       const remaining = Math.max(0, captureMaximum + 1 - current.length);
       const next = Buffer.concat([current, chunk.subarray(0, remaining)]);
       if (next.length > captureMaximum) {
         captureExceeded = true;
-        termination ??= terminateWindowsProcessTree(child.pid ?? 0);
+        termination ??= shell.terminate(child.pid ?? 0);
       }
       return next;
     };
@@ -114,17 +206,37 @@ function runPowerShell(request: LocalProcessRequest): Promise<LocalProcessResult
     child.stderr.on("data", (chunk: Buffer) => {
       stderr = append(stderr, chunk);
     });
-    const abort = () => {
-      termination ??= terminateWindowsProcessTree(child.pid ?? 0);
+    const terminateWithOutcome = async (status: "cancelled" | "timed_out"): Promise<void> => {
+      termination ??= shell.terminate(child.pid ?? 0);
+      if (!(await termination)) {
+        settle({
+          status: "failed",
+          modelContent: "process tree cleanup 无法确认",
+          effectState: "unknown",
+          abortObserved: request.signal.aborted,
+          infrastructureFailure: {
+            code: "PROCESS_CLEANUP_UNCONFIRMED",
+            message: "process tree cleanup 无法确认",
+          },
+        });
+        return;
+      }
+      settle({
+        status,
+        modelContent: status === "cancelled" ? "command 已取消" : "command 超时",
+        effectState: "unknown",
+        abortObserved: status === "cancelled",
+      });
+    };
+    abort = () => {
+      void terminateWithOutcome("cancelled");
     };
     request.signal.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       timedOut = true;
-      termination ??= terminateWindowsProcessTree(child.pid ?? 0);
+      void terminateWithOutcome("timed_out");
     }, request.timeoutMs);
     child.once("error", () => {
-      clearTimeout(timer);
-      request.signal.removeEventListener("abort", abort);
       settle({
         status: "failed",
         modelContent: "command process 无法启动",
@@ -133,8 +245,6 @@ function runPowerShell(request: LocalProcessRequest): Promise<LocalProcessResult
       });
     });
     child.once("close", async (code) => {
-      clearTimeout(timer);
-      request.signal.removeEventListener("abort", abort);
       if (termination && !(await termination)) {
         settle({
           status: "failed",
@@ -211,6 +321,26 @@ function runPowerShell(request: LocalProcessRequest): Promise<LocalProcessResult
   });
 }
 
+function runWindowsPowerShell(request: LocalProcessRequest): Promise<LocalProcessResult> {
+  return runShell(request, {
+    executable: "powershell.exe",
+    arguments: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+    platform: "windows",
+    detached: false,
+    terminate: terminateWindowsProcessTree,
+  });
+}
+
+function runLinuxBash(request: LocalProcessRequest): Promise<LocalProcessResult> {
+  return runShell(request, {
+    executable: "/bin/bash",
+    arguments: ["--noprofile", "--norc", "-c"],
+    platform: "linux",
+    detached: true,
+    terminate: terminateLinuxProcessTree,
+  });
+}
+
 function runGit(
   root: string,
   arguments_: readonly string[],
@@ -231,7 +361,10 @@ function runGit(
     };
     const child = spawn("git", arguments_, {
       cwd: root,
-      env: sanitizedEnvironment(registeredSecrets),
+      env: sanitizedEnvironment(
+        process.platform === "win32" ? "windows" : "linux",
+        registeredSecrets,
+      ),
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -307,54 +440,72 @@ function runGit(
   });
 }
 
-export function createNodeLocalExecutionPorts(): LocalExecutionPorts {
+function createNodeFilesystemPort(): LocalFilesystemPort {
   return {
-    filesystem: {
-      captureWorkspaceRoot: (input) => realpathSync.native(path.resolve(input)),
-      realpath,
-      async inspect(input) {
-        const info = await lstat(input);
-        return {
-          directory: info.isDirectory(),
-          symbolicLink: info.isSymbolicLink(),
-          device: info.dev,
-          inode: info.ino,
-        };
-      },
-      async read(input, signal) {
-        return readFile(input, signal ? { signal } : undefined);
-      },
-      async list(input) {
-        const directory = await opendir(input);
-        const entries: LocalDirectoryEntry[] = [];
-        for await (const entry of directory) {
-          entries.push({
-            name: entry.name,
-            directory: entry.isDirectory(),
-            file: entry.isFile(),
-            symbolicLink: entry.isSymbolicLink(),
-          });
-        }
-        return entries;
-      },
-      async openExclusive(input) {
-        const handle = await open(input, "wx", 0o600);
-        return {
-          write: (content) => handle.writeFile(content, "utf8"),
-          sync: () => handle.sync(),
-          async stat() {
-            const info = await handle.stat();
-            return { device: info.dev, inode: info.ino };
-          },
-          async [Symbol.asyncDispose]() {
-            await handle.close();
-          },
-        };
-      },
-      rename,
-      remove: (input) => rm(input, { force: true }),
+    captureWorkspaceRoot: (input) => realpathSync.native(path.resolve(input)),
+    realpath,
+    async inspect(input) {
+      const info = await lstat(input);
+      return {
+        directory: info.isDirectory(),
+        symbolicLink: info.isSymbolicLink(),
+        device: info.dev,
+        inode: info.ino,
+      };
     },
-    process: { runPowerShell },
+    async read(input, signal) {
+      return readFile(input, signal ? { signal } : undefined);
+    },
+    async list(input) {
+      const directory = await opendir(input);
+      const entries: LocalDirectoryEntry[] = [];
+      for await (const entry of directory) {
+        entries.push({
+          name: entry.name,
+          directory: entry.isDirectory(),
+          file: entry.isFile(),
+          symbolicLink: entry.isSymbolicLink(),
+        });
+      }
+      return entries;
+    },
+    async openExclusive(input) {
+      const handle = await open(input, "wx", 0o600);
+      return {
+        write: (content) => handle.writeFile(content, "utf8"),
+        sync: () => handle.sync(),
+        async stat() {
+          const info = await handle.stat();
+          return { device: info.dev, inode: info.ino };
+        },
+        async [Symbol.asyncDispose]() {
+          await handle.close();
+        },
+      };
+    },
+    rename,
+    remove: (input) => rm(input, { force: true }),
+  };
+}
+
+export function createNodeWindowsExecutionPorts(): LocalExecutionPorts {
+  return {
+    filesystem: createNodeFilesystemPort(),
+    process: { run: runWindowsPowerShell },
     git: { run: runGit },
   };
+}
+
+export function createNodeLinuxExecutionPorts(): LocalExecutionPorts {
+  return {
+    filesystem: createNodeFilesystemPort(),
+    process: { run: runLinuxBash },
+    git: { run: runGit },
+  };
+}
+
+export function createNodeLocalExecutionPorts(): LocalExecutionPorts {
+  return process.platform === "win32"
+    ? createNodeWindowsExecutionPorts()
+    : createNodeLinuxExecutionPorts();
 }

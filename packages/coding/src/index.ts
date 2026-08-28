@@ -21,13 +21,26 @@ export {
 } from "./app/coding-agent.js";
 export { createLocalCodingToolHost as createCodingToolHost } from "./composition/local-tool-composition.js";
 export {
+  type AnthropicCodingAgent,
+  type AnthropicCodingAgentOptions,
   CodingCompositionError,
+  createAnthropicCodingAgent,
+  createDeepSeekCodingAgent,
+  createGlmCodingAgent,
   createOpenAiCodingAgent,
   createOpenRouterCodingAgent,
+  createProviderCodingAgent,
+  type DeepSeekCodingAgent,
+  type DeepSeekCodingAgentOptions,
+  type GlmCodingAgent,
+  type GlmCodingAgentOptions,
   type OpenAiCodingAgent,
   type OpenAiCodingAgentOptions,
   type OpenRouterCodingAgent,
   type OpenRouterCodingAgentOptions,
+  type ProductionProviderId,
+  type ProviderCodingAgent,
+  type ProviderCodingAgentOptions,
 } from "./composition/openai-composition.js";
 export * from "./context/index.js";
 export {
@@ -56,6 +69,7 @@ export {
   type ToolRegistrySnapshot,
   type ToolValidation,
 } from "./tools/tool-registry.js";
+export * from "./tools/web/index.js";
 export {
   createGitWorkspaceService,
   sameWorkspaceRoot,

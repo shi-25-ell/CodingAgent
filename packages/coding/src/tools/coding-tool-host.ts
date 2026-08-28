@@ -13,12 +13,18 @@ import type { JsonObject, JsonValue, ToolCall } from "@coding-agent/model";
 import { createEphemeralArtifactStore } from "./ephemeral-artifact-store.js";
 import type { LocalExecutionPorts, LocalFilesystemPort } from "./local-execution-ports.js";
 import { ToolRegistry, type ToolRegistrySnapshot } from "./tool-registry.js";
+import type { WebFetchPort, WebSearchProvider } from "./web/contracts.js";
 
 export type PermissionMode = "safe" | "autonomous";
-export type ToolEffect = "workspace_read" | "workspace_mutation" | "process" | "git_evidence";
+export type ToolEffect =
+  | "workspace_read"
+  | "workspace_mutation"
+  | "process"
+  | "git_evidence"
+  | "network";
 
 export interface ToolResource {
-  readonly kind: "path" | "command";
+  readonly kind: "path" | "command" | "query" | "url";
   readonly value: string;
 }
 
@@ -58,6 +64,9 @@ export interface CodingToolHostOptions {
   readonly workspaceRoot: string;
   readonly maxOutputBytes?: number;
   readonly commandTimeoutMs?: number;
+  readonly webTimeoutMs?: number;
+  readonly webSearchProvider?: WebSearchProvider;
+  readonly webFetch?: WebFetchPort;
   readonly redactValues?: readonly string[];
   readonly registeredSecrets?: () => readonly string[];
   readonly redact?: (value: string) => string;
@@ -218,6 +227,29 @@ const definitions: readonly ToolDefinition[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "web_search",
+    description: "通过 Run 固定的 search profile 返回有界 web results",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", minLength: 1 },
+        maxResults: { type: "integer", minimum: 1, maximum: 10 },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "web_fetch",
+    description: "通过 SSRF-safe HTTP/HTTPS GET 获取有界文本",
+    inputSchema: {
+      type: "object",
+      properties: { url: { type: "string", minLength: 1 } },
+      required: ["url"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 function deepFreeze<T>(value: T): T {
@@ -325,6 +357,9 @@ function normalizeArguments(
       break;
     case "run_command":
       normalizePath("cwd", ".");
+      break;
+    case "web_search":
+      normalized.maxResults ??= 5;
       break;
     case "read_file":
     case "create_file":
@@ -490,6 +525,20 @@ async function createPlan(
       effects.push("git_evidence");
       break;
     }
+    case "web_search": {
+      const query = stringArgument(args, "query");
+      resources.push({ kind: "query", value: query });
+      effects.push("network");
+      risks.push("向固定 search provider 发送 query");
+      break;
+    }
+    case "web_fetch": {
+      const url = stringArgument(args, "url");
+      resources.push({ kind: "url", value: url });
+      effects.push("network");
+      risks.push("向经安全校验的 public URL 发起 GET");
+      break;
+    }
     default:
       throw new ToolFailure("rejected", `未知 tool: ${call.name}`);
   }
@@ -567,6 +616,9 @@ async function enforceHardGuard(
       return;
     case "git_diff":
       lexicalPath(root, args.path === undefined ? "." : stringArgument(args, "path"));
+      return;
+    case "web_search":
+    case "web_fetch":
       return;
   }
 }
@@ -1003,7 +1055,7 @@ async function runCommandTool(
     throw new ToolFailure("rejected", "cwd 必须是 directory");
   }
   checkAbort(signal);
-  const result = await ports.process.runPowerShell({
+  const result = await ports.process.run({
     command,
     cwd,
     signal,
@@ -1074,6 +1126,59 @@ async function gitDiffTool(
   return result.modelContent;
 }
 
+async function webSearchTool(
+  args: Record<string, JsonValue>,
+  signal: AbortSignal,
+  timeoutMs: number,
+  provider: WebSearchProvider | undefined,
+): Promise<string> {
+  if (!provider) throw new ToolFailure("failed", "web_search profile 未配置");
+  const maximumResults = args.maxResults;
+  if (
+    !Number.isSafeInteger(maximumResults) ||
+    (maximumResults as number) < 1 ||
+    (maximumResults as number) > 10
+  ) {
+    throw new ToolFailure("rejected", "maxResults 必须是 1..10 的整数");
+  }
+  const outcome = await provider.search(
+    { query: stringArgument(args, "query"), maximumResults: maximumResults as number },
+    { signal, timeoutMs },
+  );
+  if (outcome.status !== "succeeded") {
+    throw new ToolFailure(
+      outcome.status === "cancelled"
+        ? "cancelled"
+        : outcome.status === "timed_out"
+          ? "timed_out"
+          : "failed",
+      outcome.message,
+      { abortObserved: outcome.status === "cancelled" },
+    );
+  }
+  return JSON.stringify({ provider: provider.id, results: outcome.results });
+}
+
+async function webFetchTool(
+  args: Record<string, JsonValue>,
+  signal: AbortSignal,
+  timeoutMs: number,
+  fetcher: WebFetchPort | undefined,
+): Promise<string> {
+  if (!fetcher) throw new ToolFailure("failed", "web_fetch adapter 未配置");
+  const outcome = await fetcher.fetch({
+    url: stringArgument(args, "url"),
+    signal,
+    timeoutMs,
+  });
+  if (outcome.status !== "succeeded") {
+    throw new ToolFailure(outcome.status, outcome.message, {
+      abortObserved: outcome.status === "cancelled",
+    });
+  }
+  return JSON.stringify(outcome);
+}
+
 function outcomeFromFailure(
   callId: string,
   failure: ToolFailure,
@@ -1102,6 +1207,7 @@ export function createCodingToolHost(
   const registry = createRegistry();
   const maximum = options.maxOutputBytes ?? 128 * 1024;
   const timeoutMs = options.commandTimeoutMs ?? 30_000;
+  const webTimeoutMs = options.webTimeoutMs ?? 15_000;
   const permissionMode = options.permissionMode ?? "autonomous";
   const policyVersion = options.policyVersion ?? "m2-tool-policy-1";
   const artifacts = options.artifactStore ?? createEphemeralArtifactStore();
@@ -1112,7 +1218,7 @@ export function createCodingToolHost(
       (value, index, values) => value.length > 0 && values.indexOf(value) === index,
     );
   const redact = (value: string): string => {
-    const staticallyRedacted = redactValues.reduce(
+    const staticallyRedacted = registeredSecrets().reduce(
       (text, secret) => text.split(secret).join("[REDACTED]"),
       value,
     );
@@ -1123,6 +1229,9 @@ export function createCodingToolHost(
   }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new TypeError("commandTimeoutMs 必须是正安全整数");
+  }
+  if (!Number.isSafeInteger(webTimeoutMs) || webTimeoutMs <= 0) {
+    throw new TypeError("webTimeoutMs 必须是正安全整数");
   }
   return {
     artifacts,
@@ -1163,7 +1272,10 @@ export function createCodingToolHost(
           await enforceHardGuard(root, plan, ports.filesystem);
           if (
             permissionMode === "safe" &&
-            plan.effects.some((effect) => effect === "workspace_mutation" || effect === "process")
+            plan.effects.some(
+              (effect) =>
+                effect === "workspace_mutation" || effect === "process" || effect === "network",
+            )
           ) {
             if (!options.approvalPort) {
               permissionRequestCount += 1;
@@ -1308,6 +1420,22 @@ export function createCodingToolHost(
                 registeredSecrets(),
               );
               break;
+            case "web_search":
+              modelContent = await webSearchTool(
+                args,
+                context.signal,
+                webTimeoutMs,
+                options.webSearchProvider,
+              );
+              break;
+            case "web_fetch":
+              modelContent = await webFetchTool(
+                args,
+                context.signal,
+                webTimeoutMs,
+                options.webFetch,
+              );
+              break;
             default:
               throw new ToolFailure("rejected", `未知 tool: ${call.name}`);
           }
@@ -1328,7 +1456,11 @@ export function createCodingToolHost(
                     ? { changedFile: { path: stringArgument(args, "path"), change: "deleted" } }
                     : call.name === "run_command"
                       ? { command: redact(stringArgument(args, "command")), exitCode: 0 }
-                      : {},
+                      : call.name === "web_search"
+                        ? { searchProfile: options.webSearchProvider?.id ?? "unconfigured" }
+                        : call.name === "web_fetch"
+                          ? { fetchedUrl: redact(stringArgument(args, "url")) }
+                          : {},
             ),
           };
         } catch (error) {

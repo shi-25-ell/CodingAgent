@@ -28,7 +28,7 @@ async function outcome(
 }
 
 describe("CodingToolHost ToolExecutor contract", () => {
-  it("registry 只暴露 M2 的十个本地 coding tools", async () => {
+  it("registry 暴露 M5 的本地与 web coding tools", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-tools-registry-"));
     temporaryDirectories.push(root);
     const host = createCodingToolHost({ workspaceRoot: root });
@@ -43,6 +43,8 @@ describe("CodingToolHost ToolExecutor contract", () => {
       "run_command",
       "git_status",
       "git_diff",
+      "web_search",
+      "web_fetch",
     ]);
   });
 

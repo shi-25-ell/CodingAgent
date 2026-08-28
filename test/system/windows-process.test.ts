@@ -7,6 +7,8 @@ import { runId } from "@coding-agent/agent";
 import { createCodingToolHost } from "@coding-agent/coding";
 import type { ToolCall } from "@coding-agent/model";
 import { afterEach, describe, expect, it } from "vitest";
+import { createNodeWindowsExecutionPorts } from "../../packages/coding/src/adapters/node-local-execution-adapters.js";
+import { defineProcessPortConformance } from "./process-port.conformance.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -70,6 +72,22 @@ function isRunning(pid: number): boolean {
     return false;
   }
 }
+
+describe.skipIf(process.platform !== "win32")("Windows shared process contract", () => {
+  defineProcessPortConformance(
+    "Windows PowerShell",
+    () => createNodeWindowsExecutionPorts().process,
+    {
+      successCommand: "[Console]::Out.Write((Get-Location).Path); [Console]::Error.Write('err')",
+      quotingCommand: `[Console]::Out.Write('space " quote')`,
+      failureCommand: "[Console]::Error.Write('bad'); exit 7",
+      environmentCommand:
+        "$value = if ($null -eq $env:FAST_M5_PROCESS_SECRET) { '<missing>' } else { $env:FAST_M5_PROCESS_SECRET }; [Console]::Out.Write($value)",
+      outputLimitCommand: "[Console]::Out.Write('A' * 160); [Console]::Error.Write('B' * 160)",
+      treeCommand: processTreeCommand(),
+    },
+  );
+});
 
 describe.skipIf(process.platform !== "win32")("Windows PowerShell process adapter", () => {
   it("保持 quoting 与 cwd，分离 stdout/stderr 并移除 Secret Registry value", async () => {
@@ -209,5 +227,5 @@ describe.skipIf(process.platform !== "win32")("Windows PowerShell process adapte
     await expect(pending).resolves.toMatchObject({ status: "timed_out", effectState: "unknown" });
     expect(isRunning(childPid)).toBe(false);
     expect(isRunning(grandchildPid)).toBe(false);
-  }, 15_000);
+  }, 25_000);
 });

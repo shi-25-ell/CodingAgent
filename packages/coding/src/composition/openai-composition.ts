@@ -36,7 +36,15 @@ import {
   createLocalConfigCredentialSource,
 } from "@coding-agent/model/auth";
 import {
+  type AnthropicProfile,
+  type AnthropicTransport,
+  anthropicProfile,
+  createAnthropicProvider,
+} from "@coding-agent/model/providers/anthropic";
+import {
   createOpenAiCompatibleProvider,
+  deepSeekProfile,
+  glmProfile,
   type OpenAiCompatibleProfile,
   type OpenAiTransport,
   openAiProfile,
@@ -56,15 +64,21 @@ import {
 } from "../skills/index.js";
 import type { PermissionMode } from "../tools/coding-tool-host.js";
 import { createCodingToolHost } from "../tools/coding-tool-host.js";
+import {
+  createBraveWebSearchProvider,
+  createSafeWebFetchPort,
+  type WebFetchPort,
+  type WebSearchProvider,
+  type WebSearchTransport,
+} from "../tools/web/index.js";
 import { createGitWorkspaceService, WorkspaceError } from "../workspace/workspace-service.js";
 
-export interface OpenAiCodingAgentOptions {
+interface CommonProviderCodingAgentOptions {
   readonly workspaceRoot: string;
   readonly modelId?: string;
   readonly models?: readonly ModelDescriptor[];
   readonly credentialSources?: readonly CredentialSource[];
   readonly localCredentialPath?: string;
-  readonly transport?: OpenAiTransport;
   readonly clock?: Clock;
   readonly ids?: IdFactory;
   readonly instructions?: readonly InstructionPart[];
@@ -79,6 +93,11 @@ export interface OpenAiCodingAgentOptions {
   readonly projectSkillDirectory?: string;
   readonly permissionMode?: PermissionMode;
   readonly approvalBridge?: ApprovalBridge;
+  readonly webSearchProfile?: "brave" | "disabled";
+  readonly webSearchProvider?: WebSearchProvider;
+  readonly webSearchTransport?: WebSearchTransport;
+  readonly webFetch?: WebFetchPort;
+  readonly webTimeoutMs?: number;
   readonly dataDirectory?: string;
   readonly persistence?: {
     readonly sessions: SessionRepository;
@@ -86,7 +105,26 @@ export interface OpenAiCodingAgentOptions {
   };
 }
 
+export interface OpenAiCodingAgentOptions extends CommonProviderCodingAgentOptions {
+  readonly transport?: OpenAiTransport;
+}
+
 export type OpenRouterCodingAgentOptions = OpenAiCodingAgentOptions;
+
+export type DeepSeekCodingAgentOptions = OpenAiCodingAgentOptions;
+export type GlmCodingAgentOptions = OpenAiCodingAgentOptions;
+
+export interface AnthropicCodingAgentOptions extends CommonProviderCodingAgentOptions {
+  readonly transport?: AnthropicTransport;
+}
+
+export type ProductionProviderId = "openai" | "openrouter" | "deepseek" | "glm" | "anthropic";
+
+export interface ProviderCodingAgentOptions extends CommonProviderCodingAgentOptions {
+  readonly provider: ProductionProviderId;
+  readonly openAiTransport?: OpenAiTransport;
+  readonly anthropicTransport?: AnthropicTransport;
+}
 
 export interface OpenAiCodingAgent {
   readonly agent: CodingAgent;
@@ -95,6 +133,10 @@ export interface OpenAiCodingAgent {
 }
 
 export type OpenRouterCodingAgent = OpenAiCodingAgent;
+export type DeepSeekCodingAgent = OpenAiCodingAgent;
+export type GlmCodingAgent = OpenAiCodingAgent;
+export type AnthropicCodingAgent = OpenAiCodingAgent;
+export type ProviderCodingAgent = OpenAiCodingAgent;
 
 export class CodingCompositionError extends Error {
   readonly code:
@@ -145,8 +187,60 @@ const openRouterProductionCatalog: readonly ModelDescriptor[] = [
   },
 ];
 
+const deepSeekProductionCatalog: readonly ModelDescriptor[] = [
+  {
+    providerId: providerId("deepseek"),
+    modelId: modelId("deepseek-v4-pro"),
+    displayName: "DeepSeek V4 Pro",
+    capabilities: {
+      toolCalls: "multiple",
+      toolChoice: ["auto"],
+      reasoning: true,
+      reasoningReplay: true,
+      contextWindow: 128_000,
+      maxOutputTokens: 32_768,
+    },
+    source: { kind: "built_in", id: "deepseek", revision: "2026-08-29" },
+  },
+];
+
+const glmProductionCatalog: readonly ModelDescriptor[] = [
+  {
+    providerId: providerId("glm"),
+    modelId: modelId("glm-5.2"),
+    displayName: "GLM-5.2",
+    capabilities: {
+      toolCalls: "multiple",
+      toolChoice: ["auto"],
+      reasoning: true,
+      reasoningReplay: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 131_072,
+    },
+    source: { kind: "built_in", id: "glm", revision: "2026-08-29" },
+  },
+];
+
+const anthropicProductionCatalog: readonly ModelDescriptor[] = [
+  {
+    providerId: providerId("anthropic"),
+    modelId: modelId("claude-sonnet-4-5-20250929"),
+    displayName: "Claude Sonnet 4.5",
+    capabilities: {
+      toolCalls: "multiple",
+      toolChoice: ["auto", "none", "required", "specific"],
+      reasoning: true,
+      reasoningReplay: true,
+      contextWindow: 200_000,
+      maxOutputTokens: 64_000,
+    },
+    source: { kind: "built_in", id: "anthropic", revision: "2026-08-29" },
+  },
+];
+
 interface CompositionDefinition {
-  readonly profile: OpenAiCompatibleProfile;
+  readonly kind: "openai-compatible" | "anthropic";
+  readonly profile: OpenAiCompatibleProfile | AnthropicProfile;
   readonly catalog: readonly ModelDescriptor[];
   readonly defaultModelId: string;
   readonly environmentVariables: readonly {
@@ -168,6 +262,14 @@ function defaultSources(
         variables: { [definition.profile.auth.ref]: variable },
       }),
     ),
+    createEnvironmentCredentialSource({
+      id: "project-brave-search-environment",
+      variables: { "web.brave": "FAST_BRAVE_SEARCH_API_KEY" },
+    }),
+    createEnvironmentCredentialSource({
+      id: "brave-search-environment",
+      variables: { "web.brave": "BRAVE_SEARCH_API_KEY" },
+    }),
     createLocalConfigCredentialSource({
       id: "project-local-config",
       path: localCredentialPath ?? path.join(workspaceRoot, ".fast", "credentials.json"),
@@ -218,7 +320,10 @@ async function canonicalCompositionRoot(root: string): Promise<string> {
 }
 
 async function createCompatibleCodingAgent(
-  options: OpenAiCodingAgentOptions,
+  options: CommonProviderCodingAgentOptions & {
+    readonly openAiTransport?: OpenAiTransport;
+    readonly anthropicTransport?: AnthropicTransport;
+  },
   definition: CompositionDefinition,
 ): Promise<OpenAiCodingAgent> {
   const workspaceRoot = await canonicalCompositionRoot(options.workspaceRoot);
@@ -252,12 +357,19 @@ async function createCompatibleCodingAgent(
 
   const registry = createModelRegistry();
   registry.registerProvider(
-    createOpenAiCompatibleProvider({
-      profile: definition.profile,
-      credentials,
-      models: options.models ?? definition.catalog,
-      ...(options.transport ? { transport: options.transport } : {}),
-    }),
+    definition.kind === "anthropic"
+      ? createAnthropicProvider({
+          profile: definition.profile as AnthropicProfile,
+          credentials,
+          models: options.models ?? definition.catalog,
+          ...(options.anthropicTransport ? { transport: options.anthropicTransport } : {}),
+        })
+      : createOpenAiCompatibleProvider({
+          profile: definition.profile as OpenAiCompatibleProfile,
+          credentials,
+          models: options.models ?? definition.catalog,
+          ...(options.openAiTransport ? { transport: options.openAiTransport } : {}),
+        }),
   );
   const selectedModelId = modelId(options.modelId ?? definition.defaultModelId);
   const model = await registry.resolve({
@@ -320,6 +432,7 @@ async function createCompatibleCodingAgent(
       sourceRevision: model.descriptor.source.revision,
     },
     permissionMode: options.permissionMode ?? "autonomous",
+    webSearchProfile: options.webSearchProvider?.id ?? options.webSearchProfile ?? "brave",
     instructions: options.instructions ?? [
       { type: "text", text: "你是 Fast coding agent。使用工具核验事实并完成 Coding Task。" },
     ],
@@ -388,6 +501,14 @@ async function createCompatibleCodingAgent(
   }
   let tools: ReturnType<typeof createCodingToolHost>;
   try {
+    const webSearchProvider =
+      options.webSearchProvider ??
+      (options.webSearchProfile === "disabled"
+        ? undefined
+        : createBraveWebSearchProvider({
+            credentials,
+            ...(options.webSearchTransport ? { transport: options.webSearchTransport } : {}),
+          }));
     tools = createCodingToolHost(
       {
         workspaceRoot,
@@ -396,6 +517,9 @@ async function createCompatibleCodingAgent(
         redact,
         registeredSecrets: () => [...resolvedSecrets],
         artifactStore: persistence.artifacts,
+        ...(webSearchProvider ? { webSearchProvider } : {}),
+        webFetch: options.webFetch ?? createSafeWebFetchPort(),
+        ...(options.webTimeoutMs !== undefined ? { webTimeoutMs: options.webTimeoutMs } : {}),
       },
       createNodeLocalExecutionPorts(),
     );
@@ -427,29 +551,141 @@ async function createCompatibleCodingAgent(
 export async function createOpenAiCodingAgent(
   options: OpenAiCodingAgentOptions,
 ): Promise<OpenAiCodingAgent> {
-  return createCompatibleCodingAgent(options, {
-    profile: openAiProfile,
-    catalog: openAiProductionCatalog,
-    defaultModelId: "gpt-5",
-    environmentVariables: [
-      { sourceId: "project-environment", variable: "FAST_OPENAI_API_KEY" },
-      { sourceId: "openai-environment", variable: "OPENAI_API_KEY" },
-    ],
-    configurationRevision: "m1-openai-1",
-  });
+  return createCompatibleCodingAgent(
+    {
+      ...options,
+      ...(options.transport ? { openAiTransport: options.transport } : {}),
+    },
+    {
+      kind: "openai-compatible",
+      profile: openAiProfile,
+      catalog: openAiProductionCatalog,
+      defaultModelId: "gpt-5",
+      environmentVariables: [
+        { sourceId: "project-environment", variable: "FAST_OPENAI_API_KEY" },
+        { sourceId: "openai-environment", variable: "OPENAI_API_KEY" },
+      ],
+      configurationRevision: "m1-openai-1",
+    },
+  );
 }
 
 export async function createOpenRouterCodingAgent(
   options: OpenRouterCodingAgentOptions,
 ): Promise<OpenRouterCodingAgent> {
-  return createCompatibleCodingAgent(options, {
-    profile: openRouterProfile,
-    catalog: openRouterProductionCatalog,
-    defaultModelId: "openrouter/free",
-    environmentVariables: [
-      { sourceId: "project-openrouter-environment", variable: "FAST_OPENROUTER_API_KEY" },
-      { sourceId: "openrouter-environment", variable: "OPENROUTER_API_KEY" },
-    ],
-    configurationRevision: "m1-openrouter-1",
-  });
+  return createCompatibleCodingAgent(
+    {
+      ...options,
+      ...(options.transport ? { openAiTransport: options.transport } : {}),
+    },
+    {
+      kind: "openai-compatible",
+      profile: openRouterProfile,
+      catalog: openRouterProductionCatalog,
+      defaultModelId: "openrouter/free",
+      environmentVariables: [
+        { sourceId: "project-openrouter-environment", variable: "FAST_OPENROUTER_API_KEY" },
+        { sourceId: "openrouter-environment", variable: "OPENROUTER_API_KEY" },
+      ],
+      configurationRevision: "m1-openrouter-1",
+    },
+  );
+}
+
+export async function createDeepSeekCodingAgent(
+  options: DeepSeekCodingAgentOptions,
+): Promise<DeepSeekCodingAgent> {
+  return createCompatibleCodingAgent(
+    {
+      ...options,
+      ...(options.transport ? { openAiTransport: options.transport } : {}),
+    },
+    {
+      kind: "openai-compatible",
+      profile: deepSeekProfile,
+      catalog: deepSeekProductionCatalog,
+      defaultModelId: "deepseek-v4-pro",
+      environmentVariables: [
+        { sourceId: "project-deepseek-environment", variable: "FAST_DEEPSEEK_API_KEY" },
+        { sourceId: "deepseek-environment", variable: "DEEPSEEK_API_KEY" },
+      ],
+      configurationRevision: "m5-deepseek-1",
+    },
+  );
+}
+
+export async function createGlmCodingAgent(
+  options: GlmCodingAgentOptions,
+): Promise<GlmCodingAgent> {
+  return createCompatibleCodingAgent(
+    {
+      ...options,
+      ...(options.transport ? { openAiTransport: options.transport } : {}),
+    },
+    {
+      kind: "openai-compatible",
+      profile: glmProfile,
+      catalog: glmProductionCatalog,
+      defaultModelId: "glm-5.2",
+      environmentVariables: [
+        { sourceId: "project-glm-environment", variable: "FAST_GLM_API_KEY" },
+        { sourceId: "glm-environment", variable: "ZAI_API_KEY" },
+      ],
+      configurationRevision: "m5-glm-1",
+    },
+  );
+}
+
+export async function createAnthropicCodingAgent(
+  options: AnthropicCodingAgentOptions,
+): Promise<AnthropicCodingAgent> {
+  return createCompatibleCodingAgent(
+    {
+      ...options,
+      ...(options.transport ? { anthropicTransport: options.transport } : {}),
+    },
+    {
+      kind: "anthropic",
+      profile: anthropicProfile,
+      catalog: anthropicProductionCatalog,
+      defaultModelId: "claude-sonnet-4-5-20250929",
+      environmentVariables: [
+        { sourceId: "project-anthropic-environment", variable: "FAST_ANTHROPIC_API_KEY" },
+        { sourceId: "anthropic-environment", variable: "ANTHROPIC_API_KEY" },
+      ],
+      configurationRevision: "m5-anthropic-1",
+    },
+  );
+}
+
+export async function createProviderCodingAgent(
+  options: ProviderCodingAgentOptions,
+): Promise<ProviderCodingAgent> {
+  switch (options.provider) {
+    case "openai":
+      return createOpenAiCodingAgent({
+        ...options,
+        ...(options.openAiTransport ? { transport: options.openAiTransport } : {}),
+      });
+    case "openrouter":
+      return createOpenRouterCodingAgent({
+        ...options,
+        ...(options.openAiTransport ? { transport: options.openAiTransport } : {}),
+      });
+    case "deepseek":
+      return createDeepSeekCodingAgent({
+        ...options,
+        ...(options.openAiTransport ? { transport: options.openAiTransport } : {}),
+      });
+    case "glm":
+      return createGlmCodingAgent({
+        ...options,
+        ...(options.openAiTransport ? { transport: options.openAiTransport } : {}),
+      });
+    case "anthropic":
+      return createAnthropicCodingAgent({
+        ...options,
+        ...(options.anthropicTransport ? { transport: options.anthropicTransport } : {}),
+      });
+  }
 }
