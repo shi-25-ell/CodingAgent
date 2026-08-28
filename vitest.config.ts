@@ -12,6 +12,7 @@ export default defineConfig({
         "packages/model/src/auth/{contracts,credential-resolver,environment-credential-source,local-config-credential-source}.ts",
         "packages/model/src/catalog/model-registry.ts",
         "packages/model/src/providers/openai-compatible/{fetch-transport,profile,provider}.ts",
+        "packages/model/src/providers/anthropic/**/*.ts",
         "packages/agent/src/agent/agent.ts",
         "packages/agent/src/agent/run-state-machine.ts",
         "packages/agent/src/context/**/*.ts",
@@ -40,6 +41,7 @@ export default defineConfig({
         "packages/coding/src/tools/ephemeral-artifact-store.ts",
         "packages/coding/src/tools/local-execution-ports.ts",
         "packages/coding/src/tools/tool-registry.ts",
+        "packages/coding/src/tools/web/{brave-search,safe-web-fetch}.ts",
         "packages/coding/src/workspace/**/*.ts",
         "packages/sqlite/src/**/*.ts",
       ],
@@ -55,6 +57,10 @@ export default defineConfig({
       {
         find: "@coding-agent/model/providers/openai-compatible",
         replacement: `${root}packages/model/src/providers/openai-compatible/index.ts`,
+      },
+      {
+        find: "@coding-agent/model/providers/anthropic",
+        replacement: `${root}packages/model/src/providers/anthropic/index.ts`,
       },
       {
         find: "@coding-agent/model/auth",
