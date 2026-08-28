@@ -265,27 +265,7 @@ class DefaultAgentHarness implements AgentHarness {
           ),
           redact,
         );
-        let report: RunReport;
-        try {
-          report = (await lease.finish(requestedReport)).report;
-        } catch (_error) {
-          const { finalAnswer: _discardedAnswer, ...reportWithoutAnswer } = requestedReport;
-          const persistenceFailure: RunReport = {
-            ...reportWithoutAnswer,
-            status: "failed",
-            terminationReason: "persistence_failure",
-            unfinishedWork: ["terminal transaction 失败，已执行 best-effort recovery"],
-            error: {
-              code: "TERMINAL_COMMIT_FAILURE",
-              message: "terminal transaction failed",
-            },
-          };
-          try {
-            report = (await lease.finish(persistenceFailure)).report;
-          } catch (_recoveryError) {
-            throw new Error("terminal persistence recovery failed");
-          }
-        }
+        const report = (await lease.finish(requestedReport)).report;
         lifecycle = "terminal";
         state.transition("terminal");
         stream.publish({

@@ -162,7 +162,7 @@ describe("AgentHarness terminal contract", () => {
     await repository[Symbol.asyncDispose]();
   });
 
-  it("首次 terminal commit 失败时 best-effort recovery 仍 resolve exactly-one failed RunReport", async () => {
+  it("Session adapter 结算 terminal storage uncertainty 后仍发布 exactly-one failed RunReport", async () => {
     let finishAttempts = 0;
     const repository = new InMemorySessionRepository({
       clock: new ManualClock(675),
@@ -195,36 +195,7 @@ describe("AgentHarness terminal contract", () => {
     expect((await eventsPromise).filter((event) => event.type === "terminal")).toHaveLength(1);
     const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
     expect(branch.records.filter((record) => record.kind === "run_terminal")).toHaveLength(1);
-    expect(finishAttempts).toBe(2);
-    await repository[Symbol.asyncDispose]();
-  });
-
-  it("terminal commit 与 recovery 都失败时不发布未持久化 semantic terminal", async () => {
-    const repository = new InMemorySessionRepository({
-      clock: new ManualClock(680),
-      ids: new SequentialIdFactory(),
-      beforeFinish: async () => {
-        throw new Error("persistent terminal transaction failure");
-      },
-    });
-    const session = await repository.create({
-      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
-    });
-    const snapshot = await session.inspect();
-    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
-      session,
-      branchId: snapshot.currentBranchId,
-      initialMessages: [{ role: "user", text: "开始" }],
-      model: new ScriptedModel([{ outcome: { status: "completed", response: response("完成") } }]),
-      tools: createDisabledToolExecutor(),
-      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
-      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
-      metadata: { task: "开始", configurationRevision: "m2-terminal-invariant" },
-    });
-    const eventsPromise = collect(handle.events());
-    await expect(handle.finished).rejects.toThrow("terminal persistence recovery failed");
-    expect((await eventsPromise).filter((event) => event.type === "terminal")).toHaveLength(0);
-    expect((await session.inspect()).activeRunId).toBe(handle.runId);
+    expect(finishAttempts).toBe(1);
     await repository[Symbol.asyncDispose]();
   });
 

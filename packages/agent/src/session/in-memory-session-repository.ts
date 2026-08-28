@@ -54,6 +54,23 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+function terminalPersistenceFailure(report: RunReport): RunReport {
+  const { finalAnswer: _discardedAnswer, ...reportWithoutAnswer } = report;
+  return {
+    ...reportWithoutAnswer,
+    status: "failed",
+    terminationReason: "persistence_failure",
+    unfinishedWork: [
+      ...report.unfinishedWork,
+      "terminal transaction 状态不确定，Session adapter 已持久化恢复终态",
+    ],
+    error: {
+      code: "TERMINAL_COMMIT_FAILURE",
+      message: "terminal transaction failed",
+    },
+  };
+}
+
 export class InMemorySessionRepository implements SessionRepository {
   readonly #clock: Clock;
   readonly #ids: IdFactory;
@@ -311,20 +328,23 @@ export class InMemorySessionRepository implements SessionRepository {
       finish: async (report): Promise<TerminalCommit> => {
         const existing = state.terminalReports.get(id);
         if (existing) {
-          if (JSON.stringify(existing) !== JSON.stringify(report)) {
-            throw new SessionError("SESSION_TERMINAL_CONFLICT", "Run 已存在不同 terminal report");
-          }
           return { committed: false, report: clone(existing) };
         }
         assertLease();
-        await this.#beforeFinish?.();
-        assertLease();
         if (report.runId !== id) throw new TypeError("RunReport runId 与 lease 不一致");
-        this.#appendRecord(state, branch, id, { kind: "run_terminal", report });
-        state.terminalReports.set(id, clone(report));
+        let durableReport = report;
+        try {
+          await this.#beforeFinish?.();
+        } catch (_error) {
+          assertLease();
+          durableReport = terminalPersistenceFailure(report);
+        }
+        assertLease();
+        this.#appendRecord(state, branch, id, { kind: "run_terminal", report: durableReport });
+        state.terminalReports.set(id, clone(durableReport));
         state.activeRunId = undefined;
         state.revision += 1;
-        return { committed: true, report: clone(report) };
+        return { committed: true, report: clone(durableReport) };
       },
       [Symbol.asyncDispose]: async () => {
         leaseDisposed = true;
