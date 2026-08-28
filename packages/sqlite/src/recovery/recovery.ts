@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type ArtifactIntegrity,
   type ArtifactRef,
@@ -48,6 +49,32 @@ interface RecoveryOptions {
 
 function encode(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function decodeDigested<T>(value: string, digest: string, label: string): T {
+  const actual = createHash("sha256").update(value, "utf8").digest("hex");
+  if (actual !== digest) {
+    throw new SessionError("SESSION_CORRUPT", `${label} durable digest 不匹配`);
+  }
+  try {
+    return JSON.parse(value) as T;
+  } catch (error) {
+    throw new SessionError("SESSION_CORRUPT", `${label} durable JSON 损坏`, { cause: error });
+  }
+}
+
+function verifiedContextCount(
+  raw: Database.Database,
+  sql: string,
+  run: string,
+  label: string,
+): number {
+  const rows = raw.prepare(sql).all(run) as {
+    readonly digest: string;
+    readonly payload_json: string;
+  }[];
+  for (const row of rows) decodeDigested(row.payload_json, row.digest, label);
+  return rows.length;
 }
 
 function appendLedger(
@@ -118,12 +145,18 @@ function recoveredReport(raw: Database.Database, orphan: OrphanRow): RunReport {
   const run = raw
     .prepare("SELECT model_turn_count FROM runs WHERE run_id = ?")
     .get(orphan.run_id) as { readonly model_turn_count: number };
-  const manifest = raw
-    .prepare("SELECT COUNT(*) AS count FROM context_manifests WHERE run_id = ?")
-    .get(orphan.run_id) as { readonly count: number };
-  const derivations = raw
-    .prepare("SELECT COUNT(*) AS count FROM compaction_checkpoints WHERE run_id = ?")
-    .get(orphan.run_id) as { readonly count: number };
+  const manifestCount = verifiedContextCount(
+    raw,
+    "SELECT digest, payload_json FROM context_manifests WHERE run_id = ?",
+    orphan.run_id,
+    "Context Manifest",
+  );
+  const derivationCount = verifiedContextCount(
+    raw,
+    "SELECT digest, payload_json FROM context_derivations WHERE run_id = ?",
+    orphan.run_id,
+    "Context Derivation",
+  );
   const outcomes = raw
     .prepare("SELECT outcome_json FROM tool_calls WHERE run_id = ? ORDER BY source_order")
     .all(orphan.run_id) as { readonly outcome_json: string }[];
@@ -140,8 +173,8 @@ function recoveredReport(raw: Database.Database, orphan: OrphanRow): RunReport {
     terminationReason: "recovered_interruption",
     counts: {
       modelTurnCount: run.model_turn_count,
-      modelAttemptCount: manifest.count,
-      contextDerivationCount: derivations.count,
+      modelAttemptCount: manifestCount,
+      contextDerivationCount: derivationCount,
       toolCallCount: accepted,
       settledToolCallCount: settled,
     },
@@ -513,21 +546,25 @@ export class SqliteRecovery {
 
   #checkContextReferences(issues: IntegrityIssue[]): void {
     const manifests = this.#raw
-      .prepare("SELECT session_id, run_id, payload_json FROM context_manifests")
+      .prepare("SELECT session_id, run_id, digest, payload_json FROM context_manifests")
       .all() as {
       readonly session_id: string;
       readonly run_id: string;
+      readonly digest: string;
       readonly payload_json: string;
     }[];
     for (const row of manifests) {
       let selected: readonly string[];
       try {
-        const payload = JSON.parse(row.payload_json) as { readonly selectedRecordIds?: unknown };
+        const payload = decodeDigested<{ readonly selectedRecordIds?: unknown }>(
+          row.payload_json,
+          row.digest,
+          "Context Manifest",
+        );
         selected = Array.isArray(payload.selectedRecordIds)
           ? payload.selectedRecordIds.filter((value): value is string => typeof value === "string")
           : [];
-      } catch (error) {
-        if (!(error instanceof SyntaxError)) throw error;
+      } catch {
         selected = ["__invalid_json__"];
       }
       const invalid = selected.some((record) => {
@@ -541,6 +578,27 @@ export class SqliteRecovery {
           code: "CONTEXT_REFERENCE_INVALID",
           severity: "degraded",
           message: "Context Manifest 引用了不存在的 Transcript record",
+          sessionId: sessionId(row.session_id),
+          runId: runId(row.run_id),
+        });
+      }
+    }
+    const derivations = this.#raw
+      .prepare("SELECT session_id, run_id, digest, payload_json FROM context_derivations")
+      .all() as {
+      readonly session_id: string;
+      readonly run_id: string;
+      readonly digest: string;
+      readonly payload_json: string;
+    }[];
+    for (const row of derivations) {
+      try {
+        decodeDigested(row.payload_json, row.digest, "Context Derivation");
+      } catch {
+        issues.push({
+          code: "CONTEXT_REFERENCE_INVALID",
+          severity: "degraded",
+          message: "Context Derivation durable payload 或 digest 损坏",
           sessionId: sessionId(row.session_id),
           runId: runId(row.run_id),
         });
@@ -585,6 +643,34 @@ export class SqliteRecovery {
         references.set(artifact, list);
       }
     }
+    const checkpointRows = this.#raw
+      .prepare("SELECT session_id, payload_json FROM compaction_checkpoints")
+      .all() as { readonly session_id: string; readonly payload_json: string }[];
+    for (const row of checkpointRows) {
+      let artifactId: string | undefined;
+      let branchLeafRecordId: string | undefined;
+      try {
+        const payload = JSON.parse(row.payload_json) as {
+          readonly summaryArtifact?: { readonly id?: unknown };
+          readonly branchLeafRecordId?: unknown;
+        };
+        artifactId =
+          typeof payload.summaryArtifact?.id === "string" ? payload.summaryArtifact.id : undefined;
+        branchLeafRecordId =
+          typeof payload.branchLeafRecordId === "string" ? payload.branchLeafRecordId : undefined;
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+      }
+      if (!artifactId) continue;
+      const list = references.get(artifactId) ?? [];
+      list.push({
+        session: row.session_id,
+        current:
+          branchLeafRecordId !== undefined &&
+          (currentRecords.get(row.session_id)?.has(branchLeafRecordId) ?? false),
+      });
+      references.set(artifactId, list);
+    }
     for (const artifact of artifacts) {
       const integrity = await this.#verifyArtifactRef({ id: artifact.artifact_id });
       if (integrity.status === "verified") continue;
@@ -601,7 +687,7 @@ export class SqliteRecovery {
         issues.push({
           code: integrity.status === "missing" ? "ARTIFACT_MISSING" : "ARTIFACT_CORRUPT",
           severity: ref.current ? "degraded" : "warning",
-          message: "Transcript 引用的 committed Artifact bytes 缺失或 digest 不匹配",
+          message: "Session 引用的 committed Artifact bytes 缺失或 digest 不匹配",
           sessionId: sessionId(ref.session),
         });
       }

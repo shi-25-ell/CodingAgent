@@ -200,8 +200,26 @@ ALTER TABLE runs
   ADD COLUMN model_turn_count INTEGER NOT NULL DEFAULT 0 CHECK (model_turn_count >= 0);
 `;
 
+const durableContextDerivations = `
+CREATE TABLE context_derivations (
+  derivation_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+  model_attempt_count INTEGER NOT NULL CHECK (model_attempt_count > 0),
+  status TEXT NOT NULL CHECK (status IN ('succeeded', 'failed', 'aborted')),
+  digest TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (run_id, derivation_id)
+);
+
+CREATE INDEX context_derivations_run_order
+  ON context_derivations(run_id, model_attempt_count, created_at, derivation_id);
+`;
+
 export const migrations: readonly Migration[] = [
   migration(1, initialSchema),
   migration(2, durableLeaseEpoch),
   migration(3, durableModelTurnCount),
+  migration(4, durableContextDerivations),
 ];

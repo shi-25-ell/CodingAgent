@@ -23,7 +23,7 @@ export class ManualClock implements Clock {
 export class SequentialIdFactory implements IdFactory {
   readonly #counters = new Map<string, number>();
 
-  next(scope: "session" | "branch" | "run" | "record" | "manifest"): string {
+  next(scope: Parameters<IdFactory["next"]>[0]): string {
     const value = (this.#counters.get(scope) ?? 0) + 1;
     this.#counters.set(scope, value);
     return `${scope}-${value}`;

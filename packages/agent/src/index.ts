@@ -5,7 +5,23 @@ export {
   type AgentRunInput,
   createAgent,
 } from "./agent/agent.js";
+export {
+  createSummaryCompactionStrategy,
+  type SummaryCompactionStrategyOptions,
+} from "./compaction/summary-compaction.js";
+export { createContextManager } from "./context/context-manager.js";
 export * from "./context/contracts.js";
+export { ContextError, type ContextErrorCode } from "./context/errors.js";
+export {
+  createArtifactPreviewContextSource,
+  createCheckpointContextSource,
+  createCurrentTaskContextSource,
+  createQueueContextSource,
+  createRunBoundaryContextSource,
+  createStaticInstructionContextSource,
+  createSystemToolContextSource,
+  createTranscriptContextSource,
+} from "./context/sources.js";
 export { createTranscriptContextManager } from "./context/transcript-context.js";
 export * from "./contracts/primitives.js";
 export {

@@ -23,5 +23,14 @@ export interface Clock {
 }
 
 export interface IdFactory {
-  next(scope: "session" | "branch" | "run" | "record" | "manifest"): string;
+  next(
+    scope:
+      | "session"
+      | "branch"
+      | "run"
+      | "record"
+      | "manifest"
+      | "checkpoint"
+      | "context-derivation",
+  ): string;
 }

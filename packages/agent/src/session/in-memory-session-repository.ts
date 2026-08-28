@@ -1,4 +1,4 @@
-import type { ContextManifest } from "../context/contracts.js";
+import type { ContextDerivationRecord, ContextManifest } from "../context/contracts.js";
 import type { BranchId, Clock, IdFactory, RunId, SessionId } from "../contracts/primitives.js";
 import { branchId, recordId, runId, sessionId } from "../contracts/primitives.js";
 import type { RunReport } from "../runtime/contracts.js";
@@ -6,6 +6,7 @@ import type {
   BeginRunInput,
   BranchRef,
   CommitReceipt,
+  CompactionCheckpointMetadata,
   CreateSessionInput,
   ForkBranchInput,
   LedgerRecord,
@@ -39,7 +40,8 @@ interface SessionState {
   readonly records: Map<string, LedgerRecord>;
   readonly terminalReports: Map<RunId, RunReport>;
   readonly contextManifests: Map<RunId, ContextManifest[]>;
-  readonly compactionCheckpointIds: Map<RunId, Set<string>>;
+  readonly contextDerivations: Map<RunId, ContextDerivationRecord[]>;
+  readonly compactionCheckpoints: Map<string, CompactionCheckpointMetadata>;
   readonly modelTurnCounts: Map<RunId, number>;
   readonly toolCalls: Map<RunId, Map<string, "planned" | "started" | "succeeded" | "failed">>;
   readonly queue: StoredQueueItem[];
@@ -118,7 +120,8 @@ export class InMemorySessionRepository implements SessionRepository {
       records: new Map(),
       terminalReports: new Map(),
       contextManifests: new Map(),
-      compactionCheckpointIds: new Map(),
+      contextDerivations: new Map(),
+      compactionCheckpoints: new Map(),
       modelTurnCounts: new Map(),
       toolCalls: new Map(),
       queue: [],
@@ -211,6 +214,12 @@ export class InMemorySessionRepository implements SessionRepository {
         return clone({
           branch: { sessionId: state.id, branchId: branch.id },
           records: branch.recordIds.map((id) => state.records.get(id)).filter(Boolean),
+          checkpoints: [...state.compactionCheckpoints.values()].filter(
+            (checkpoint) =>
+              branch.recordIds.includes(checkpoint.sourceStartRecordId) &&
+              branch.recordIds.includes(checkpoint.sourceEndRecordId) &&
+              branch.recordIds.includes(checkpoint.branchLeafRecordId),
+          ),
         } as SessionBranchView);
       },
       readRunReport: async (id) => {
@@ -227,6 +236,10 @@ export class InMemorySessionRepository implements SessionRepository {
       readContextManifests: async (id) => {
         assertHandle();
         return clone(state.contextManifests.get(id) ?? []);
+      },
+      readContextDerivations: async (id) => {
+        assertHandle();
+        return clone(state.contextDerivations.get(id) ?? []);
       },
       selectBranch: async (selected, expectedRevision) => {
         assertHandle();
@@ -359,20 +372,31 @@ export class InMemorySessionRepository implements SessionRepository {
   ): Promise<RunLease> {
     assertHandle();
     if (state.activeRunId) throw new SessionError("SESSION_ACTIVE_RUN", "Session 已有 active Run");
+    this.#assertRevision(state, input.expectedRevision);
     const branch = state.branches.get(input.branchId);
     if (!branch) throw new SessionError("SESSION_BRANCH_NOT_FOUND", "Conversation Branch 不存在");
+    if (input.branchId !== state.currentBranchId) {
+      throw new SessionError(
+        "SESSION_REVISION_CONFLICT",
+        "Run 只能从当前 Conversation Branch 启动",
+      );
+    }
     if (input.initialMessages.length === 0) throw new TypeError("Run 至少需要一条 initial message");
     const id = runId(this.#ids.next("run"));
     state.queue.splice(0);
     state.activeRunId = id;
     state.toolCalls.set(id, new Map());
     state.contextManifests.set(id, []);
-    state.compactionCheckpointIds.set(id, new Set());
+    state.contextDerivations.set(id, []);
     state.modelTurnCounts.set(id, 0);
     state.revision += 1;
     this.#appendRecord(state, branch, id, { kind: "run_started", metadata: input.metadata });
     for (const message of input.initialMessages) {
-      this.#appendRecord(state, branch, id, { kind: "user_message", text: message.text });
+      this.#appendRecord(state, branch, id, {
+        kind: "user_message",
+        text: message.text,
+        origin: "current_task",
+      });
     }
     let leaseDisposed = false;
     const assertLease = (): void => {
@@ -440,7 +464,11 @@ export class InMemorySessionRepository implements SessionRepository {
             revision: item.revision + 1,
           };
           state.queue[index] = delivered;
-          this.#appendRecord(state, branch, id, { kind: "user_message", text: item.text });
+          this.#appendRecord(state, branch, id, {
+            kind: "user_message",
+            text: item.text,
+            origin: "steering",
+          });
         }
         return items.map((item) =>
           publicQueueItem({
@@ -463,35 +491,131 @@ export class InMemorySessionRepository implements SessionRepository {
           revision: item.revision + 1,
         };
         state.queue[index] = delivered;
-        this.#appendRecord(state, branch, id, { kind: "user_message", text: item.text });
+        this.#appendRecord(state, branch, id, {
+          kind: "user_message",
+          text: item.text,
+          origin: "follow_up",
+        });
         return publicQueueItem(delivered);
       },
-      commitContext: async (manifest, checkpoint) => {
+      commitContext: async (manifest, checkpoint, derivations = []) => {
         assertLease();
         if (manifest.runId !== id) throw new TypeError("Context Manifest runId 与 lease 不一致");
-        if (manifest.selectedRecordIds.some((selected) => !state.records.has(selected))) {
+        if (manifest.selectedRecordIds.some((selected) => !branch.recordIds.includes(selected))) {
           throw new SessionError(
             "SESSION_CORRUPT",
-            "Context Manifest 引用了不存在的 Transcript record",
+            "Context Manifest 引用了当前 Conversation Branch 之外的 Transcript record",
           );
         }
         const manifests = state.contextManifests.get(id);
         if (!manifests) throw new SessionError("SESSION_LEASE_LOST", "Run context state 不存在");
-        const existing = manifests.find(
+        const existingManifest = manifests.find(
           (candidate) => candidate.modelAttemptCount === manifest.modelAttemptCount,
         );
-        if (existing) {
-          if (JSON.stringify(existing) !== JSON.stringify(manifest)) {
-            throw new SessionError("SESSION_TERMINAL_CONFLICT", "Context Manifest CAS 冲突");
+        if (existingManifest && JSON.stringify(existingManifest) !== JSON.stringify(manifest)) {
+          throw new SessionError("SESSION_TERMINAL_CONFLICT", "Context Manifest CAS 冲突");
+        }
+        const storedDerivations = state.contextDerivations.get(id);
+        if (!storedDerivations) {
+          throw new SessionError("SESSION_LEASE_LOST", "Run derivation state 不存在");
+        }
+        for (const derivation of derivations) {
+          if (derivation.runId !== id) {
+            throw new TypeError("Context Derivation runId 与 lease 不一致");
           }
-        } else {
-          manifests.push(clone(manifest));
+          const existingDerivation = storedDerivations.find(
+            (candidate) => candidate.derivationId === derivation.derivationId,
+          );
+          if (
+            existingDerivation &&
+            JSON.stringify(existingDerivation) !== JSON.stringify(derivation)
+          ) {
+            throw new SessionError("SESSION_TERMINAL_CONFLICT", "Context Derivation CAS 冲突");
+          }
         }
         if (checkpoint) {
           if (checkpoint.runId !== id) {
             throw new TypeError("Compaction Checkpoint runId 与 lease 不一致");
           }
-          state.compactionCheckpointIds.get(id)?.add(checkpoint.checkpointId);
+          if (checkpoint.branchId !== branch.id) {
+            throw new TypeError("Compaction Checkpoint branchId 与 lease 不一致");
+          }
+          if (
+            !branch.recordIds.includes(checkpoint.sourceStartRecordId) ||
+            !branch.recordIds.includes(checkpoint.sourceEndRecordId) ||
+            !branch.recordIds.includes(checkpoint.branchLeafRecordId)
+          ) {
+            throw new SessionError(
+              "SESSION_CORRUPT",
+              "Compaction Checkpoint source range 不属于当前 Conversation Branch",
+            );
+          }
+          const existingCheckpoint = state.compactionCheckpoints.get(checkpoint.checkpointId);
+          if (
+            existingCheckpoint &&
+            JSON.stringify(existingCheckpoint) !== JSON.stringify(checkpoint)
+          ) {
+            throw new SessionError("SESSION_TERMINAL_CONFLICT", "Compaction Checkpoint CAS 冲突");
+          }
+        }
+        const availableCheckpointIds = new Set([
+          ...[...state.compactionCheckpoints.values()]
+            .filter(
+              (candidate) =>
+                branch.recordIds.includes(candidate.sourceStartRecordId) &&
+                branch.recordIds.includes(candidate.sourceEndRecordId) &&
+                branch.recordIds.includes(candidate.branchLeafRecordId),
+            )
+            .map((candidate) => candidate.checkpointId),
+          ...(checkpoint ? [checkpoint.checkpointId] : []),
+        ]);
+        if (
+          manifest.selectedCheckpointIds.some(
+            (selectedCheckpointId) => !availableCheckpointIds.has(selectedCheckpointId),
+          )
+        ) {
+          throw new SessionError(
+            "SESSION_CORRUPT",
+            "Context Manifest 引用了不存在的 Compaction Checkpoint",
+          );
+        }
+
+        if (!existingManifest) manifests.push(clone(manifest));
+        for (const derivation of derivations) {
+          if (
+            !storedDerivations.some(
+              (candidate) => candidate.derivationId === derivation.derivationId,
+            )
+          ) {
+            storedDerivations.push(clone(derivation));
+          }
+        }
+        if (checkpoint) {
+          state.compactionCheckpoints.set(checkpoint.checkpointId, clone(checkpoint));
+        }
+      },
+      commitContextFailure: async (derivations) => {
+        assertLease();
+        if (derivations.some((derivation) => derivation.status === "succeeded")) {
+          throw new TypeError("commitContextFailure 只能提交 failed 或 aborted derivation");
+        }
+        const stored = state.contextDerivations.get(id);
+        if (!stored) throw new SessionError("SESSION_LEASE_LOST", "Run derivation state 不存在");
+        for (const derivation of derivations) {
+          if (derivation.runId !== id) {
+            throw new TypeError("Context Derivation runId 与 lease 不一致");
+          }
+          const existing = stored.find(
+            (candidate) => candidate.derivationId === derivation.derivationId,
+          );
+          if (existing && JSON.stringify(existing) !== JSON.stringify(derivation)) {
+            throw new SessionError("SESSION_TERMINAL_CONFLICT", "Context Derivation CAS 冲突");
+          }
+        }
+        for (const derivation of derivations) {
+          if (!stored.some((candidate) => candidate.derivationId === derivation.derivationId)) {
+            stored.push(clone(derivation));
+          }
         }
       },
       finish: async (report): Promise<TerminalCommit> => {
@@ -507,7 +631,7 @@ export class InMemorySessionRepository implements SessionRepository {
         const settled = succeeded + failed;
         const modelTurns = state.modelTurnCounts.get(id) ?? 0;
         const modelAttempts = state.contextManifests.get(id)?.length ?? 0;
-        const contextDerivations = state.compactionCheckpointIds.get(id)?.size ?? 0;
+        const contextDerivations = state.contextDerivations.get(id)?.length ?? 0;
         if (calls.size !== settled) {
           throw new SessionError(
             "SESSION_TERMINAL_CONFLICT",
@@ -557,7 +681,11 @@ export class InMemorySessionRepository implements SessionRepository {
     activeRun: RunId,
     record:
       | { readonly kind: "run_started"; readonly metadata: BeginRunInput["metadata"] }
-      | { readonly kind: "user_message"; readonly text: string }
+      | {
+          readonly kind: "user_message";
+          readonly text: string;
+          readonly origin: "current_task" | "steering" | "follow_up";
+        }
       | NewLedgerRecord
       | { readonly kind: "tool_started"; readonly callId: string }
       | { readonly kind: "run_terminal" | "run_boundary"; readonly report: RunReport },

@@ -52,4 +52,48 @@ describe("SQLite persistence lifecycle", () => {
     ]);
     await reopenedPersistence[Symbol.asyncDispose]();
   });
+
+  it("beginRun 在同一 transaction 拒绝 stale revision 与非 current branch，且不留下 active Run", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-m4-begin-run-cas-"));
+    temporaryRoots.push(root);
+    const persistence = await createSqlitePersistence({
+      databasePath: path.join(root, "state.sqlite3"),
+      artifactDirectory: path.join(root, "artifacts"),
+      busyTimeoutMs: 250,
+      lease: { ownerId: "begin-run-cas", durationMs: 30_000 },
+      clock: new ManualClock(1_000),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await persistence.sessions.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const initial = await session.inspect();
+    const fork = await session.forkBranch({
+      fromBranchId: initial.currentBranchId,
+      expectedRevision: initial.revision,
+    });
+    const afterFork = await session.inspect();
+
+    await expect(
+      session.beginRun({
+        branchId: fork.branchId,
+        expectedRevision: afterFork.revision,
+        initialMessages: [{ role: "user", text: "wrong branch" }],
+        metadata: { task: "wrong branch", configurationRevision: "m4" },
+      }),
+    ).rejects.toMatchObject({ code: "SESSION_REVISION_CONFLICT" });
+    await expect(session.inspect()).resolves.toEqual(afterFork);
+
+    const selected = await session.selectBranch(fork.branchId, afterFork.revision);
+    await expect(
+      session.beginRun({
+        branchId: selected.currentBranchId,
+        expectedRevision: afterFork.revision,
+        initialMessages: [{ role: "user", text: "stale revision" }],
+        metadata: { task: "stale revision", configurationRevision: "m4" },
+      }),
+    ).rejects.toMatchObject({ code: "SESSION_REVISION_CONFLICT" });
+    await expect(session.inspect()).resolves.toEqual(selected);
+    await persistence[Symbol.asyncDispose]();
+  });
 });

@@ -20,17 +20,29 @@ const session = await persistence.sessions.create({
 const snapshot = await session.inspect();
 const lease = await session.beginRun({
   branchId: snapshot.currentBranchId,
+  expectedRevision: snapshot.revision,
   initialMessages: [{ role: "user", text: "perform one external effect" }],
   metadata: { task: "perform one external effect", configurationRevision: "m3-crash" },
 });
 await lease.markModelTurnStarted(1);
 await lease.commitContext({
-  version: 1,
+  version: 2,
   id: `${lease.runId}:attempt-1`,
   runId: lease.runId,
   modelAttemptCount: 1,
+  budget: {
+    modelContextWindow: 16_384,
+    requestedOutputReserve: 2_048,
+    protocolToolSchemaReserve: 256,
+    safetyMargin: 512,
+    usableInputBudget: 13_568,
+  },
+  contributions: [],
   selectedRecordIds: [],
+  selectedCheckpointIds: [],
+  selectedArtifactIds: [],
   omitted: [],
+  requestDigest: "request-1",
 });
 await lease.append([
   {

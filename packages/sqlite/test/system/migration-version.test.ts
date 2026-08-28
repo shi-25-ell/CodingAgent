@@ -35,7 +35,7 @@ describe("SQLite migration runner", () => {
       clock: new ManualClock(2_000),
       ids: new SequentialIdFactory(),
     });
-    await expect(upgraded.checkIntegrity()).resolves.toMatchObject({ schemaVersion: 3, ok: true });
+    await expect(upgraded.checkIntegrity()).resolves.toMatchObject({ schemaVersion: 4, ok: true });
     await upgraded[Symbol.asyncDispose]();
     await rm(root, { recursive: true, force: true });
   });

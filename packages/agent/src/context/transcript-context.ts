@@ -1,75 +1,50 @@
-import type { AssistantMessage, ModelMessage } from "@coding-agent/model";
+import type { AssistantMessage } from "@coding-agent/model";
+import { createContextManager } from "./context-manager.js";
 import type {
+  CompactionStrategy,
   ContextManager,
-  ContextPrepareInput,
-  PreparedContext,
   TranscriptContextManagerOptions,
 } from "./contracts.js";
+import { ContextError } from "./errors.js";
+import {
+  createCurrentTaskContextSource,
+  createQueueContextSource,
+  createRunBoundaryContextSource,
+  createSystemToolContextSource,
+  createTranscriptContextSource,
+} from "./sources.js";
 
-function projectMessages(input: ContextPrepareInput): readonly ModelMessage[] {
-  return input.branch.records.flatMap((record): readonly ModelMessage[] => {
-    if (record.kind === "user_message") {
-      return [{ role: "user", content: [{ type: "text", text: record.text }] }];
-    }
-    if (record.kind === "assistant_message") return [record.message];
-    if (record.kind === "tool_outcome") {
-      return [
-        {
-          role: "tool",
-          callId: record.outcome.callId,
-          content: record.outcome.modelContent,
-          isError: record.outcome.isError,
-        },
-      ];
-    }
-    return [];
-  });
-}
+const noCompaction: CompactionStrategy = {
+  version: "disabled",
+  async shouldCompact() {
+    return false;
+  },
+  async compact() {
+    throw new ContextError("CONTEXT_COMPACTION_UNAVAILABLE", "未配置 CompactionStrategy");
+  },
+};
 
-function estimateTokens(messages: readonly ModelMessage[]): number {
-  return Math.ceil(JSON.stringify(messages).length / 4);
-}
-
+/**
+ * Minimal adapter retained for embedders and M0-M3 contract scenarios. It uses the same Context pipeline and
+ * deterministic budget implementation as production, but deliberately has no summary derivation dependency.
+ */
 export function createTranscriptContextManager(
   options: TranscriptContextManagerOptions,
 ): ContextManager {
-  if (!Number.isSafeInteger(options.maxOutputTokens) || options.maxOutputTokens <= 0) {
-    throw new TypeError("maxOutputTokens 必须是正整数");
-  }
-  return {
-    async prepare(input): Promise<PreparedContext> {
-      const messages = projectMessages(input);
-      return {
-        request: {
-          version: 1,
-          instructions: options.instructions,
-          messages,
-          tools: input.tools,
-          output: { maxTokens: options.maxOutputTokens },
-        },
-        manifest: {
-          version: 1,
-          id: `${input.runId}:attempt-${input.modelAttemptCount}`,
-          runId: input.runId,
-          modelAttemptCount: input.modelAttemptCount,
-          selectedRecordIds: input.branch.records
-            .filter(
-              (record) =>
-                record.kind === "user_message" ||
-                record.kind === "assistant_message" ||
-                record.kind === "tool_outcome",
-            )
-            .map((record) => record.recordId),
-          omitted: [],
-        },
-        measurement: {
-          method: "estimated_chars",
-          inputTokens: estimateTokens(messages),
-          outputReserve: options.maxOutputTokens,
-        },
-      };
-    },
-  };
+  return createContextManager({
+    sources: [
+      createSystemToolContextSource(options.instructions),
+      createCurrentTaskContextSource(),
+      createQueueContextSource(),
+      createTranscriptContextSource(),
+      createRunBoundaryContextSource(),
+    ],
+    compaction: noCompaction,
+    modelContextWindow: options.modelContextWindow ?? 32_768,
+    requestedOutputReserve: options.maxOutputTokens,
+    safetyMargin: 512,
+    retainedTailTokens: 4_096,
+  });
 }
 
 export function responseAsAssistantMessage(

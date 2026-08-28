@@ -1,8 +1,15 @@
-import type { RunLease, RunReport, SessionRepository, SessionSnapshot } from "@coding-agent/agent";
+import type {
+  ArtifactRef,
+  RunLease,
+  RunReport,
+  SessionRepository,
+  SessionSnapshot,
+} from "@coding-agent/agent";
 import { describe, expect, it } from "vitest";
 
 export interface SessionRepositoryConformanceHarness {
   readonly repository: SessionRepository;
+  putArtifact?(): Promise<ArtifactRef>;
   dispose(): Promise<void>;
 }
 
@@ -10,7 +17,7 @@ export type SessionRepositoryConformanceFactory = () =>
   | SessionRepositoryConformanceHarness
   | Promise<SessionRepositoryConformanceHarness>;
 
-function completedReport(lease: RunLease, toolCount = 0): RunReport {
+function completedReport(lease: RunLease, toolCount = 0, derivationCount = 0): RunReport {
   return {
     version: 1,
     runId: lease.runId,
@@ -20,7 +27,7 @@ function completedReport(lease: RunLease, toolCount = 0): RunReport {
     counts: {
       modelTurnCount: toolCount === 0 ? 1 : 2,
       modelAttemptCount: toolCount === 0 ? 1 : 2,
-      contextDerivationCount: 0,
+      contextDerivationCount: derivationCount,
       toolCallCount: toolCount,
       settledToolCallCount: toolCount,
     },
@@ -37,12 +44,23 @@ function completedReport(lease: RunLease, toolCount = 0): RunReport {
 async function commitAttempt(lease: RunLease, modelAttemptCount: number): Promise<void> {
   await lease.markModelTurnStarted(modelAttemptCount);
   await lease.commitContext({
-    version: 1,
+    version: 2,
     id: `${lease.runId}:attempt-${modelAttemptCount}`,
     runId: lease.runId,
     modelAttemptCount,
+    budget: {
+      modelContextWindow: 32_768,
+      requestedOutputReserve: 8_192,
+      protocolToolSchemaReserve: 32,
+      safetyMargin: 512,
+      usableInputBudget: 24_032,
+    },
+    contributions: [],
     selectedRecordIds: [],
+    selectedCheckpointIds: [],
+    selectedArtifactIds: [],
     omitted: [],
+    requestDigest: `request-${modelAttemptCount}`,
   });
 }
 
@@ -96,6 +114,99 @@ export function sessionRepositoryConformance(
       }
     });
 
+    it("Context manifest、derivation 与 checkpoint 原子持久化并可在 reopen 后追溯", async () => {
+      const harness = await createHarness();
+      try {
+        const session = await createSession(harness.repository);
+        const snapshot = await session.inspect();
+        const lease = await session.beginRun({
+          branchId: snapshot.currentBranchId,
+          expectedRevision: snapshot.revision,
+          initialMessages: [{ role: "user", text: "compact me" }],
+          metadata: { task: "compact me", configurationRevision: "m4" },
+        });
+        await lease.markModelTurnStarted(1);
+        await commitFinalAssistant(lease, "first answer");
+        const records = (await session.readBranch({ branchId: snapshot.currentBranchId })).records;
+        const sourceStart = records.find((record) => record.kind === "user_message");
+        const sourceEnd = records.find((record) => record.kind === "assistant_message");
+        if (!sourceStart || !sourceEnd) throw new Error("test source range missing");
+        const summaryArtifact = harness.putArtifact
+          ? await harness.putArtifact()
+          : { id: "artifact-summary-1" };
+        const checkpoint = {
+          version: 1 as const,
+          checkpointId: "checkpoint-contract-1",
+          runId: lease.runId,
+          branchId: snapshot.currentBranchId,
+          sourceStartLedgerSeq: sourceStart.ledgerSeq,
+          sourceEndLedgerSeq: sourceEnd.ledgerSeq,
+          sourceStartRecordId: sourceStart.recordId,
+          sourceEndRecordId: sourceEnd.recordId,
+          sourceDigest: "source-digest",
+          branchLeafRecordId: sourceEnd.recordId,
+          retainedRecordIds: [],
+          strategyVersion: "summary-v1",
+          summaryArtifact,
+          summaryDigest: "summary-digest",
+          tokenProvenance: {
+            method: "estimated_chars" as const,
+            sourceTokens: 20,
+            retainedTokens: 0,
+            summaryTokens: 5,
+          },
+        };
+        const derivation = {
+          version: 1 as const,
+          derivationId: "derivation-contract-1",
+          runId: lease.runId,
+          modelAttemptCount: 1,
+          kind: "summary_compaction" as const,
+          status: "succeeded" as const,
+          model: { providerId: "provider", modelId: "model" },
+          inputDigest: "input-digest",
+          outputDigest: "summary-digest",
+          checkpointId: checkpoint.checkpointId,
+        };
+        await lease.commitContext(
+          {
+            version: 2,
+            id: `${lease.runId}:attempt-1`,
+            runId: lease.runId,
+            modelAttemptCount: 1,
+            budget: {
+              modelContextWindow: 32_768,
+              requestedOutputReserve: 8_192,
+              protocolToolSchemaReserve: 32,
+              safetyMargin: 512,
+              usableInputBudget: 24_032,
+            },
+            contributions: [],
+            selectedRecordIds: [sourceStart.recordId, sourceEnd.recordId],
+            selectedCheckpointIds: [checkpoint.checkpointId],
+            selectedArtifactIds: [checkpoint.summaryArtifact.id],
+            omitted: [],
+            requestDigest: "request-digest",
+          },
+          checkpoint,
+          [derivation],
+        );
+        expect(await session.readContextDerivations(lease.runId)).toEqual([derivation]);
+        expect(
+          (await session.readBranch({ branchId: snapshot.currentBranchId })).checkpoints,
+        ).toEqual([checkpoint]);
+        await lease.finish(completedReport(lease, 0, 1));
+
+        const reopened = await harness.repository.open(session.ref);
+        expect(await reopened.readContextDerivations(lease.runId)).toEqual([derivation]);
+        expect(
+          (await reopened.readBranch({ branchId: snapshot.currentBranchId })).checkpoints,
+        ).toEqual([checkpoint]);
+      } finally {
+        await harness.dispose();
+      }
+    });
+
     it("同一 Session 只允许一个 active Run，不同 Session 的 writer 能并行", async () => {
       const harness = await createHarness();
       try {
@@ -107,6 +218,7 @@ export function sessionRepositoryConformance(
         const secondSnapshot = await secondSession.inspect();
         const first = await firstSession.beginRun({
           branchId: firstSnapshot.currentBranchId,
+          expectedRevision: firstSnapshot.revision,
           initialMessages: [{ role: "user", text: "first" }],
           metadata: { task: "first", configurationRevision: "m3" },
         });
@@ -114,6 +226,7 @@ export function sessionRepositoryConformance(
         await expect(
           firstSession.beginRun({
             branchId: firstSnapshot.currentBranchId,
+            expectedRevision: (await firstSession.inspect()).revision,
             initialMessages: [{ role: "user", text: "competing" }],
             metadata: { task: "competing", configurationRevision: "m3" },
           }),
@@ -121,6 +234,7 @@ export function sessionRepositoryConformance(
 
         const second = await secondSession.beginRun({
           branchId: secondSnapshot.currentBranchId,
+          expectedRevision: secondSnapshot.revision,
           initialMessages: [{ role: "user", text: "parallel" }],
           metadata: { task: "parallel", configurationRevision: "m3" },
         });
@@ -142,6 +256,7 @@ export function sessionRepositoryConformance(
         const initial: SessionSnapshot = await session.inspect();
         const lease = await session.beginRun({
           branchId: initial.currentBranchId,
+          expectedRevision: initial.revision,
           initialMessages: [{ role: "user", text: "inspect" }],
           metadata: { task: "inspect", configurationRevision: "m3" },
         });
@@ -218,6 +333,11 @@ export function sessionRepositoryConformance(
           "run_terminal",
         ]);
         expect(branch.records.filter((record) => record.kind === "run_terminal")).toHaveLength(1);
+        expect(
+          branch.records
+            .filter((record) => record.kind === "user_message")
+            .map((record) => record.origin),
+        ).toEqual(["current_task", "steering"]);
       } finally {
         await harness.dispose();
       }

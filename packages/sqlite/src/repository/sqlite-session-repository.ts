@@ -9,6 +9,7 @@ import {
   type Clock,
   type CommitReceipt,
   type CompactionCheckpointMetadata,
+  type ContextDerivationRecord,
   type ContextManifest,
   type CreateSessionInput,
   type IdFactory,
@@ -29,6 +30,7 @@ import {
   type SessionRepository,
   type SessionSnapshot,
   type SessionSummary,
+  type StoredContextManifest,
   sessionId,
   type TerminalCommit,
 } from "@coding-agent/agent";
@@ -100,6 +102,14 @@ function decode<T>(value: string, label: string): T {
       cause: error,
     });
   }
+}
+
+function decodeDigested<T>(value: string, digest: string, label: string): T {
+  const actual = createHash("sha256").update(value, "utf8").digest("hex");
+  if (actual !== digest) {
+    throw new SessionError("SESSION_CORRUPT", `${label} durable digest 不匹配`);
+  }
+  return decode<T>(value, label);
 }
 
 function tokenDigest(token: string): string {
@@ -290,6 +300,18 @@ export class SqliteSessionRepository implements SessionRepository {
 
   #ledgerRecord(row: LedgerRow): LedgerRecord {
     const payload = decode<Record<string, unknown>>(row.payload_json, "ledger record");
+    const normalizedPayload =
+      payload.kind === "user_message" && payload.origin === undefined
+        ? { ...payload, origin: "current_task" }
+        : payload;
+    if (
+      normalizedPayload.kind === "user_message" &&
+      normalizedPayload.origin !== "current_task" &&
+      normalizedPayload.origin !== "steering" &&
+      normalizedPayload.origin !== "follow_up"
+    ) {
+      throw new SessionError("SESSION_CORRUPT", "user_message origin 无效");
+    }
     return {
       version: 1,
       recordId: recordId(row.record_id),
@@ -297,7 +319,7 @@ export class SqliteSessionRepository implements SessionRepository {
       runId: runId(row.run_id),
       branchId: branchId(row.branch_id),
       createdAt: row.created_at,
-      ...payload,
+      ...normalizedPayload,
     } as LedgerRecord;
   }
 
@@ -339,11 +361,27 @@ export class SqliteSessionRepository implements SessionRepository {
       readBranch: async (input): Promise<SessionBranchView> => {
         assertHandle();
         this.#branchRow(ref.sessionId, input.branchId);
+        const rows = this.#recordRowsForBranch(ref.sessionId, input.branchId);
+        const ancestryRecordIds = new Set(rows.map((row) => row.record_id));
+        const checkpointRows = this.#raw
+          .prepare(
+            `SELECT payload_json FROM compaction_checkpoints
+             WHERE session_id = ? ORDER BY source_end_seq, created_at, checkpoint_id`,
+          )
+          .all(ref.sessionId) as { readonly payload_json: string }[];
         return clone({
           branch: { sessionId: ref.sessionId, branchId: input.branchId },
-          records: this.#recordRowsForBranch(ref.sessionId, input.branchId).map((row) =>
-            this.#ledgerRecord(row),
-          ),
+          records: rows.map((row) => this.#ledgerRecord(row)),
+          checkpoints: checkpointRows
+            .map((row) =>
+              decode<CompactionCheckpointMetadata>(row.payload_json, "Compaction Checkpoint"),
+            )
+            .filter(
+              (checkpoint) =>
+                ancestryRecordIds.has(checkpoint.sourceStartRecordId) &&
+                ancestryRecordIds.has(checkpoint.sourceEndRecordId) &&
+                ancestryRecordIds.has(checkpoint.branchLeafRecordId),
+            ),
         });
       },
       readRunReport: async (requestedRun) => {
@@ -388,12 +426,39 @@ export class SqliteSessionRepository implements SessionRepository {
         assertHandle();
         const rows = this.#raw
           .prepare(
-            `SELECT payload_json FROM context_manifests
+            `SELECT digest, payload_json FROM context_manifests
              WHERE session_id = ? AND run_id = ? ORDER BY model_attempt_count`,
           )
-          .all(ref.sessionId, requestedRun) as { readonly payload_json: string }[];
+          .all(ref.sessionId, requestedRun) as {
+          readonly digest: string;
+          readonly payload_json: string;
+        }[];
         return clone(
-          rows.map((row) => decode<ContextManifest>(row.payload_json, "Context Manifest")),
+          rows.map((row) =>
+            decodeDigested<StoredContextManifest>(row.payload_json, row.digest, "Context Manifest"),
+          ),
+        );
+      },
+      readContextDerivations: async (requestedRun) => {
+        assertHandle();
+        const rows = this.#raw
+          .prepare(
+            `SELECT digest, payload_json FROM context_derivations
+             WHERE session_id = ? AND run_id = ?
+             ORDER BY model_attempt_count, created_at, derivation_id`,
+          )
+          .all(ref.sessionId, requestedRun) as {
+          readonly digest: string;
+          readonly payload_json: string;
+        }[];
+        return clone(
+          rows.map((row) =>
+            decodeDigested<ContextDerivationRecord>(
+              row.payload_json,
+              row.digest,
+              "Context Derivation",
+            ),
+          ),
         );
       },
       selectBranch: async (selected, expectedRevision) => {
@@ -615,19 +680,28 @@ export class SqliteSessionRepository implements SessionRepository {
   }
 
   #beginRun(session: string, input: BeginRunInput, assertHandle: () => void): RunLease {
-    if (input.initialMessages.length === 0) throw new TypeError("Run 至少需要一条 initial message");
-    for (const message of input.initialMessages) {
-      if (message.text.trim().length === 0) throw new TypeError("initial message 不能为空");
-    }
-    const run = runId(this.#ids.next("run"));
-    const token = randomBytes(32).toString("base64url");
-    const digest = tokenDigest(token);
-    const now = this.#clock.now();
-    const epoch = this.#database.immediate(() => {
+    const acquired = this.#database.immediate(() => {
       const state = this.#sessionRow(session);
+      this.#assertRevision(state, input.expectedRevision);
       if (state.active_run_id)
         throw new SessionError("SESSION_ACTIVE_RUN", "Session 已有 active Run");
       this.#branchRow(session, input.branchId);
+      if (input.branchId !== state.current_branch_id) {
+        throw new SessionError(
+          "SESSION_REVISION_CONFLICT",
+          "Run 只能从当前 Conversation Branch 启动",
+        );
+      }
+      if (input.initialMessages.length === 0) {
+        throw new TypeError("Run 至少需要一条 initial message");
+      }
+      for (const message of input.initialMessages) {
+        if (message.text.trim().length === 0) throw new TypeError("initial message 不能为空");
+      }
+      const run = runId(this.#ids.next("run"));
+      const token = randomBytes(32).toString("base64url");
+      const digest = tokenDigest(token);
+      const now = this.#clock.now();
       const priorLease = this.#raw
         .prepare("SELECT epoch, expires_at FROM session_leases WHERE session_id = ?")
         .get(session) as { readonly epoch: number; readonly expires_at: number } | undefined;
@@ -669,11 +743,14 @@ export class SqliteSessionRepository implements SessionRepository {
         .prepare(
           `UPDATE sessions
            SET active_run_id = ?, lease_epoch = ?, revision = revision + 1, updated_at = ?
-           WHERE session_id = ? AND active_run_id IS NULL`,
+           WHERE session_id = ? AND active_run_id IS NULL AND revision = ?`,
         )
-        .run(run, nextEpoch, now, session);
-      if (changed.changes !== 1)
+        .run(run, nextEpoch, now, session, input.expectedRevision);
+      if (changed.changes !== 1) {
+        const current = this.#sessionRow(session);
+        this.#assertRevision(current, input.expectedRevision);
         throw new SessionError("SESSION_ACTIVE_RUN", "Session 已有 active Run");
+      }
       this.#appendLedger(session, input.branchId, run, {
         kind: "run_started",
         metadata: input.metadata,
@@ -682,17 +759,18 @@ export class SqliteSessionRepository implements SessionRepository {
         this.#appendLedger(session, input.branchId, run, {
           kind: "user_message",
           text: message.text,
+          origin: "current_task",
         });
       }
-      return nextEpoch;
+      return { run, token, digest, epoch: nextEpoch };
     });
     return this.#runLease({
       session: sessionId(session),
       branch: input.branchId,
-      run,
-      token,
-      tokenDigest: digest,
-      epoch,
+      run: acquired.run,
+      token: acquired.token,
+      tokenDigest: acquired.digest,
+      epoch: acquired.epoch,
       assertHandle,
     });
   }
@@ -798,21 +876,34 @@ export class SqliteSessionRepository implements SessionRepository {
         assertCapability();
         return (await this.#deliverQueue(identity, "follow_up", true))[0];
       },
-      commitContext: async (manifest, checkpoint) => {
+      commitContext: async (manifest, checkpoint, derivations = []) => {
         assertCapability();
         if (manifest.runId !== identity.run) {
           throw new TypeError("Context Manifest runId 与 lease 不一致");
         }
-        if (checkpoint?.summaryArtifact) {
-          const integrity = await this.#verifyArtifactRef(checkpoint.summaryArtifact);
+        const referencedArtifacts = new Set(manifest.selectedArtifactIds);
+        if (checkpoint) referencedArtifacts.add(checkpoint.summaryArtifact.id);
+        for (const artifactId of referencedArtifacts) {
+          const integrity = await this.#verifyArtifactRef({ id: artifactId });
           if (integrity.status !== "verified") {
             throw new SessionError(
               "SESSION_CORRUPT",
-              "Compaction Checkpoint 引用了未 committed 或损坏的 Artifact",
+              "Context commit 引用了未 committed 或损坏的 Artifact",
             );
           }
         }
-        this.#commitContext(identity, manifest, checkpoint);
+        this.#commitContext(identity, manifest, checkpoint, derivations);
+      },
+      commitContextFailure: async (derivations) => {
+        assertCapability();
+        if (derivations.some((derivation) => derivation.status === "succeeded")) {
+          throw new TypeError("commitContextFailure 只能提交 failed 或 aborted derivation");
+        }
+        this.#database.immediate(() => {
+          this.#assertLease(identity);
+          this.#commitContextDerivations(identity, derivations);
+          this.#heartbeat(identity);
+        });
       },
       finish: async (report): Promise<TerminalCommit> => {
         assertCapability();
@@ -888,7 +979,11 @@ export class SqliteSessionRepository implements SessionRepository {
     run: string,
     payload:
       | { readonly kind: "run_started"; readonly metadata: BeginRunInput["metadata"] }
-      | { readonly kind: "user_message"; readonly text: string }
+      | {
+          readonly kind: "user_message";
+          readonly text: string;
+          readonly origin: "current_task" | "steering" | "follow_up";
+        }
       | NewLedgerRecord
       | { readonly kind: "tool_started"; readonly callId: string }
       | { readonly kind: "run_terminal" | "run_boundary"; readonly report: RunReport }
@@ -1028,6 +1123,7 @@ export class SqliteSessionRepository implements SessionRepository {
         this.#appendLedger(identity.session, identity.branch, identity.run, {
           kind: "user_message",
           text: row.text,
+          origin: row.kind,
         });
         delivered.push({
           commandId: row.command_id,
@@ -1046,35 +1142,80 @@ export class SqliteSessionRepository implements SessionRepository {
   #commitContext(
     identity: {
       readonly session: ReturnType<typeof sessionId>;
+      readonly branch: BranchId;
       readonly run: RunId;
       readonly tokenDigest: string;
       readonly epoch: number;
     },
     manifest: ContextManifest,
     checkpoint?: CompactionCheckpointMetadata,
+    derivations: readonly ContextDerivationRecord[] = [],
   ): void {
     const payload = encode(manifest);
     const digest = createHash("sha256").update(payload, "utf8").digest("hex");
     this.#database.immediate(() => {
       this.#assertLease(identity);
+      const ancestryRecordIds = new Set(
+        this.#recordRowsForBranch(identity.session, identity.branch).map(
+          (record) => record.record_id,
+        ),
+      );
       for (const selected of manifest.selectedRecordIds) {
-        const exists = this.#raw
-          .prepare("SELECT 1 FROM ledger_records WHERE session_id = ? AND record_id = ?")
-          .get(identity.session, selected);
-        if (!exists) {
+        if (!ancestryRecordIds.has(selected)) {
           throw new SessionError(
             "SESSION_CORRUPT",
-            "Context Manifest 引用了不存在的 Transcript record",
+            "Context Manifest 引用了当前 Conversation Branch 之外的 Transcript record",
+          );
+        }
+      }
+      for (const selected of manifest.selectedCheckpointIds) {
+        if (checkpoint?.checkpointId === selected) continue;
+        const existingCheckpoint = this.#raw
+          .prepare(
+            `SELECT payload_json FROM compaction_checkpoints
+             WHERE session_id = ? AND checkpoint_id = ?`,
+          )
+          .get(identity.session, selected) as { readonly payload_json: string } | undefined;
+        if (!existingCheckpoint) {
+          throw new SessionError(
+            "SESSION_CORRUPT",
+            "Context Manifest 引用了不存在的 Compaction Checkpoint",
+          );
+        }
+        const selectedCheckpoint = decode<CompactionCheckpointMetadata>(
+          existingCheckpoint.payload_json,
+          "selected Compaction Checkpoint",
+        );
+        const ancestryIds = new Set(
+          this.#recordRowsForBranch(identity.session, identity.branch).map(
+            (record) => record.record_id,
+          ),
+        );
+        if (
+          !ancestryIds.has(selectedCheckpoint.sourceStartRecordId) ||
+          !ancestryIds.has(selectedCheckpoint.sourceEndRecordId) ||
+          !ancestryIds.has(selectedCheckpoint.branchLeafRecordId)
+        ) {
+          throw new SessionError(
+            "SESSION_CORRUPT",
+            "Context Manifest 引用了不适用于当前 Conversation Branch 的 Compaction Checkpoint",
           );
         }
       }
       const existing = this.#raw
         .prepare(
-          `SELECT digest FROM context_manifests
+          `SELECT digest, payload_json FROM context_manifests
            WHERE run_id = ? AND model_attempt_count = ?`,
         )
-        .get(identity.run, manifest.modelAttemptCount) as { readonly digest: string } | undefined;
+        .get(identity.run, manifest.modelAttemptCount) as
+        | { readonly digest: string; readonly payload_json: string }
+        | undefined;
       if (existing) {
+        decodeDigested<StoredContextManifest>(
+          existing.payload_json,
+          existing.digest,
+          "Context Manifest",
+        );
         if (existing.digest !== digest) {
           throw new SessionError("SESSION_TERMINAL_CONFLICT", "Context Manifest CAS 冲突");
         }
@@ -1100,31 +1241,174 @@ export class SqliteSessionRepository implements SessionRepository {
         if (checkpoint.runId !== identity.run) {
           throw new TypeError("Compaction Checkpoint runId 与 lease 不一致");
         }
-        this.#raw
-          .prepare(
-            `INSERT INTO compaction_checkpoints(
-              checkpoint_id, session_id, branch_id, run_id, source_start_seq,
-              source_end_seq, source_digest, summary_artifact_id,
-              strategy_version, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(checkpoint_id) DO NOTHING`,
+        if (checkpoint.branchId !== identity.branch) {
+          throw new TypeError("Compaction Checkpoint branchId 与 lease 不一致");
+        }
+        const ancestry = this.#recordRowsForBranch(identity.session, identity.branch);
+        const startIndex = ancestry.findIndex(
+          (record) => record.record_id === checkpoint.sourceStartRecordId,
+        );
+        const endIndex = ancestry.findIndex(
+          (record) => record.record_id === checkpoint.sourceEndRecordId,
+        );
+        const leafIndex = ancestry.findIndex(
+          (record) => record.record_id === checkpoint.branchLeafRecordId,
+        );
+        if (
+          startIndex < 0 ||
+          endIndex < startIndex ||
+          leafIndex < endIndex ||
+          ancestry[startIndex]?.ledger_seq !== checkpoint.sourceStartLedgerSeq ||
+          ancestry[endIndex]?.ledger_seq !== checkpoint.sourceEndLedgerSeq ||
+          checkpoint.retainedRecordIds.some(
+            (retained) => !ancestry.some((record) => record.record_id === retained),
           )
-          .run(
-            checkpoint.checkpointId,
-            identity.session,
-            checkpoint.branchId,
-            identity.run,
-            checkpoint.sourceStartLedgerSeq,
-            checkpoint.sourceEndLedgerSeq,
-            checkpoint.sourceDigest,
-            checkpoint.summaryArtifact?.id ?? null,
-            checkpoint.strategyVersion,
-            encode(checkpoint),
-            this.#clock.now(),
+        ) {
+          throw new SessionError(
+            "SESSION_CORRUPT",
+            "Compaction Checkpoint source range 不属于当前 Conversation Branch ancestry",
           );
+        }
+        if (checkpoint.priorCheckpointId) {
+          const priorRow = this.#raw
+            .prepare(
+              `SELECT payload_json FROM compaction_checkpoints
+               WHERE session_id = ? AND checkpoint_id = ?`,
+            )
+            .get(identity.session, checkpoint.priorCheckpointId) as
+            | { readonly payload_json: string }
+            | undefined;
+          if (!priorRow) {
+            throw new SessionError(
+              "SESSION_CORRUPT",
+              "Compaction Checkpoint 引用了不存在的 prior checkpoint",
+            );
+          }
+          const prior = decode<CompactionCheckpointMetadata>(
+            priorRow.payload_json,
+            "prior Compaction Checkpoint",
+          );
+          if (
+            !ancestry.some((record) => record.record_id === prior.sourceStartRecordId) ||
+            !ancestry.some((record) => record.record_id === prior.sourceEndRecordId) ||
+            !ancestry.some((record) => record.record_id === prior.branchLeafRecordId)
+          ) {
+            throw new SessionError(
+              "SESSION_CORRUPT",
+              "prior Compaction Checkpoint 不适用于当前 Conversation Branch ancestry",
+            );
+          }
+        }
+        const checkpointPayload = encode(checkpoint);
+        const existingCheckpoint = this.#raw
+          .prepare("SELECT payload_json FROM compaction_checkpoints WHERE checkpoint_id = ?")
+          .get(checkpoint.checkpointId) as { readonly payload_json: string } | undefined;
+        if (existingCheckpoint) {
+          if (existingCheckpoint.payload_json !== checkpointPayload) {
+            throw new SessionError("SESSION_TERMINAL_CONFLICT", "Compaction Checkpoint CAS 冲突");
+          }
+        } else {
+          this.#raw
+            .prepare(
+              `INSERT INTO compaction_checkpoints(
+                checkpoint_id, session_id, branch_id, run_id, source_start_seq,
+                source_end_seq, source_digest, summary_artifact_id,
+                strategy_version, payload_json, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              checkpoint.checkpointId,
+              identity.session,
+              checkpoint.branchId,
+              identity.run,
+              checkpoint.sourceStartLedgerSeq,
+              checkpoint.sourceEndLedgerSeq,
+              checkpoint.sourceDigest,
+              checkpoint.summaryArtifact.id,
+              checkpoint.strategyVersion,
+              checkpointPayload,
+              this.#clock.now(),
+            );
+        }
       }
+      this.#commitContextDerivations(identity, derivations, manifest.modelAttemptCount);
       this.#heartbeat(identity);
     });
+  }
+
+  #commitContextDerivations(
+    identity: {
+      readonly session: ReturnType<typeof sessionId>;
+      readonly run: RunId;
+    },
+    derivations: readonly ContextDerivationRecord[],
+    expectedModelAttemptCount?: number,
+  ): void {
+    for (const derivation of derivations) {
+      if (derivation.runId !== identity.run) {
+        throw new TypeError("Context Derivation runId 与 lease 不一致");
+      }
+      if (
+        expectedModelAttemptCount !== undefined &&
+        derivation.modelAttemptCount !== expectedModelAttemptCount
+      ) {
+        throw new TypeError("Context Derivation modelAttemptCount 与 Context Manifest 不一致");
+      }
+      if (
+        derivation.status === "succeeded" &&
+        (!derivation.checkpointId || !derivation.outputDigest)
+      ) {
+        throw new TypeError("succeeded Context Derivation 缺少 checkpointId 或 outputDigest");
+      }
+      if (derivation.status === "succeeded") {
+        const checkpointExists = this.#raw
+          .prepare(
+            "SELECT 1 FROM compaction_checkpoints WHERE session_id = ? AND checkpoint_id = ?",
+          )
+          .get(identity.session, derivation.checkpointId);
+        if (!checkpointExists) {
+          throw new SessionError(
+            "SESSION_CORRUPT",
+            "succeeded Context Derivation 引用了不存在的 Compaction Checkpoint",
+          );
+        }
+      }
+      const payload = encode(derivation);
+      const digest = createHash("sha256").update(payload, "utf8").digest("hex");
+      const existing = this.#raw
+        .prepare("SELECT digest, payload_json FROM context_derivations WHERE derivation_id = ?")
+        .get(derivation.derivationId) as
+        | { readonly digest: string; readonly payload_json: string }
+        | undefined;
+      if (existing) {
+        decodeDigested<ContextDerivationRecord>(
+          existing.payload_json,
+          existing.digest,
+          "Context Derivation",
+        );
+        if (existing.digest !== digest) {
+          throw new SessionError("SESSION_TERMINAL_CONFLICT", "Context Derivation CAS 冲突");
+        }
+        continue;
+      }
+      this.#raw
+        .prepare(
+          `INSERT INTO context_derivations(
+            derivation_id, session_id, run_id, model_attempt_count,
+            status, digest, payload_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          derivation.derivationId,
+          identity.session,
+          identity.run,
+          derivation.modelAttemptCount,
+          derivation.status,
+          digest,
+          payload,
+          this.#clock.now(),
+        );
+    }
   }
 
   #finish(
@@ -1166,12 +1450,18 @@ export class SqliteSessionRepository implements SessionRepository {
       const semantic = this.#raw
         .prepare("SELECT model_turn_count AS model_turns FROM runs WHERE run_id = ?")
         .get(identity.run) as { readonly model_turns: number };
-      const attempts = this.#raw
-        .prepare("SELECT COUNT(*) AS count FROM context_manifests WHERE run_id = ?")
-        .get(identity.run) as { readonly count: number };
-      const derivations = this.#raw
-        .prepare("SELECT COUNT(*) AS count FROM compaction_checkpoints WHERE run_id = ?")
-        .get(identity.run) as { readonly count: number };
+      const attemptRows = this.#raw
+        .prepare("SELECT digest, payload_json FROM context_manifests WHERE run_id = ?")
+        .all(identity.run) as { readonly digest: string; readonly payload_json: string }[];
+      for (const row of attemptRows) {
+        decodeDigested<StoredContextManifest>(row.payload_json, row.digest, "Context Manifest");
+      }
+      const derivationRows = this.#raw
+        .prepare("SELECT digest, payload_json FROM context_derivations WHERE run_id = ?")
+        .all(identity.run) as { readonly digest: string; readonly payload_json: string }[];
+      for (const row of derivationRows) {
+        decodeDigested<ContextDerivationRecord>(row.payload_json, row.digest, "Context Derivation");
+      }
       const succeeded = outcomes.filter(
         (row) =>
           decode<{ readonly status: string }>(row.outcome_json, "ToolOutcome").status ===
@@ -1180,8 +1470,8 @@ export class SqliteSessionRepository implements SessionRepository {
       const failed = outcomes.length - succeeded;
       if (
         report.counts.modelTurnCount !== semantic.model_turns ||
-        report.counts.modelAttemptCount !== attempts.count ||
-        report.counts.contextDerivationCount !== derivations.count ||
+        report.counts.modelAttemptCount !== attemptRows.length ||
+        report.counts.contextDerivationCount !== derivationRows.length ||
         report.counts.toolCallCount !== facts.accepted ||
         report.counts.settledToolCallCount !== facts.settled ||
         report.tools.accepted !== facts.accepted ||

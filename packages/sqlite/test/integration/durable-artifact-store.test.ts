@@ -78,6 +78,7 @@ describe("durable content-addressed ArtifactStore", () => {
     const snapshot = await session.inspect();
     const lease = await session.beginRun({
       branchId: snapshot.currentBranchId,
+      expectedRevision: snapshot.revision,
       initialMessages: [{ role: "user", text: "produce artifact" }],
       metadata: { task: "produce artifact", configurationRevision: "m3" },
     });

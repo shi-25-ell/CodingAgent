@@ -1,5 +1,9 @@
 import type { AssistantMessage, ModelFailure } from "@coding-agent/model";
-import type { ContextManifest } from "../context/contracts.js";
+import type {
+  ContextDerivationRecord,
+  ContextManifest,
+  StoredContextManifest,
+} from "../context/contracts.js";
 import type { BranchId, RecordId, RunId, SessionId } from "../contracts/primitives.js";
 import type { RunReport } from "../runtime/contracts.js";
 import type { ToolOutcome } from "../tools/contracts.js";
@@ -62,7 +66,11 @@ export type LedgerRecord =
       readonly kind: "run_started";
       readonly metadata: RunMetadata;
     })
-  | (LedgerRecordBase & { readonly kind: "user_message"; readonly text: string })
+  | (LedgerRecordBase & {
+      readonly kind: "user_message";
+      readonly text: string;
+      readonly origin: "current_task" | "steering" | "follow_up";
+    })
   | (LedgerRecordBase & { readonly kind: "assistant_message"; readonly message: AssistantMessage })
   | (LedgerRecordBase & { readonly kind: "model_failure"; readonly failure: ModelFailure })
   | (LedgerRecordBase & { readonly kind: "tool_started"; readonly callId: string })
@@ -112,9 +120,21 @@ export interface CompactionCheckpointMetadata {
   readonly branchId: BranchId;
   readonly sourceStartLedgerSeq: number;
   readonly sourceEndLedgerSeq: number;
+  readonly sourceStartRecordId: string;
+  readonly sourceEndRecordId: string;
   readonly sourceDigest: string;
+  readonly branchLeafRecordId: string;
+  readonly retainedRecordIds: readonly string[];
+  readonly priorCheckpointId?: string;
   readonly strategyVersion: string;
-  readonly summaryArtifact?: import("../tools/contracts.js").ArtifactRef;
+  readonly summaryArtifact: import("../tools/contracts.js").ArtifactRef;
+  readonly summaryDigest: string;
+  readonly tokenProvenance: {
+    readonly method: "estimated_chars";
+    readonly sourceTokens: number;
+    readonly retainedTokens: number;
+    readonly summaryTokens: number;
+  };
 }
 
 export interface RunMetadata {
@@ -124,6 +144,7 @@ export interface RunMetadata {
 
 export interface BeginRunInput {
   readonly branchId: BranchId;
+  readonly expectedRevision: number;
   readonly initialMessages: readonly AgentInputMessage[];
   readonly metadata: RunMetadata;
 }
@@ -135,6 +156,7 @@ export interface ReadBranchInput {
 export interface SessionBranchView {
   readonly branch: BranchRef;
   readonly records: readonly LedgerRecord[];
+  readonly checkpoints: readonly CompactionCheckpointMetadata[];
 }
 
 export interface ForkBranchInput {
@@ -166,7 +188,9 @@ export interface RunLease extends AsyncDisposable {
   commitContext(
     manifest: ContextManifest,
     checkpoint?: CompactionCheckpointMetadata,
+    derivations?: readonly ContextDerivationRecord[],
   ): Promise<void>;
+  commitContextFailure(derivations: readonly ContextDerivationRecord[]): Promise<void>;
   /**
    * Durability seam for terminal arbitration. Implementations resolve only after a terminal report is
    * durable, returning that durable report (including an idempotently recovered existing report).
@@ -183,7 +207,8 @@ export interface SessionHandle extends AsyncDisposable {
   readBranch(input: ReadBranchInput): Promise<SessionBranchView>;
   readRunReport(runId: RunId): Promise<RunReport | undefined>;
   listQueue(runId?: RunId): Promise<readonly QueueItem[]>;
-  readContextManifests(runId: RunId): Promise<readonly ContextManifest[]>;
+  readContextManifests(runId: RunId): Promise<readonly StoredContextManifest[]>;
+  readContextDerivations(runId: RunId): Promise<readonly ContextDerivationRecord[]>;
   selectBranch(branchId: BranchId, expectedRevision: number): Promise<SessionSnapshot>;
   forkBranch(input: ForkBranchInput): Promise<BranchRef>;
   enqueue(input: QueueInput): Promise<QueueItem>;

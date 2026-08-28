@@ -25,7 +25,7 @@ import { RunStateMachine } from "./run-state-machine.js";
 
 export interface AgentHost {
   prepareContext(
-    input: Pick<ContextPrepareInput, "runId" | "modelTurnCount" | "modelAttemptCount">,
+    input: Pick<ContextPrepareInput, "runId" | "modelTurnCount" | "modelAttemptCount" | "signal">,
   ): Promise<PreparedContext>;
   commit(event: AgentSemanticEvent): Promise<void>;
   drainSteering(): Promise<readonly QueueItem[]>;
@@ -86,19 +86,28 @@ type DependencyKind = "context" | "persistence" | "policy" | "tool";
 
 class AgentDependencyFailure extends Error {
   readonly kind: DependencyKind;
+  readonly contextDerivationCount: number;
 
-  constructor(kind: DependencyKind) {
+  constructor(kind: DependencyKind, cause?: unknown) {
     super(`${kind} dependency failed`);
     this.name = "AgentDependencyFailure";
     this.kind = kind;
+    this.contextDerivationCount =
+      kind === "context" &&
+      typeof cause === "object" &&
+      cause !== null &&
+      "derivations" in cause &&
+      Array.isArray(cause.derivations)
+        ? cause.derivations.length
+        : 0;
   }
 }
 
 async function callDependency<T>(kind: DependencyKind, operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
-  } catch (_error) {
-    throw new AgentDependencyFailure(kind);
+  } catch (error) {
+    throw new AgentDependencyFailure(kind, error);
   }
 }
 
@@ -202,8 +211,13 @@ class DefaultAgent implements Agent {
               runId: input.runId,
               modelTurnCount: counts.modelTurnCount,
               modelAttemptCount: nextAttemptCount,
+              signal: input.signal,
             }),
           );
+          counts = {
+            ...counts,
+            contextDerivationCount: counts.contextDerivationCount + prepared.derivations.length,
+          };
           if (input.signal.aborted) return aborted(counts, usage);
           counts = { ...counts, modelAttemptCount: nextAttemptCount };
           publish({
@@ -436,7 +450,17 @@ class DefaultAgent implements Agent {
       }
     } catch (error) {
       if (input.signal.aborted) return aborted(counts, usage);
-      if (error instanceof AgentDependencyFailure) return dependencyFailure(error, counts, usage);
+      if (error instanceof AgentDependencyFailure) {
+        const failureCounts =
+          error.contextDerivationCount === 0
+            ? counts
+            : {
+                ...counts,
+                contextDerivationCount:
+                  counts.contextDerivationCount + error.contextDerivationCount,
+              };
+        return dependencyFailure(error, failureCounts, usage);
+      }
       throw error;
     }
   }

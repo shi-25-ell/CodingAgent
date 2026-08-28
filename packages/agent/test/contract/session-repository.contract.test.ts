@@ -32,17 +32,29 @@ describe("InMemorySessionRepository storage uncertainty", () => {
     const snapshot = await session.inspect();
     const lease = await session.beginRun({
       branchId: snapshot.currentBranchId,
+      expectedRevision: snapshot.revision,
       initialMessages: [{ role: "user", text: "first" }],
       metadata: { task: "first", configurationRevision: "m2" },
     });
     await lease.markModelTurnStarted(1);
     await lease.commitContext({
-      version: 1,
+      version: 2,
       id: `${lease.runId}:attempt-1`,
       runId: lease.runId,
       modelAttemptCount: 1,
+      budget: {
+        modelContextWindow: 32_768,
+        requestedOutputReserve: 8_192,
+        protocolToolSchemaReserve: 32,
+        safetyMargin: 512,
+        usableInputBudget: 24_032,
+      },
+      contributions: [],
       selectedRecordIds: [],
+      selectedCheckpointIds: [],
+      selectedArtifactIds: [],
       omitted: [],
+      requestDigest: "request-1",
     });
     await lease.append([
       {

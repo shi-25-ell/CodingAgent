@@ -51,18 +51,43 @@ describe("SQLite writer lease and recovery", () => {
     const initial = await session.inspect();
     const staleLease = await session.beginRun({
       branchId: initial.currentBranchId,
+      expectedRevision: initial.revision,
       initialMessages: [{ role: "user", text: "run before crash" }],
       metadata: { task: "run before crash", configurationRevision: "m3" },
     });
     await staleLease.markModelTurnStarted(1);
     await staleLease.commitContext({
-      version: 1,
+      version: 2,
       id: `${staleLease.runId}:attempt-1`,
       runId: staleLease.runId,
       modelAttemptCount: 1,
+      budget: {
+        modelContextWindow: 16_384,
+        requestedOutputReserve: 2_048,
+        protocolToolSchemaReserve: 256,
+        safetyMargin: 512,
+        usableInputBudget: 13_568,
+      },
+      contributions: [],
       selectedRecordIds: [],
+      selectedCheckpointIds: [],
+      selectedArtifactIds: [],
       omitted: [],
+      requestDigest: "request-1",
     });
+    await staleLease.commitContextFailure([
+      {
+        version: 1,
+        derivationId: `${staleLease.runId}:failed-derivation`,
+        runId: staleLease.runId,
+        modelAttemptCount: 1,
+        kind: "summary_compaction",
+        status: "failed",
+        model: { providerId: "test", modelId: "context-model" },
+        inputDigest: "input-digest",
+        failureCode: "injected_failure",
+      },
+    ]);
     await staleLease.append([
       {
         kind: "assistant_message",
@@ -96,14 +121,17 @@ describe("SQLite writer lease and recovery", () => {
     await expect(
       browser.beginRun({
         branchId: initial.currentBranchId,
+        expectedRevision: initial.revision,
         initialMessages: [{ role: "user", text: "forbidden" }],
         metadata: { task: "forbidden", configurationRevision: "m3" },
       }),
     ).rejects.toMatchObject({ code: "SESSION_READ_ONLY" });
     const competing = await second.sessions.open(session.ref);
+    const competingSnapshot = await competing.inspect();
     await expect(
       competing.beginRun({
         branchId: initial.currentBranchId,
+        expectedRevision: competingSnapshot.revision,
         initialMessages: [{ role: "user", text: "too early" }],
         metadata: { task: "too early", configurationRevision: "m3" },
       }),
@@ -119,6 +147,7 @@ describe("SQLite writer lease and recovery", () => {
     expect(recoveredReport).toMatchObject({
       status: "failed",
       terminationReason: "recovered_interruption",
+      counts: { contextDerivationCount: 1 },
       tools: { accepted: 2, settled: 2, failed: 2 },
     });
     await expect(recovered.listQueue(staleLease.runId)).resolves.toEqual([
@@ -141,12 +170,29 @@ describe("SQLite writer lease and recovery", () => {
       }),
     ]);
 
+    const recoveredSnapshot = await recovered.inspect();
     const next = await recovered.beginRun({
       branchId: initial.currentBranchId,
+      expectedRevision: recoveredSnapshot.revision,
       initialMessages: [{ role: "user", text: "new owner" }],
       metadata: { task: "new owner", configurationRevision: "m3" },
     });
     await expect(staleLease.heartbeat()).rejects.toMatchObject({ code: "SESSION_LEASE_LOST" });
+    await expect(
+      staleLease.commitContextFailure([
+        {
+          version: 1,
+          derivationId: `${staleLease.runId}:late-derivation`,
+          runId: staleLease.runId,
+          modelAttemptCount: 2,
+          kind: "summary_compaction",
+          status: "aborted",
+          model: { providerId: "test", modelId: "context-model" },
+          inputDigest: "late-input",
+          failureCode: "cancelled",
+        },
+      ]),
+    ).rejects.toMatchObject({ code: "SESSION_LEASE_LOST" });
     await expect(
       staleLease.append([
         {

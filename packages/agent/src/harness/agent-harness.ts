@@ -2,6 +2,7 @@ import type { JsonObject, Model } from "@coding-agent/model";
 import type { Agent } from "../agent/agent.js";
 import { RunStateMachine } from "../agent/run-state-machine.js";
 import type { ContextManager } from "../context/contracts.js";
+import { ContextError } from "../context/errors.js";
 import { responseAsAssistantMessage } from "../context/transcript-context.js";
 import type { BranchId, RunId } from "../contracts/primitives.js";
 import { ReplayEventStream } from "../events/replay-event-stream.js";
@@ -27,6 +28,7 @@ import type { ToolExecutor } from "../tools/contracts.js";
 export interface HarnessRunInput {
   readonly session: SessionHandle;
   readonly branchId: BranchId;
+  readonly expectedSessionRevision?: number;
   readonly initialMessages: readonly AgentInputMessage[];
   readonly model: Model;
   readonly tools: ToolExecutor;
@@ -161,8 +163,11 @@ class DefaultAgentHarness implements AgentHarness {
 
   async startRun(input: HarnessRunInput): Promise<HarnessRunHandle> {
     const redact = this.#options.redact ?? ((value: string) => value);
+    const expectedRevision =
+      input.expectedSessionRevision ?? (await input.session.inspect()).revision;
     const lease = await input.session.beginRun({
       branchId: input.branchId,
+      expectedRevision,
       initialMessages: redactValue(input.initialMessages, redact),
       metadata: redactValue(input.metadata, redact),
     });
@@ -269,13 +274,20 @@ class DefaultAgentHarness implements AgentHarness {
         async prepareContext(request) {
           await lease.markModelTurnStarted(request.modelTurnCount);
           const branch = await input.session.readBranch({ branchId: input.branchId });
-          const prepared = await input.context.prepare({
-            ...request,
-            branch,
-            tools: toolDefinitions,
-          });
-          await lease.commitContext(prepared.manifest);
-          return prepared;
+          try {
+            const prepared = await input.context.prepare({
+              ...request,
+              branch,
+              tools: toolDefinitions,
+            });
+            await lease.commitContext(prepared.manifest, prepared.checkpoint, prepared.derivations);
+            return prepared;
+          } catch (error) {
+            if (error instanceof ContextError && error.derivations.length > 0) {
+              await lease.commitContextFailure(error.derivations);
+            }
+            throw error;
+          }
         },
         commit,
         drainSteering: () => lease.drainSteering(),

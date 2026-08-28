@@ -2,6 +2,8 @@ import type { Model, ModelFailure, ModelResponse } from "@coding-agent/model";
 import { ScriptedModel } from "@coding-agent/model/testing";
 import { describe, expect, it } from "vitest";
 import {
+  ContextError,
+  type ContextManager,
   createAgent,
   createAgentHarness,
   createDisabledToolExecutor,
@@ -84,6 +86,63 @@ function expectExactlyOneTerminal(scenario: Scenario, expected: RunReport["statu
 }
 
 describe("AgentHarness terminal contract", () => {
+  it("Context Derivation failure durable 计数且不提交 manifest/checkpoint", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(610),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const context: ContextManager = {
+      async prepare(input): Promise<never> {
+        throw new ContextError("CONTEXT_COMPACTION_FAILED", "summary failed", {
+          derivations: [
+            {
+              version: 1,
+              derivationId: "derivation-failed-1",
+              runId: input.runId,
+              modelAttemptCount: input.modelAttemptCount,
+              kind: "summary_compaction",
+              status: "failed",
+              model: { providerId: "provider", modelId: "model" },
+              inputDigest: "input",
+              failureCode: "provider_unavailable",
+            },
+          ],
+        });
+      },
+    };
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "开始" }],
+      model: new ScriptedModel([
+        { outcome: { status: "completed", response: response("unused") } },
+      ]),
+      tools: createDisabledToolExecutor(),
+      context,
+      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
+      metadata: { task: "开始", configurationRevision: "m4-context-failure" },
+    });
+
+    const report = await handle.finished;
+    expect(report).toMatchObject({
+      status: "failed",
+      terminationReason: "context_unavailable",
+      counts: { contextDerivationCount: 1, modelAttemptCount: 0 },
+    });
+    expect(await session.readContextManifests(report.runId)).toEqual([]);
+    expect(await session.readContextDerivations(report.runId)).toEqual([
+      expect.objectContaining({ derivationId: "derivation-failed-1", status: "failed" }),
+    ]);
+    expect((await session.readBranch({ branchId: snapshot.currentBranchId })).checkpoints).toEqual(
+      [],
+    );
+    await repository[Symbol.asyncDispose]();
+  });
+
   it("completion candidate 关闭 queue acceptance，避免 accepted message 被 terminal race 遗失", async () => {
     const repository = new InMemorySessionRepository({
       clock: new ManualClock(625),

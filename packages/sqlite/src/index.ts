@@ -27,7 +27,7 @@ export interface SqlitePersistence extends AsyncDisposable {
 }
 
 class RandomIdFactory implements IdFactory {
-  next(scope: "session" | "branch" | "run" | "record" | "manifest"): string {
+  next(scope: Parameters<IdFactory["next"]>[0]): string {
     return `${scope}-${randomUUID()}`;
   }
 }

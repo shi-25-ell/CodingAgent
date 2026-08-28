@@ -17,6 +17,13 @@ sessionRepositoryConformance("SQLite", async () => {
   });
   return {
     repository: persistence.sessions,
+    async putArtifact() {
+      return persistence.artifacts.put({
+        bytes: new TextEncoder().encode("summary"),
+        mediaType: "text/plain",
+        provenance: "session-repository-conformance",
+      });
+    },
     async dispose() {
       await persistence[Symbol.asyncDispose]();
       await rm(root, { recursive: true, force: true });
