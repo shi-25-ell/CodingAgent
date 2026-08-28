@@ -11,6 +11,7 @@ import {
   type OpenAiTransport,
   type OpenAiTransportRequest,
   openAiProfile,
+  openRouterProfile,
 } from "../../src/providers/openai-compatible/index.js";
 
 afterEach(() => {
@@ -63,7 +64,174 @@ async function createTestModel(
   return provider.createModel({ providerId: providerId("openai"), modelId: modelId("gpt-test") });
 }
 
+function openRouterDescriptor() {
+  return {
+    providerId: providerId("openrouter"),
+    modelId: modelId("openrouter/free"),
+    displayName: "OpenRouter Free Models Router",
+    capabilities: {
+      toolCalls: "multiple" as const,
+      toolChoice: ["auto", "none", "required", "specific"] as const,
+      reasoning: false,
+      reasoningReplay: false,
+    },
+    source: { kind: "built_in" as const, id: "openrouter", revision: "1" },
+  };
+}
+
+async function createOpenRouterTestModel(
+  transport: OpenAiTransport,
+  credential = "fixture-credential",
+) {
+  const provider = createOpenAiCompatibleProvider({
+    profile: openRouterProfile,
+    credentials: createCredentialResolver([
+      createEnvironmentCredentialSource({
+        id: "openrouter-environment",
+        values: { OPENROUTER_API_KEY: credential },
+        variables: { "openrouter.default": "OPENROUTER_API_KEY" },
+      }),
+    ]),
+    transport,
+    models: [openRouterDescriptor()],
+  });
+  return provider.createModel({
+    providerId: providerId("openrouter"),
+    modelId: modelId("openrouter/free"),
+  });
+}
+
 describe("OpenAI-compatible Model contract", () => {
+  it("OpenRouter profile 隔离 endpoint、credential 与 wire dialect", async () => {
+    const credential = `openrouter-credential-${randomUUID()}`;
+    const requests: OpenAiTransportRequest[] = [];
+    const model = await createOpenRouterTestModel(
+      {
+        async send(request) {
+          requests.push(request);
+          return {
+            status: 200,
+            headers: {},
+            body: fragments([
+              'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\ndata: [DONE]\n\n',
+            ]),
+          };
+        },
+      },
+      credential,
+    );
+
+    await expect(
+      collectModelTurn(
+        model.stream(
+          { ...minimalRequest, instructions: [{ type: "text", text: "完成任务" }] },
+          { signal: new AbortController().signal },
+        ),
+      ),
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect(requests[0]?.headers.authorization).toBe(`Bearer ${credential}`);
+    expect(JSON.parse(requests[0]?.body ?? "")).toMatchObject({
+      model: "openrouter/free",
+      max_completion_tokens: 32,
+      messages: [
+        { role: "system", content: "完成任务" },
+        { role: "user", content: "hello" },
+      ],
+    });
+  });
+
+  it.each([
+    ["authentication", 401, "authentication", "authentication", false, "authentication failed"],
+    ["permission", 403, "permission_denied", "permission", false, "permission denied"],
+    ["quota", 402, "payment_required", "quota", false, "quota exhausted"],
+    ["rate limit", 429, "rate_limit_exceeded", "rate_limit", true, "rate limit exceeded"],
+    ["timeout", 408, "timeout", "timeout", true, "request timed out"],
+    [
+      "content filter",
+      403,
+      "content_policy_violation",
+      "content_filter",
+      false,
+      "content filter rejected the request",
+    ],
+    [
+      "provider unavailable",
+      503,
+      "provider_overloaded",
+      "provider_unavailable",
+      true,
+      "unavailable",
+    ],
+    ["invalid request", 400, "invalid_prompt", "invalid_request", false, "request rejected"],
+  ] as const)(
+    "OpenRouter mid-stream %s envelope 映射为 canonical failure",
+    async (_label, httpStatus, errorType, category, retryable, messageSuffix) => {
+      const model = await createOpenRouterTestModel({
+        async send() {
+          return {
+            status: 200,
+            headers: {},
+            body: fragments([
+              `data: ${JSON.stringify({
+                id: "gen-fixture",
+                object: "chat.completion.chunk",
+                model: "fixture",
+                provider: "Fixture",
+                error: {
+                  code: httpStatus,
+                  message: "private provider detail",
+                  metadata: { error_type: errorType },
+                },
+                choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+              })}\n\n`,
+            ]),
+          };
+        },
+      });
+
+      await expect(
+        collectModelTurn(model.stream(minimalRequest, { signal: new AbortController().signal })),
+      ).resolves.toEqual({
+        status: "failed",
+        failure: {
+          category,
+          retryable,
+          httpStatus,
+          message: `OpenRouter ${messageSuffix}`,
+        },
+      });
+    },
+  );
+
+  it("OpenRouter 仅补 usage 的重复 terminal chunk 归约为单一 terminal", async () => {
+    const model = await createOpenRouterTestModel({
+      async send() {
+        return {
+          status: 200,
+          headers: {},
+          body: fragments([
+            'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+            'data: {"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}\n\ndata: [DONE]\n\n',
+          ]),
+        };
+      },
+    });
+
+    await expect(
+      collectModelTurn(model.stream(minimalRequest, { signal: new AbortController().signal })),
+    ).resolves.toEqual({
+      status: "completed",
+      response: {
+        version: 1,
+        content: [{ type: "text", text: "ok" }],
+        finishReason: "stop",
+        usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 },
+      },
+    });
+  });
+
   it("default fetch transport 保留 status/headers 并增量解码 body", async () => {
     const encoder = new TextEncoder();
     vi.stubGlobal(

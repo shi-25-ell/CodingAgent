@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   CodingCompositionError,
   createOpenAiCodingAgent,
+  createOpenRouterCodingAgent,
 } from "../composition/openai-composition.js";
 import { runPrintEntry } from "../modes/print/print-entry.js";
 
@@ -27,10 +28,18 @@ const root = process.cwd();
 let application: Awaited<ReturnType<typeof createOpenAiCodingAgent>> | undefined;
 try {
   const fingerprint = workspaceFingerprint(root);
-  application = await createOpenAiCodingAgent({
-    workspaceRoot: root,
-    ...(process.env.FAST_OPENAI_MODEL ? { modelId: process.env.FAST_OPENAI_MODEL } : {}),
-  });
+  application =
+    process.env.FAST_MODEL_PROVIDER === "openrouter"
+      ? await createOpenRouterCodingAgent({
+          workspaceRoot: root,
+          ...(process.env.FAST_OPENROUTER_MODEL
+            ? { modelId: process.env.FAST_OPENROUTER_MODEL }
+            : {}),
+        })
+      : await createOpenAiCodingAgent({
+          workspaceRoot: root,
+          ...(process.env.FAST_OPENAI_MODEL ? { modelId: process.env.FAST_OPENAI_MODEL } : {}),
+        });
   const result = await runPrintEntry(process.argv.slice(2), {
     agent: application.agent,
     workspace: { root, fingerprint },

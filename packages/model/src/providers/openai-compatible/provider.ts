@@ -26,6 +26,16 @@ import { createFetchOpenAiTransport } from "./fetch-transport.js";
 
 class OpenAiWireError extends Error {}
 
+class OpenAiStreamFailure extends Error {
+  readonly failure: ModelFailure;
+
+  constructor(failure: ModelFailure) {
+    super(failure.message);
+    this.name = "OpenAiStreamFailure";
+    this.failure = failure;
+  }
+}
+
 function invalidRequest(message: string): ModelFailure {
   return { category: "invalid_request", retryable: false, message };
 }
@@ -231,6 +241,105 @@ function usage(value: unknown): ModelUsage {
   return mapped;
 }
 
+function streamFailure(
+  chunk: Record<string, unknown>,
+  profile: OpenAiCompatibleProfile,
+): ModelFailure | undefined {
+  if (chunk.error === undefined) return undefined;
+  const error = object(chunk.error, "stream error");
+  const metadata =
+    error.metadata === undefined ? undefined : object(error.metadata, "stream error metadata");
+  const errorType = typeof metadata?.error_type === "string" ? metadata.error_type : undefined;
+  const httpStatus =
+    typeof error.code === "number" && Number.isSafeInteger(error.code) ? error.code : undefined;
+  const common = httpStatus === undefined ? {} : { httpStatus };
+  const message = (suffix: string) => `${profile.displayName} ${suffix}`;
+
+  if (errorType === "content_policy_violation" || errorType === "refusal") {
+    return {
+      ...common,
+      category: "content_filter",
+      retryable: false,
+      message: message("content filter rejected the request"),
+    };
+  }
+  if (errorType === "authentication" || httpStatus === 401) {
+    return {
+      ...common,
+      category: "authentication",
+      retryable: false,
+      message: message("authentication failed"),
+    };
+  }
+  if (errorType === "permission_denied" || httpStatus === 403) {
+    return {
+      ...common,
+      category: "permission",
+      retryable: false,
+      message: message("permission denied"),
+    };
+  }
+  if (
+    errorType === "payment_required" ||
+    errorType === "token_limit_exceeded" ||
+    httpStatus === 402
+  ) {
+    return { ...common, category: "quota", retryable: false, message: message("quota exhausted") };
+  }
+  if (errorType === "rate_limit_exceeded" || httpStatus === 429) {
+    return {
+      ...common,
+      category: "rate_limit",
+      retryable: true,
+      message: message("rate limit exceeded"),
+    };
+  }
+  if (errorType === "timeout" || httpStatus === 408) {
+    return {
+      ...common,
+      category: "timeout",
+      retryable: true,
+      message: message("request timed out"),
+    };
+  }
+  if (
+    errorType === "provider_overloaded" ||
+    errorType === "provider_unavailable" ||
+    errorType === "server" ||
+    errorType === "unmapped" ||
+    (httpStatus !== undefined && httpStatus >= 500)
+  ) {
+    return {
+      ...common,
+      category: "provider_unavailable",
+      retryable: true,
+      message: message("unavailable"),
+    };
+  }
+  return {
+    ...common,
+    category: "invalid_request",
+    retryable: false,
+    message: message("request rejected"),
+  };
+}
+
+function isUsageOnlyRepeatedTerminal(
+  chunk: Record<string, unknown>,
+  choice: Record<string, unknown>,
+  terminalReason: ModelFinishReason,
+  profile: OpenAiCompatibleProfile,
+): boolean {
+  if (!profile.responseDialect.terminalUsageRepeatsFinishReason || chunk.usage == null) {
+    return false;
+  }
+  if (finishReason(choice.finish_reason) !== terminalReason) return false;
+  const delta = object(choice.delta, "choice.delta");
+  if (!Object.keys(delta).every((key) => key === "content" || key === "role")) return false;
+  if (delta.content !== undefined && delta.content !== null && delta.content !== "") return false;
+  return delta.role === undefined || delta.role === "assistant";
+}
+
 interface MutableTextPart {
   readonly type: "text";
   text: string;
@@ -287,13 +396,18 @@ async function* successfulEvents(
       continue;
     }
     const chunk = object(JSON.parse(data), "stream chunk");
+    const failure = streamFailure(chunk, profile);
+    if (failure) throw new OpenAiStreamFailure(failure);
     if (chunk.usage !== null && chunk.usage !== undefined) finalUsage = usage(chunk.usage);
     if (!Array.isArray(chunk.choices)) throw new OpenAiWireError("choices 必须是 array");
     if (chunk.choices.length === 0) continue;
     if (chunk.choices.length !== 1) throw new OpenAiWireError("只支持单一 choice");
     const choice = object(chunk.choices[0], "choice");
     if (choice.index !== 0) throw new OpenAiWireError("choice index 必须为 0");
-    if (terminalReason) throw new OpenAiWireError("finish_reason 后不得再有 choice delta");
+    if (terminalReason) {
+      if (isUsageOnlyRepeatedTerminal(chunk, choice, terminalReason, profile)) continue;
+      throw new OpenAiWireError("finish_reason 后不得再有 choice delta");
+    }
     const delta = object(choice.delta, "choice.delta");
 
     if (typeof delta.content === "string" && delta.content.length > 0) {
@@ -416,7 +530,10 @@ function retryAfter(headers: Readonly<Record<string, string | undefined>>): numb
   return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : undefined;
 }
 
-async function httpFailure(response: OpenAiTransportResponse): Promise<ModelFailure> {
+async function httpFailure(
+  response: OpenAiTransportResponse,
+  profile: OpenAiCompatibleProfile,
+): Promise<ModelFailure> {
   const body = await readErrorBody(response.body);
   let errorCode: string | undefined;
   try {
@@ -430,12 +547,13 @@ async function httpFailure(response: OpenAiTransportResponse): Promise<ModelFail
     httpStatus: response.status,
     ...(response.headers["x-request-id"] ? { requestId: response.headers["x-request-id"] } : {}),
   };
+  const message = (suffix: string) => `${profile.displayName} ${suffix}`;
   if (response.status === 401) {
     return {
       ...common,
       category: "authentication",
       retryable: false,
-      message: "OpenAI authentication failed",
+      message: message("authentication failed"),
     };
   }
   if (response.status === 403) {
@@ -443,11 +561,14 @@ async function httpFailure(response: OpenAiTransportResponse): Promise<ModelFail
       ...common,
       category: "permission",
       retryable: false,
-      message: "OpenAI permission denied",
+      message: message("permission denied"),
     };
   }
+  if (response.status === 402) {
+    return { ...common, category: "quota", retryable: false, message: message("quota exhausted") };
+  }
   if (response.status === 429 && errorCode === "insufficient_quota") {
-    return { ...common, category: "quota", retryable: false, message: "OpenAI quota exhausted" };
+    return { ...common, category: "quota", retryable: false, message: message("quota exhausted") };
   }
   if (response.status === 429) {
     const delay = retryAfter(response.headers);
@@ -456,7 +577,7 @@ async function httpFailure(response: OpenAiTransportResponse): Promise<ModelFail
       category: "rate_limit",
       retryable: true,
       ...(delay !== undefined ? { retryAfterMs: delay } : {}),
-      message: "OpenAI rate limit exceeded",
+      message: message("rate limit exceeded"),
     };
   }
   if (response.status === 400 && errorCode === "content_policy_violation") {
@@ -464,29 +585,40 @@ async function httpFailure(response: OpenAiTransportResponse): Promise<ModelFail
       ...common,
       category: "content_filter",
       retryable: false,
-      message: "OpenAI content filter rejected the request",
+      message: message("content filter rejected the request"),
     };
   }
   if (response.status === 408) {
-    return { ...common, category: "timeout", retryable: true, message: "OpenAI request timed out" };
+    return {
+      ...common,
+      category: "timeout",
+      retryable: true,
+      message: message("request timed out"),
+    };
   }
   if (response.status >= 500) {
     return {
       ...common,
       category: "provider_unavailable",
       retryable: true,
-      message: "OpenAI unavailable",
+      message: message("unavailable"),
     };
   }
   return {
     ...common,
     category: "invalid_request",
     retryable: false,
-    message: "OpenAI request rejected",
+    message: message("request rejected"),
   };
 }
 
-function thrownFailure(error: unknown, signal: AbortSignal): ModelFailure {
+function thrownFailure(
+  error: unknown,
+  signal: AbortSignal,
+  profile: OpenAiCompatibleProfile,
+): ModelFailure {
+  if (error instanceof OpenAiStreamFailure) return error.failure;
+  const message = (suffix: string) => `${profile.displayName} ${suffix}`;
   if (signal.aborted || (error instanceof Error && error.name === "AbortError")) {
     return { category: "cancelled", retryable: false, message: "Model Attempt 已取消" };
   }
@@ -494,16 +626,16 @@ function thrownFailure(error: unknown, signal: AbortSignal): ModelFailure {
     return {
       category: "invalid_response",
       retryable: false,
-      message: "OpenAI response protocol invalid",
+      message: message("response protocol invalid"),
     };
   }
   if (error instanceof Error && error.name === "TimeoutError") {
-    return { category: "timeout", retryable: true, message: "OpenAI transport timed out" };
+    return { category: "timeout", retryable: true, message: message("transport timed out") };
   }
   if (error instanceof TypeError) {
-    return { category: "network", retryable: true, message: "OpenAI network request failed" };
+    return { category: "network", retryable: true, message: message("network request failed") };
   }
-  return { category: "adapter_bug", retryable: false, message: "OpenAI adapter failed" };
+  return { category: "adapter_bug", retryable: false, message: message("adapter failed") };
 }
 
 class OpenAiCompatibleModel implements Model {
@@ -544,7 +676,7 @@ class OpenAiCompatibleModel implements Model {
           failure: {
             category: "not_configured",
             retryable: false,
-            message: "OpenAI credential 未配置",
+            message: `${this.#profile.displayName} credential 未配置`,
           },
         };
         return;
@@ -559,7 +691,7 @@ class OpenAiCompatibleModel implements Model {
               : {
                   category: "authentication",
                   retryable: false,
-                  message: "OpenAI credential 解析失败",
+                  message: `${this.#profile.displayName} credential 解析失败`,
                 },
         };
         return;
@@ -575,12 +707,20 @@ class OpenAiCompatibleModel implements Model {
         signal: options.signal,
       });
       if (response.status < 200 || response.status >= 300) {
-        yield { version: 1, type: "turn_failed", failure: await httpFailure(response) };
+        yield {
+          version: 1,
+          type: "turn_failed",
+          failure: await httpFailure(response, this.#profile),
+        };
         return;
       }
       yield* successfulEvents(response, this.#profile);
     } catch (error) {
-      yield { version: 1, type: "turn_failed", failure: thrownFailure(error, options.signal) };
+      yield {
+        version: 1,
+        type: "turn_failed",
+        failure: thrownFailure(error, options.signal, this.#profile),
+      };
     }
   }
 }

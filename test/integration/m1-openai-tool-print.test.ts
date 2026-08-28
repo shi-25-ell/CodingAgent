@@ -10,7 +10,10 @@ import type { CredentialSource } from "@coding-agent/model/auth";
 import { createEnvironmentCredentialSource } from "@coding-agent/model/auth";
 import type { OpenAiTransport } from "@coding-agent/model/providers/openai-compatible";
 import { afterEach, describe, expect, it } from "vitest";
-import { createOpenAiCodingAgent } from "../../packages/coding/src/composition/openai-composition.js";
+import {
+  createOpenAiCodingAgent,
+  createOpenRouterCodingAgent,
+} from "../../packages/coding/src/composition/openai-composition.js";
 import { runPrintEntry } from "../../packages/coding/src/modes/print/index.js";
 
 const temporaryDirectories: string[] = [];
@@ -28,6 +31,34 @@ async function* body(value: string): AsyncIterable<string> {
 }
 
 describe("M1 OpenAI-compatible coding vertical slice", () => {
+  it("OpenRouter composition 从 ignored local config 解析独立 credential", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-m1-openrouter-"));
+    temporaryDirectories.push(root);
+    const credentialPath = path.join(root, "local-credentials.json");
+    await writeFile(
+      credentialPath,
+      JSON.stringify({ "openrouter.default": "openrouter-local-secret" }),
+      "utf8",
+    );
+
+    const application = await createOpenRouterCodingAgent({
+      workspaceRoot: root,
+      localCredentialPath: credentialPath,
+      transport: {
+        async send() {
+          throw new Error("composition preflight 不应发起网络请求");
+        },
+      },
+    });
+
+    expect(application.model).toMatchObject({
+      providerId: "openrouter",
+      modelId: "openrouter/free",
+    });
+    expect(JSON.stringify(application.model)).not.toContain("openrouter-local-secret");
+    await application.dispose();
+  });
+
   it("production CLI process 在 credential 缺失时以稳定 exit code 退出", async () => {
     const repositoryRoot = await mkdtemp(path.join(tmpdir(), "fast-m1-cli-"));
     temporaryDirectories.push(repositoryRoot);
@@ -68,6 +99,48 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     expect(result.status).toBe(3);
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe("OpenAI credential 未配置\n");
+  });
+
+  it("production CLI process 可选择 OpenRouter composition", async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), "fast-m1-openrouter-cli-"));
+    temporaryDirectories.push(repositoryRoot);
+    expect(spawnSync("git", ["init", "-q"], { cwd: repositoryRoot }).status).toBe(0);
+    expect(
+      spawnSync(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "fixture",
+          "-q",
+        ],
+        { cwd: repositoryRoot },
+      ).status,
+    ).toBe(0);
+    const entry = fileURLToPath(
+      new URL("../../packages/coding/dist/cli/entry.js", import.meta.url),
+    );
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      FAST_MODEL_PROVIDER: "openrouter",
+      FAST_OPENROUTER_API_KEY: "",
+      OPENROUTER_API_KEY: "",
+    };
+
+    const result = spawnSync(process.execPath, [entry, "--print", "status"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env,
+    });
+
+    expect(result.status).toBe(3);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("OpenRouter credential 未配置\n");
   });
 
   it("composition 对 missing/failed credential 给出稳定错误码", async () => {

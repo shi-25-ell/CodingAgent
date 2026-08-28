@@ -3,6 +3,7 @@ import type { CredentialRequest, CredentialResolver } from "../../auth/contracts
 
 export interface OpenAiCompatibleProfile {
   readonly id: ProviderId;
+  readonly displayName: string;
   readonly baseUrl: URL;
   readonly auth: CredentialRequest;
   readonly requestDialect: {
@@ -12,6 +13,7 @@ export interface OpenAiCompatibleProfile {
   };
   readonly responseDialect: {
     readonly reasoningDeltaField?: string;
+    readonly terminalUsageRepeatsFinishReason?: boolean;
   };
   readonly defaultHeaders?: Readonly<Record<string, string>>;
 }

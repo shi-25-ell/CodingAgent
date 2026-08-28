@@ -17,8 +17,11 @@ export {
 export {
   CodingCompositionError,
   createOpenAiCodingAgent,
+  createOpenRouterCodingAgent,
   type OpenAiCodingAgent,
   type OpenAiCodingAgentOptions,
+  type OpenRouterCodingAgent,
+  type OpenRouterCodingAgentOptions,
 } from "./composition/openai-composition.js";
 export {
   type CodingToolHostOptions,
