@@ -1,3 +1,4 @@
+import type { ContextManifest } from "../context/contracts.js";
 import type { BranchId, Clock, IdFactory, RunId, SessionId } from "../contracts/primitives.js";
 import { branchId, recordId, runId, sessionId } from "../contracts/primitives.js";
 import type { RunReport } from "../runtime/contracts.js";
@@ -11,6 +12,7 @@ import type {
   NewLedgerRecord,
   QueueInput,
   QueueItem,
+  QueueUpdate,
   RunLease,
   SessionBranchSummary,
   SessionBranchView,
@@ -36,11 +38,22 @@ interface SessionState {
   readonly branches: Map<BranchId, BranchState>;
   readonly records: Map<string, LedgerRecord>;
   readonly terminalReports: Map<RunId, RunReport>;
-  readonly queue: QueueItem[];
+  readonly contextManifests: Map<RunId, ContextManifest[]>;
+  readonly toolCalls: Map<RunId, Map<string, "planned" | "started" | "succeeded" | "failed">>;
+  readonly queue: StoredQueueItem[];
   revision: number;
   currentBranchId: BranchId;
   activeRunId: RunId | undefined;
   ledgerSeq: number;
+}
+
+interface StoredQueueItem extends QueueItem {
+  readonly runId: RunId;
+}
+
+function publicQueueItem(item: StoredQueueItem): QueueItem {
+  const { runId: _run, ...visible } = item;
+  return clone(visible);
 }
 
 export interface InMemorySessionRepositoryOptions {
@@ -102,6 +115,8 @@ export class InMemorySessionRepository implements SessionRepository {
       branches: new Map([[initialBranch, { id: initialBranch, recordIds: [] }]]),
       records: new Map(),
       terminalReports: new Map(),
+      contextManifests: new Map(),
+      toolCalls: new Map(),
       queue: [],
       revision: 1,
       currentBranchId: initialBranch,
@@ -109,14 +124,17 @@ export class InMemorySessionRepository implements SessionRepository {
       ledgerSeq: 0,
     };
     this.#sessions.set(id, state);
-    return this.#handle(state);
+    return this.#handle(state, false);
   }
 
-  async open(ref: SessionRef): Promise<SessionHandle> {
+  async open(
+    ref: SessionRef,
+    options?: import("./contracts.js").OpenSessionOptions,
+  ): Promise<SessionHandle> {
     this.#assertAvailable();
     const state = this.#sessions.get(ref.sessionId);
     if (!state) throw new SessionError("SESSION_NOT_FOUND", "Session 不存在");
-    return this.#handle(state);
+    return this.#handle(state, options?.mode === "read_only");
   }
 
   async list(): Promise<readonly SessionSummary[]> {
@@ -164,15 +182,19 @@ export class InMemorySessionRepository implements SessionRepository {
     });
   }
 
-  #handle(state: SessionState): SessionHandle {
+  #handle(state: SessionState, readOnly: boolean): SessionHandle {
     let disposed = false;
     const assertHandle = (): void => {
       this.#assertAvailable();
       if (disposed) throw new SessionError("SESSION_DISPOSED", "SessionHandle 已释放");
     };
     const ref: SessionRef = { sessionId: state.id };
+    const assertWritable = (): void => {
+      if (readOnly) throw new SessionError("SESSION_READ_ONLY", "read-only SessionHandle 禁止写入");
+    };
     return {
       ref,
+      readOnly,
       inspect: async () => {
         assertHandle();
         return this.#snapshot(state);
@@ -192,8 +214,19 @@ export class InMemorySessionRepository implements SessionRepository {
         const report = state.terminalReports.get(id);
         return report ? clone(report) : undefined;
       },
+      listQueue: async (requestedRun) => {
+        assertHandle();
+        return state.queue
+          .filter((item) => requestedRun === undefined || item.runId === requestedRun)
+          .map(publicQueueItem);
+      },
+      readContextManifests: async (id) => {
+        assertHandle();
+        return clone(state.contextManifests.get(id) ?? []);
+      },
       selectBranch: async (selected, expectedRevision) => {
         assertHandle();
+        assertWritable();
         this.#assertRevision(state, expectedRevision);
         if (!state.branches.has(selected)) {
           throw new SessionError("SESSION_BRANCH_NOT_FOUND", "Conversation Branch 不存在");
@@ -208,9 +241,22 @@ export class InMemorySessionRepository implements SessionRepository {
         state.revision += 1;
         return this.#snapshot(state);
       },
-      forkBranch: async (input) => this.#forkBranch(state, input, assertHandle),
-      enqueue: async (input) => this.#enqueue(state, input, assertHandle),
-      beginRun: async (input) => this.#beginRun(state, input, assertHandle),
+      forkBranch: async (input) => {
+        assertWritable();
+        return this.#forkBranch(state, input, assertHandle);
+      },
+      enqueue: async (input) => {
+        assertWritable();
+        return this.#enqueue(state, input, assertHandle);
+      },
+      updateQueue: async (input) => {
+        assertWritable();
+        return this.#updateQueue(state, input, assertHandle);
+      },
+      beginRun: async (input) => {
+        assertWritable();
+        return this.#beginRun(state, input, assertHandle);
+      },
       [Symbol.asyncDispose]: async () => {
         disposed = true;
       },
@@ -226,14 +272,49 @@ export class InMemorySessionRepository implements SessionRepository {
       throw new TypeError("queue commandId 与 text 不能为空");
     }
     const existing = state.queue.find((item) => item.commandId === input.commandId);
-    if (existing) return clone(existing);
-    const item: QueueItem = {
+    if (existing) return publicQueueItem(existing);
+    const ordinal =
+      Math.max(
+        0,
+        ...state.queue
+          .filter((candidate) => candidate.runId === state.activeRunId)
+          .map((candidate) => candidate.ordinal),
+      ) + 1;
+    const item: StoredQueueItem = {
       ...input,
-      ordinal: state.queue.length + 1,
+      runId: state.activeRunId,
+      ordinal,
       status: "queued",
+      revision: 1,
     };
     state.queue.push(item);
-    return clone(item);
+    return publicQueueItem(item);
+  }
+
+  #updateQueue(state: SessionState, input: QueueUpdate, assertHandle: () => void): QueueItem {
+    assertHandle();
+    const index = state.queue.findIndex((item) => item.commandId === input.commandId);
+    const existing = state.queue[index];
+    if (!existing) throw new SessionError("SESSION_LEASE_LOST", "queue item 不存在");
+    if (existing.revision !== input.expectedRevision) {
+      throw new SessionError("SESSION_REVISION_CONFLICT", "queue item revision CAS 冲突");
+    }
+    if (existing.status === "delivered" || existing.status === "cancelled") {
+      throw new SessionError("SESSION_REVISION_CONFLICT", "queue item 已进入不可编辑状态");
+    }
+    if (input.status === "queued" && state.activeRunId !== existing.runId) {
+      throw new SessionError("SESSION_LEASE_LOST", "只能为 active Run 保持 queued 状态");
+    }
+    const text = input.text ?? existing.text;
+    if (text.trim().length === 0) throw new TypeError("queue text 不能为空");
+    const updated: StoredQueueItem = {
+      ...existing,
+      text,
+      status: input.status,
+      revision: existing.revision + 1,
+    };
+    state.queue[index] = updated;
+    return publicQueueItem(updated);
   }
 
   #assertRevision(state: SessionState, expected: number): void {
@@ -280,6 +361,8 @@ export class InMemorySessionRepository implements SessionRepository {
     const id = runId(this.#ids.next("run"));
     state.queue.splice(0);
     state.activeRunId = id;
+    state.toolCalls.set(id, new Map());
+    state.contextManifests.set(id, []);
     state.revision += 1;
     this.#appendRecord(state, branch, id, { kind: "run_started", metadata: input.metadata });
     for (const message of input.initialMessages) {
@@ -296,14 +379,32 @@ export class InMemorySessionRepository implements SessionRepository {
       runId: id,
       sessionId: state.id,
       branchId: branch.id,
+      heartbeat: async () => {
+        assertLease();
+      },
       append: async (entries): Promise<CommitReceipt> => {
         assertLease();
         if (entries.length === 0) throw new TypeError("append entries 不能为空");
         await this.#beforeAppend?.();
         assertLease();
         const first = state.ledgerSeq + 1;
-        for (const entry of entries) this.#appendRecord(state, branch, id, entry);
+        for (const entry of entries) {
+          this.#trackToolFacts(state, id, entry);
+          this.#appendRecord(state, branch, id, entry);
+        }
         return { firstLedgerSeq: first, lastLedgerSeq: state.ledgerSeq };
+      },
+      markToolCallStarted: async (callId) => {
+        assertLease();
+        const calls = state.toolCalls.get(id);
+        if (calls?.get(callId) !== "planned") {
+          throw new SessionError(
+            "SESSION_TERMINAL_CONFLICT",
+            "ToolCall start 没有唯一对应的 planned call",
+          );
+        }
+        calls.set(callId, "started");
+        this.#appendRecord(state, branch, id, { kind: "tool_started", callId });
       },
       drainSteering: async (): Promise<readonly QueueItem[]> => {
         assertLease();
@@ -312,11 +413,21 @@ export class InMemorySessionRepository implements SessionRepository {
         );
         for (const item of items) {
           const index = state.queue.indexOf(item);
-          const delivered = { ...item, status: "delivered" as const };
+          const delivered = {
+            ...item,
+            status: "delivered" as const,
+            revision: item.revision + 1,
+          };
           state.queue[index] = delivered;
           this.#appendRecord(state, branch, id, { kind: "user_message", text: item.text });
         }
-        return clone(items.map((item) => ({ ...item, status: "delivered" as const })));
+        return items.map((item) =>
+          publicQueueItem({
+            ...item,
+            status: "delivered",
+            revision: item.revision + 1,
+          }),
+        );
       },
       takeFollowUp: async (): Promise<QueueItem | undefined> => {
         assertLease();
@@ -325,10 +436,36 @@ export class InMemorySessionRepository implements SessionRepository {
         );
         if (!item) return undefined;
         const index = state.queue.indexOf(item);
-        const delivered = { ...item, status: "delivered" as const };
+        const delivered = {
+          ...item,
+          status: "delivered" as const,
+          revision: item.revision + 1,
+        };
         state.queue[index] = delivered;
         this.#appendRecord(state, branch, id, { kind: "user_message", text: item.text });
-        return clone(delivered);
+        return publicQueueItem(delivered);
+      },
+      commitContext: async (manifest) => {
+        assertLease();
+        if (manifest.runId !== id) throw new TypeError("Context Manifest runId 与 lease 不一致");
+        if (manifest.selectedRecordIds.some((selected) => !state.records.has(selected))) {
+          throw new SessionError(
+            "SESSION_CORRUPT",
+            "Context Manifest 引用了不存在的 Transcript record",
+          );
+        }
+        const manifests = state.contextManifests.get(id);
+        if (!manifests) throw new SessionError("SESSION_LEASE_LOST", "Run context state 不存在");
+        const existing = manifests.find(
+          (candidate) => candidate.modelAttemptCount === manifest.modelAttemptCount,
+        );
+        if (existing) {
+          if (JSON.stringify(existing) !== JSON.stringify(manifest)) {
+            throw new SessionError("SESSION_TERMINAL_CONFLICT", "Context Manifest CAS 冲突");
+          }
+          return;
+        }
+        manifests.push(clone(manifest));
       },
       finish: async (report): Promise<TerminalCommit> => {
         const existing = state.terminalReports.get(id);
@@ -337,6 +474,29 @@ export class InMemorySessionRepository implements SessionRepository {
         }
         assertLease();
         if (report.runId !== id) throw new TypeError("RunReport runId 与 lease 不一致");
+        const calls = state.toolCalls.get(id) ?? new Map();
+        const succeeded = [...calls.values()].filter((value) => value === "succeeded").length;
+        const failed = [...calls.values()].filter((value) => value === "failed").length;
+        const settled = succeeded + failed;
+        if (calls.size !== settled) {
+          throw new SessionError(
+            "SESSION_TERMINAL_CONFLICT",
+            "Run 仍有未结算的 accepted ToolCall，不能 finish",
+          );
+        }
+        if (
+          report.counts.toolCallCount !== calls.size ||
+          report.counts.settledToolCallCount !== settled ||
+          report.tools.accepted !== calls.size ||
+          report.tools.settled !== settled ||
+          report.tools.succeeded !== succeeded ||
+          report.tools.failed !== failed
+        ) {
+          throw new SessionError(
+            "SESSION_TERMINAL_CONFLICT",
+            "RunReport counts 与 durable facts 不一致",
+          );
+        }
         let durableReport = report;
         try {
           await this.#beforeFinish?.();
@@ -345,6 +505,7 @@ export class InMemorySessionRepository implements SessionRepository {
           durableReport = terminalPersistenceFailure(report);
         }
         assertLease();
+        this.#appendRecord(state, branch, id, { kind: "run_boundary", report: durableReport });
         this.#appendRecord(state, branch, id, { kind: "run_terminal", report: durableReport });
         state.terminalReports.set(id, clone(durableReport));
         state.activeRunId = undefined;
@@ -365,7 +526,8 @@ export class InMemorySessionRepository implements SessionRepository {
       | { readonly kind: "run_started"; readonly metadata: BeginRunInput["metadata"] }
       | { readonly kind: "user_message"; readonly text: string }
       | NewLedgerRecord
-      | { readonly kind: "run_terminal"; readonly report: RunReport },
+      | { readonly kind: "tool_started"; readonly callId: string }
+      | { readonly kind: "run_terminal" | "run_boundary"; readonly report: RunReport },
   ): void {
     state.ledgerSeq += 1;
     const id = recordId(this.#ids.next("record"));
@@ -380,5 +542,29 @@ export class InMemorySessionRepository implements SessionRepository {
     } as LedgerRecord;
     state.records.set(id, full);
     branch.recordIds.push(id);
+  }
+
+  #trackToolFacts(state: SessionState, activeRun: RunId, entry: NewLedgerRecord): void {
+    const calls = state.toolCalls.get(activeRun);
+    if (!calls) throw new SessionError("SESSION_LEASE_LOST", "Run tool state 不存在");
+    if (entry.kind === "assistant_message") {
+      for (const part of entry.message.content) {
+        if (part.type !== "tool_call") continue;
+        if (calls.has(part.callId)) {
+          throw new SessionError("SESSION_TERMINAL_CONFLICT", "accepted ToolCall callId 重复");
+        }
+        calls.set(part.callId, "planned");
+      }
+      return;
+    }
+    if (entry.kind !== "tool_outcome") return;
+    const stateBeforeOutcome = calls.get(entry.outcome.callId);
+    if (stateBeforeOutcome !== "planned" && stateBeforeOutcome !== "started") {
+      throw new SessionError(
+        "SESSION_TERMINAL_CONFLICT",
+        "ToolOutcome 没有唯一对应的 accepted ToolCall",
+      );
+    }
+    calls.set(entry.outcome.callId, entry.outcome.status === "succeeded" ? "succeeded" : "failed");
   }
 }

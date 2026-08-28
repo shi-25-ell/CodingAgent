@@ -151,6 +151,8 @@ class DefaultAgentHarness implements AgentHarness {
       } else if (safeEvent.type === "model_failure") {
         await lease.append([{ kind: "model_failure", failure: safeEvent.failure }]);
         stream.publish({ version: 1, type: "model_failure_committed", runId: lease.runId });
+      } else if (safeEvent.type === "tool_started") {
+        await lease.markToolCallStarted(safeEvent.callId);
       } else {
         await lease.append([{ kind: "tool_outcome", outcome: safeEvent.outcome }]);
         const evidence = safeEvent.outcome.evidence;
@@ -222,11 +224,13 @@ class DefaultAgentHarness implements AgentHarness {
       {
         async prepareContext(request) {
           const branch = await input.session.readBranch({ branchId: input.branchId });
-          return input.context.prepare({
+          const prepared = await input.context.prepare({
             ...request,
             branch,
             tools: toolDefinitions,
           });
+          await lease.commitContext(prepared.manifest);
+          return prepared;
         },
         commit,
         drainSteering: () => lease.drainSteering(),

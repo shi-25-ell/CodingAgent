@@ -26,6 +26,7 @@ export interface OpenDatabaseOptions {
   readonly databasePath: string;
   readonly busyTimeoutMs: number;
   readonly now: () => number;
+  readonly beforeMigrationCommit?: (version: number) => void;
 }
 
 export interface SqliteDatabase {
@@ -97,7 +98,11 @@ function validateMigrationHistory(database: Database.Database): void {
   }
 }
 
-function migrate(database: Database.Database, now: () => number): void {
+function migrate(
+  database: Database.Database,
+  now: () => number,
+  beforeCommit?: (version: number) => void,
+): void {
   validateMigrationHistory(database);
   let currentVersion = database.pragma("user_version", { simple: true }) as number;
   for (const migration of migrations) {
@@ -111,6 +116,7 @@ function migrate(database: Database.Database, now: () => number): void {
         )
         .run(migration.version, migration.checksum, now(), "fast-m3");
       database.pragma(`user_version = ${migration.version}`);
+      beforeCommit?.(migration.version);
       database.exec("COMMIT");
       currentVersion = migration.version;
     } catch (error) {
@@ -145,7 +151,7 @@ export async function openDatabase(options: OpenDatabaseOptions): Promise<Sqlite
     if (String(journalMode).toLowerCase() !== "wal") {
       throw new SqliteStorageError("SQLITE_CONFIGURATION", "SQLite WAL 未成功启用");
     }
-    migrate(raw, options.now);
+    migrate(raw, options.now, options.beforeMigrationCommit);
   } catch (error) {
     raw.close();
     if (error instanceof SqliteStorageError) throw error;

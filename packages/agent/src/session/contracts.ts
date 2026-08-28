@@ -1,10 +1,16 @@
 import type { AssistantMessage, ModelFailure } from "@coding-agent/model";
+import type { ContextManifest } from "../context/contracts.js";
 import type { BranchId, RecordId, RunId, SessionId } from "../contracts/primitives.js";
 import type { RunReport } from "../runtime/contracts.js";
 import type { ToolOutcome } from "../tools/contracts.js";
 
 export interface SessionRef {
   readonly sessionId: SessionId;
+}
+
+export interface OpenSessionOptions {
+  readonly mode?: "read_write" | "read_only";
+  readonly recover?: boolean;
 }
 
 export interface BranchRef {
@@ -60,8 +66,14 @@ export type LedgerRecord =
   | (LedgerRecordBase & { readonly kind: "user_message"; readonly text: string })
   | (LedgerRecordBase & { readonly kind: "assistant_message"; readonly message: AssistantMessage })
   | (LedgerRecordBase & { readonly kind: "model_failure"; readonly failure: ModelFailure })
+  | (LedgerRecordBase & { readonly kind: "tool_started"; readonly callId: string })
   | (LedgerRecordBase & { readonly kind: "tool_outcome"; readonly outcome: ToolOutcome })
-  | (LedgerRecordBase & { readonly kind: "run_terminal"; readonly report: RunReport });
+  | (LedgerRecordBase & { readonly kind: "run_terminal"; readonly report: RunReport })
+  | (LedgerRecordBase & { readonly kind: "run_boundary"; readonly report: RunReport })
+  | (LedgerRecordBase & {
+      readonly kind: "recovery";
+      readonly reason: "interrupted";
+    });
 
 export type NewLedgerRecord =
   | { readonly kind: "assistant_message"; readonly message: AssistantMessage }
@@ -83,7 +95,27 @@ export interface QueueInput {
 
 export interface QueueItem extends QueueInput {
   readonly ordinal: number;
-  readonly status: "queued" | "delivered";
+  readonly status: "queued" | "delivered" | "draft" | "cancelled";
+  readonly revision: number;
+}
+
+export interface QueueUpdate {
+  readonly commandId: string;
+  readonly expectedRevision: number;
+  readonly text?: string;
+  readonly status: "queued" | "draft" | "cancelled";
+}
+
+export interface CompactionCheckpointMetadata {
+  readonly version: 1;
+  readonly checkpointId: string;
+  readonly runId: RunId;
+  readonly branchId: BranchId;
+  readonly sourceStartLedgerSeq: number;
+  readonly sourceEndLedgerSeq: number;
+  readonly sourceDigest: string;
+  readonly strategyVersion: string;
+  readonly summaryArtifact?: import("../tools/contracts.js").ArtifactRef;
 }
 
 export interface RunMetadata {
@@ -125,9 +157,15 @@ export interface RunLease extends AsyncDisposable {
   readonly runId: RunId;
   readonly sessionId: SessionId;
   readonly branchId: BranchId;
+  heartbeat(): Promise<void>;
   append(entries: readonly NewLedgerRecord[]): Promise<CommitReceipt>;
+  markToolCallStarted(callId: string): Promise<void>;
   drainSteering(): Promise<readonly QueueItem[]>;
   takeFollowUp(): Promise<QueueItem | undefined>;
+  commitContext(
+    manifest: ContextManifest,
+    checkpoint?: CompactionCheckpointMetadata,
+  ): Promise<void>;
   /**
    * Durability seam for terminal arbitration. Implementations resolve only after a terminal report is
    * durable, returning that durable report (including an idempotently recovered existing report).
@@ -139,18 +177,22 @@ export interface RunLease extends AsyncDisposable {
 
 export interface SessionHandle extends AsyncDisposable {
   readonly ref: SessionRef;
+  readonly readOnly: boolean;
   inspect(): Promise<SessionSnapshot>;
   readBranch(input: ReadBranchInput): Promise<SessionBranchView>;
   readRunReport(runId: RunId): Promise<RunReport | undefined>;
+  listQueue(runId?: RunId): Promise<readonly QueueItem[]>;
+  readContextManifests(runId: RunId): Promise<readonly ContextManifest[]>;
   selectBranch(branchId: BranchId, expectedRevision: number): Promise<SessionSnapshot>;
   forkBranch(input: ForkBranchInput): Promise<BranchRef>;
   enqueue(input: QueueInput): Promise<QueueItem>;
+  updateQueue(input: QueueUpdate): Promise<QueueItem>;
   beginRun(input: BeginRunInput): Promise<RunLease>;
 }
 
 export interface SessionRepository extends AsyncDisposable {
   create(input: CreateSessionInput): Promise<SessionHandle>;
-  open(ref: SessionRef): Promise<SessionHandle>;
+  open(ref: SessionRef, options?: OpenSessionOptions): Promise<SessionHandle>;
   list(): Promise<readonly SessionSummary[]>;
   delete(ref: SessionRef): Promise<void>;
 }

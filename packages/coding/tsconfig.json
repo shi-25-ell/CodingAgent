@@ -6,6 +6,6 @@
     "outDir": "dist",
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
-  "references": [{ "path": "../model" }, { "path": "../agent" }],
+  "references": [{ "path": "../model" }, { "path": "../agent" }, { "path": "../sqlite" }],
   "include": ["src/**/*.ts"]
 }

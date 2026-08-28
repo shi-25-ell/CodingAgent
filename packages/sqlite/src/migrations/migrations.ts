@@ -190,4 +190,12 @@ function migration(version: number, sql: string): Migration {
   };
 }
 
-export const migrations: readonly Migration[] = [migration(1, initialSchema)];
+const durableLeaseEpoch = `
+ALTER TABLE sessions
+  ADD COLUMN lease_epoch INTEGER NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0);
+`;
+
+export const migrations: readonly Migration[] = [
+  migration(1, initialSchema),
+  migration(2, durableLeaseEpoch),
+];

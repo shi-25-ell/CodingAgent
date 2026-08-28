@@ -25,6 +25,7 @@
   "dependencies": {
     "@coding-agent/agent": "0.0.0",
     "@coding-agent/model": "0.0.0",
+    "@coding-agent/sqlite": "0.0.0",
     "ajv": "^8.18.0"
   },
   "scripts": {

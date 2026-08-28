@@ -569,6 +569,7 @@ describe("AgentHarness terminal contract", () => {
       "run_started",
       "user_message",
       "model_failure",
+      "run_boundary",
       "run_terminal",
     ]);
   });
@@ -729,7 +730,8 @@ describe("AgentHarness terminal contract", () => {
           updates: (async function* () {})(),
           outcome: (async () => {
             const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
-            expect(branch.records.at(-1)?.kind).toBe("assistant_message");
+            expect(branch.records.at(-1)?.kind).toBe("tool_started");
+            expect(branch.records.at(-2)?.kind).toBe("assistant_message");
             return {
               callId: call.callId,
               status: "succeeded" as const,
@@ -813,8 +815,10 @@ describe("AgentHarness terminal contract", () => {
       "run_started",
       "user_message",
       "assistant_message",
+      "tool_started",
       "tool_outcome",
       "assistant_message",
+      "run_boundary",
       "run_terminal",
     ]);
     model.assertConsumed();
@@ -836,6 +840,7 @@ describe("AgentHarness terminal contract", () => {
       "run_started",
       "user_message",
       "assistant_message",
+      "run_boundary",
       "run_terminal",
     ]);
     expectExactlyOneTerminal(scenario, "completed");
@@ -942,6 +947,7 @@ describe("AgentHarness terminal contract", () => {
       "run_started",
       "user_message",
       "assistant_message",
+      "run_boundary",
       "run_terminal",
     ]);
     expectExactlyOneTerminal(

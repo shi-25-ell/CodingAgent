@@ -1,17 +1,22 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
+  type ArtifactIntegrity,
+  type ArtifactRef,
   type BeginRunInput,
   type BranchId,
   type BranchRef,
   branchId,
   type Clock,
   type CommitReceipt,
+  type CompactionCheckpointMetadata,
+  type ContextManifest,
   type CreateSessionInput,
   type IdFactory,
   type LedgerRecord,
   type NewLedgerRecord,
   type QueueInput,
   type QueueItem,
+  type QueueUpdate,
   type RunId,
   type RunLease,
   type RunReport,
@@ -38,6 +43,7 @@ interface SessionRow {
   readonly current_branch_id: string;
   readonly active_run_id: string | null;
   readonly degraded_reason: string | null;
+  readonly lease_epoch: number;
 }
 
 interface BranchRow {
@@ -73,6 +79,8 @@ export interface SqliteSessionRepositoryOptions {
   readonly clock: Clock;
   readonly ids: IdFactory;
   readonly lease: SqliteLeaseOptions;
+  readonly recoverSession: (sessionId: string) => void;
+  readonly verifyArtifactRef: (ref: ArtifactRef) => Promise<ArtifactIntegrity>;
   readonly disposeDatabase: () => void;
 }
 
@@ -130,6 +138,8 @@ export class SqliteSessionRepository implements SessionRepository {
   readonly #clock: Clock;
   readonly #ids: IdFactory;
   readonly #lease: SqliteLeaseOptions;
+  readonly #recoverSession: (sessionId: string) => void;
+  readonly #verifyArtifactRef: (ref: ArtifactRef) => Promise<ArtifactIntegrity>;
   readonly #disposeDatabase: () => void;
   #disposed = false;
 
@@ -140,6 +150,8 @@ export class SqliteSessionRepository implements SessionRepository {
     this.#clock = options.clock;
     this.#ids = options.ids;
     this.#lease = options.lease;
+    this.#recoverSession = options.recoverSession;
+    this.#verifyArtifactRef = options.verifyArtifactRef;
     this.#disposeDatabase = options.disposeDatabase;
   }
 
@@ -171,13 +183,19 @@ export class SqliteSessionRepository implements SessionRepository {
         .prepare("UPDATE sessions SET current_branch_id = ? WHERE session_id = ?")
         .run(initialBranch, id);
     });
-    return this.#handle({ sessionId: id });
+    return this.#handle({ sessionId: id }, false);
   }
 
-  async open(ref: SessionRef): Promise<SessionHandle> {
+  async open(
+    ref: SessionRef,
+    options?: import("@coding-agent/agent").OpenSessionOptions,
+  ): Promise<SessionHandle> {
     this.#assertAvailable();
-    this.#sessionRow(ref.sessionId);
-    return this.#handle(ref);
+    if (options?.mode !== "read_only" && options?.recover !== false) {
+      this.#recoverSession(ref.sessionId);
+    }
+    const state = this.#sessionRow(ref.sessionId);
+    return this.#handle(ref, options?.mode === "read_only" || state.degraded_reason !== null);
   }
 
   async list(): Promise<readonly SessionSummary[]> {
@@ -185,7 +203,7 @@ export class SqliteSessionRepository implements SessionRepository {
     const rows = this.#raw
       .prepare(
         `SELECT session_id, workspace_root, workspace_fingerprint, revision,
-                current_branch_id, active_run_id, degraded_reason
+                current_branch_id, active_run_id, degraded_reason, lease_epoch
          FROM sessions ORDER BY created_at, session_id`,
       )
       .all() as SessionRow[];
@@ -217,7 +235,7 @@ export class SqliteSessionRepository implements SessionRepository {
     const row = this.#raw
       .prepare(
         `SELECT session_id, workspace_root, workspace_fingerprint, revision,
-                current_branch_id, active_run_id, degraded_reason
+                current_branch_id, active_run_id, degraded_reason, lease_epoch
          FROM sessions WHERE session_id = ?`,
       )
       .get(id) as SessionRow | undefined;
@@ -302,14 +320,18 @@ export class SqliteSessionRepository implements SessionRepository {
     });
   }
 
-  #handle(ref: SessionRef): SessionHandle {
+  #handle(ref: SessionRef, readOnly: boolean): SessionHandle {
     let disposed = false;
     const assertHandle = (): void => {
       this.#assertAvailable();
       if (disposed) throw new SessionError("SESSION_DISPOSED", "SessionHandle 已释放");
     };
+    const assertWritable = (): void => {
+      if (readOnly) throw new SessionError("SESSION_READ_ONLY", "read-only SessionHandle 禁止写入");
+    };
     return {
       ref: clone(ref),
+      readOnly,
       inspect: async () => {
         assertHandle();
         return this.#snapshot(ref.sessionId);
@@ -334,8 +356,49 @@ export class SqliteSessionRepository implements SessionRepository {
           .get(ref.sessionId, requestedRun) as { readonly report_json: string } | undefined;
         return row ? clone(decode<RunReport>(row.report_json, "RunReport")) : undefined;
       },
+      listQueue: async (requestedRun) => {
+        assertHandle();
+        const rows = this.#raw
+          .prepare(
+            `SELECT command_id, kind, text, ordinal, status, revision
+             FROM queue_items
+             WHERE session_id = ? AND (? IS NULL OR run_id = ?)
+             ORDER BY created_at, ordinal`,
+          )
+          .all(ref.sessionId, requestedRun ?? null, requestedRun ?? null) as {
+          readonly command_id: string;
+          readonly kind: QueueItem["kind"];
+          readonly text: string;
+          readonly ordinal: number;
+          readonly status: QueueItem["status"];
+          readonly revision: number;
+        }[];
+        return clone(
+          rows.map((row) => ({
+            commandId: row.command_id,
+            kind: row.kind,
+            text: row.text,
+            ordinal: row.ordinal,
+            status: row.status,
+            revision: row.revision,
+          })),
+        );
+      },
+      readContextManifests: async (requestedRun) => {
+        assertHandle();
+        const rows = this.#raw
+          .prepare(
+            `SELECT payload_json FROM context_manifests
+             WHERE session_id = ? AND run_id = ? ORDER BY model_attempt_count`,
+          )
+          .all(ref.sessionId, requestedRun) as { readonly payload_json: string }[];
+        return clone(
+          rows.map((row) => decode<ContextManifest>(row.payload_json, "Context Manifest")),
+        );
+      },
       selectBranch: async (selected, expectedRevision) => {
         assertHandle();
+        assertWritable();
         this.#database.immediate(() => {
           const state = this.#sessionRow(ref.sessionId);
           this.#assertRevision(state, expectedRevision);
@@ -358,14 +421,22 @@ export class SqliteSessionRepository implements SessionRepository {
       },
       forkBranch: async (input) => {
         assertHandle();
+        assertWritable();
         return this.#forkBranch(ref.sessionId, input.fromBranchId, input.expectedRevision);
       },
       enqueue: async (input) => {
         assertHandle();
+        assertWritable();
         return this.#enqueue(ref.sessionId, input);
+      },
+      updateQueue: async (input) => {
+        assertHandle();
+        assertWritable();
+        return this.#updateQueue(ref.sessionId, input);
       },
       beginRun: async (input) => {
         assertHandle();
+        assertWritable();
         return this.#beginRun(ref.sessionId, input, assertHandle);
       },
       [Symbol.asyncDispose]: async () => {
@@ -434,7 +505,7 @@ export class SqliteSessionRepository implements SessionRepository {
       }
       const existing = this.#raw
         .prepare(
-          `SELECT command_id, kind, text, ordinal, status
+          `SELECT command_id, kind, text, ordinal, status, revision
            FROM queue_items WHERE session_id = ? AND command_id = ?`,
         )
         .get(session, input.commandId) as
@@ -444,6 +515,7 @@ export class SqliteSessionRepository implements SessionRepository {
             readonly text: string;
             readonly ordinal: number;
             readonly status: QueueItem["status"];
+            readonly revision: number;
           }
         | undefined;
       if (existing) {
@@ -453,6 +525,7 @@ export class SqliteSessionRepository implements SessionRepository {
           text: existing.text,
           ordinal: existing.ordinal,
           status: existing.status,
+          revision: existing.revision,
         });
       }
       const next = this.#raw
@@ -478,7 +551,66 @@ export class SqliteSessionRepository implements SessionRepository {
           now,
           now,
         );
-      return { ...input, ordinal: next.ordinal, status: "queued" };
+      return { ...input, ordinal: next.ordinal, status: "queued", revision: 1 };
+    });
+  }
+
+  #updateQueue(session: string, input: QueueUpdate): QueueItem {
+    return this.#database.immediate(() => {
+      const existing = this.#raw
+        .prepare(
+          `SELECT command_id, run_id, kind, text, ordinal, status, revision
+           FROM queue_items WHERE session_id = ? AND command_id = ?`,
+        )
+        .get(session, input.commandId) as
+        | {
+            readonly command_id: string;
+            readonly run_id: string;
+            readonly kind: QueueItem["kind"];
+            readonly text: string;
+            readonly ordinal: number;
+            readonly status: QueueItem["status"];
+            readonly revision: number;
+          }
+        | undefined;
+      if (!existing) throw new SessionError("SESSION_LEASE_LOST", "queue item 不存在");
+      if (existing.revision !== input.expectedRevision) {
+        throw new SessionError("SESSION_REVISION_CONFLICT", "queue item revision CAS 冲突");
+      }
+      if (existing.status === "delivered" || existing.status === "cancelled") {
+        throw new SessionError("SESSION_REVISION_CONFLICT", "queue item 已进入不可编辑状态");
+      }
+      const state = this.#sessionRow(session);
+      if (input.status === "queued" && state.active_run_id !== existing.run_id) {
+        throw new SessionError("SESSION_LEASE_LOST", "只能为 active Run 保持 queued 状态");
+      }
+      const text = input.text ?? existing.text;
+      if (text.trim().length === 0) throw new TypeError("queue text 不能为空");
+      const changed = this.#raw
+        .prepare(
+          `UPDATE queue_items
+           SET text = ?, status = ?, revision = revision + 1, updated_at = ?
+           WHERE session_id = ? AND command_id = ? AND revision = ?`,
+        )
+        .run(
+          text,
+          input.status,
+          this.#clock.now(),
+          session,
+          input.commandId,
+          input.expectedRevision,
+        );
+      if (changed.changes !== 1) {
+        throw new SessionError("SESSION_REVISION_CONFLICT", "queue item revision CAS 冲突");
+      }
+      return {
+        commandId: existing.command_id,
+        kind: existing.kind,
+        text,
+        ordinal: existing.ordinal,
+        status: input.status,
+        revision: existing.revision + 1,
+      };
     });
   }
 
@@ -502,7 +634,7 @@ export class SqliteSessionRepository implements SessionRepository {
       if (priorLease && priorLease.expires_at > now) {
         throw new SessionError("SESSION_ACTIVE_RUN", "Session writer lease 已被占用");
       }
-      const nextEpoch = (priorLease?.epoch ?? 0) + 1;
+      const nextEpoch = state.lease_epoch + 1;
       this.#raw
         .prepare(
           `INSERT INTO session_leases(
@@ -535,10 +667,11 @@ export class SqliteSessionRepository implements SessionRepository {
         .run(run, session, input.branchId, encode(input.metadata), now, nextEpoch);
       const changed = this.#raw
         .prepare(
-          `UPDATE sessions SET active_run_id = ?, revision = revision + 1, updated_at = ?
+          `UPDATE sessions
+           SET active_run_id = ?, lease_epoch = ?, revision = revision + 1, updated_at = ?
            WHERE session_id = ? AND active_run_id IS NULL`,
         )
-        .run(run, now, session);
+        .run(run, nextEpoch, now, session);
       if (changed.changes !== 1)
         throw new SessionError("SESSION_ACTIVE_RUN", "Session 已有 active Run");
       this.#appendLedger(session, input.branchId, run, {
@@ -582,9 +715,17 @@ export class SqliteSessionRepository implements SessionRepository {
       runId: identity.run,
       sessionId: identity.session,
       branchId: identity.branch,
+      heartbeat: async () => {
+        assertCapability();
+        this.#database.immediate(() => {
+          this.#assertLease(identity);
+          this.#heartbeat(identity);
+        });
+      },
       append: async (entries): Promise<CommitReceipt> => {
         assertCapability();
         if (entries.length === 0) throw new TypeError("append entries 不能为空");
+        await this.#verifyArtifactReferences(entries);
         return this.#database.immediate(() => {
           this.#assertLease(identity);
           const first = this.#nextLedgerSequence(identity.session);
@@ -599,6 +740,29 @@ export class SqliteSessionRepository implements SessionRepository {
           };
         });
       },
+      markToolCallStarted: async (callId) => {
+        assertCapability();
+        this.#database.immediate(() => {
+          this.#assertLease(identity);
+          const changed = this.#raw
+            .prepare(
+              `UPDATE tool_calls SET state = 'started'
+               WHERE run_id = ? AND call_id = ? AND state = 'planned'`,
+            )
+            .run(identity.run, callId);
+          if (changed.changes !== 1) {
+            throw new SessionError(
+              "SESSION_TERMINAL_CONFLICT",
+              "ToolCall start 没有唯一对应的 planned call",
+            );
+          }
+          this.#appendLedger(identity.session, identity.branch, identity.run, {
+            kind: "tool_started",
+            callId,
+          });
+          this.#heartbeat(identity);
+        });
+      },
       drainSteering: async (): Promise<readonly QueueItem[]> => {
         assertCapability();
         return this.#deliverQueue(identity, "steering", false);
@@ -606,6 +770,22 @@ export class SqliteSessionRepository implements SessionRepository {
       takeFollowUp: async (): Promise<QueueItem | undefined> => {
         assertCapability();
         return (await this.#deliverQueue(identity, "follow_up", true))[0];
+      },
+      commitContext: async (manifest, checkpoint) => {
+        assertCapability();
+        if (manifest.runId !== identity.run) {
+          throw new TypeError("Context Manifest runId 与 lease 不一致");
+        }
+        if (checkpoint?.summaryArtifact) {
+          const integrity = await this.#verifyArtifactRef(checkpoint.summaryArtifact);
+          if (integrity.status !== "verified") {
+            throw new SessionError(
+              "SESSION_CORRUPT",
+              "Compaction Checkpoint 引用了未 committed 或损坏的 Artifact",
+            );
+          }
+        }
+        this.#commitContext(identity, manifest, checkpoint);
       },
       finish: async (report): Promise<TerminalCommit> => {
         assertCapability();
@@ -683,7 +863,9 @@ export class SqliteSessionRepository implements SessionRepository {
       | { readonly kind: "run_started"; readonly metadata: BeginRunInput["metadata"] }
       | { readonly kind: "user_message"; readonly text: string }
       | NewLedgerRecord
-      | { readonly kind: "run_terminal"; readonly report: RunReport },
+      | { readonly kind: "tool_started"; readonly callId: string }
+      | { readonly kind: "run_terminal" | "run_boundary"; readonly report: RunReport }
+      | { readonly kind: "recovery"; readonly reason: "interrupted" },
   ): void {
     const nextSequence = this.#nextLedgerSequence(session);
     const id = recordId(this.#ids.next("record"));
@@ -762,6 +944,21 @@ export class SqliteSessionRepository implements SessionRepository {
     }
   }
 
+  async #verifyArtifactReferences(entries: readonly NewLedgerRecord[]): Promise<void> {
+    for (const entry of entries) {
+      if (entry.kind !== "tool_outcome") continue;
+      for (const ref of entry.outcome.artifacts) {
+        const integrity = await this.#verifyArtifactRef(ref);
+        if (integrity.status !== "verified") {
+          throw new SessionError(
+            "SESSION_CORRUPT",
+            "ToolOutcome 引用了未 committed 或损坏的 Artifact",
+          );
+        }
+      }
+    }
+  }
+
   #deliverQueue(
     identity: {
       readonly session: ReturnType<typeof sessionId>;
@@ -777,7 +974,7 @@ export class SqliteSessionRepository implements SessionRepository {
       this.#assertLease(identity);
       const rows = this.#raw
         .prepare(
-          `SELECT command_id, kind, text, ordinal, status
+          `SELECT command_id, kind, text, ordinal, status, revision
            FROM queue_items
            WHERE run_id = ? AND kind = ? AND status = 'queued'
            ORDER BY ordinal ${firstOnly ? "LIMIT 1" : ""}`,
@@ -788,6 +985,7 @@ export class SqliteSessionRepository implements SessionRepository {
         readonly text: string;
         readonly ordinal: number;
         readonly status: QueueItem["status"];
+        readonly revision: number;
       }[];
       const delivered: QueueItem[] = [];
       for (const row of rows) {
@@ -810,10 +1008,95 @@ export class SqliteSessionRepository implements SessionRepository {
           text: row.text,
           ordinal: row.ordinal,
           status: "delivered",
+          revision: row.revision + 1,
         });
       }
       this.#heartbeat(identity);
       return clone(delivered);
+    });
+  }
+
+  #commitContext(
+    identity: {
+      readonly session: ReturnType<typeof sessionId>;
+      readonly run: RunId;
+      readonly tokenDigest: string;
+      readonly epoch: number;
+    },
+    manifest: ContextManifest,
+    checkpoint?: CompactionCheckpointMetadata,
+  ): void {
+    const payload = encode(manifest);
+    const digest = createHash("sha256").update(payload, "utf8").digest("hex");
+    this.#database.immediate(() => {
+      this.#assertLease(identity);
+      for (const selected of manifest.selectedRecordIds) {
+        const exists = this.#raw
+          .prepare("SELECT 1 FROM ledger_records WHERE session_id = ? AND record_id = ?")
+          .get(identity.session, selected);
+        if (!exists) {
+          throw new SessionError(
+            "SESSION_CORRUPT",
+            "Context Manifest 引用了不存在的 Transcript record",
+          );
+        }
+      }
+      const existing = this.#raw
+        .prepare(
+          `SELECT digest FROM context_manifests
+           WHERE run_id = ? AND model_attempt_count = ?`,
+        )
+        .get(identity.run, manifest.modelAttemptCount) as { readonly digest: string } | undefined;
+      if (existing) {
+        if (existing.digest !== digest) {
+          throw new SessionError("SESSION_TERMINAL_CONFLICT", "Context Manifest CAS 冲突");
+        }
+      } else {
+        this.#raw
+          .prepare(
+            `INSERT INTO context_manifests(
+              manifest_id, session_id, run_id, model_attempt_count,
+              digest, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            manifest.id,
+            identity.session,
+            identity.run,
+            manifest.modelAttemptCount,
+            digest,
+            payload,
+            this.#clock.now(),
+          );
+      }
+      if (checkpoint) {
+        if (checkpoint.runId !== identity.run) {
+          throw new TypeError("Compaction Checkpoint runId 与 lease 不一致");
+        }
+        this.#raw
+          .prepare(
+            `INSERT INTO compaction_checkpoints(
+              checkpoint_id, session_id, branch_id, run_id, source_start_seq,
+              source_end_seq, source_digest, summary_artifact_id,
+              strategy_version, payload_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(checkpoint_id) DO NOTHING`,
+          )
+          .run(
+            checkpoint.checkpointId,
+            identity.session,
+            checkpoint.branchId,
+            identity.run,
+            checkpoint.sourceStartLedgerSeq,
+            checkpoint.sourceEndLedgerSeq,
+            checkpoint.sourceDigest,
+            checkpoint.summaryArtifact?.id ?? null,
+            checkpoint.strategyVersion,
+            encode(checkpoint),
+            this.#clock.now(),
+          );
+      }
+      this.#heartbeat(identity);
     });
   }
 
@@ -850,17 +1133,32 @@ export class SqliteSessionRepository implements SessionRepository {
           "Run 仍有未结算的 accepted ToolCall，不能 finish",
         );
       }
+      const outcomes = this.#raw
+        .prepare("SELECT outcome_json FROM tool_calls WHERE run_id = ? ORDER BY source_order")
+        .all(identity.run) as { readonly outcome_json: string }[];
+      const succeeded = outcomes.filter(
+        (row) =>
+          decode<{ readonly status: string }>(row.outcome_json, "ToolOutcome").status ===
+          "succeeded",
+      ).length;
+      const failed = outcomes.length - succeeded;
       if (
         report.counts.toolCallCount !== facts.accepted ||
         report.counts.settledToolCallCount !== facts.settled ||
         report.tools.accepted !== facts.accepted ||
-        report.tools.settled !== facts.settled
+        report.tools.settled !== facts.settled ||
+        report.tools.succeeded !== succeeded ||
+        report.tools.failed !== failed
       ) {
         throw new SessionError(
           "SESSION_TERMINAL_CONFLICT",
           "RunReport counts 与 durable facts 不一致",
         );
       }
+      this.#appendLedger(identity.session, identity.branch, identity.run, {
+        kind: "run_boundary",
+        report,
+      });
       this.#appendLedger(identity.session, identity.branch, identity.run, {
         kind: "run_terminal",
         report,

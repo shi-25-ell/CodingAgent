@@ -32,6 +32,7 @@ export default defineConfig({
         "packages/coding/src/tools/ephemeral-artifact-store.ts",
         "packages/coding/src/tools/local-execution-ports.ts",
         "packages/coding/src/tools/tool-registry.ts",
+        "packages/sqlite/src/**/*.ts",
       ],
       thresholds: { lines: 85, branches: 80 },
     },

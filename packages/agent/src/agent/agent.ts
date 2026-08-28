@@ -315,6 +315,9 @@ class DefaultAgent implements Agent {
               };
             } else {
               try {
+                await callDependency("persistence", () =>
+                  host.commit({ version: 1, type: "tool_started", callId: call.callId }),
+                );
                 const execution = input.tools.execute(call, {
                   runId: input.runId,
                   signal: input.signal,

@@ -30,6 +30,12 @@ async function* body(value: string): AsyncIterable<string> {
   yield value;
 }
 
+async function temporaryDataDirectory(prefix: string): Promise<string> {
+  const directory = await mkdtemp(path.join(tmpdir(), prefix));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
 describe("M1 OpenAI-compatible coding vertical slice", () => {
   it("OpenRouter composition 从 ignored local config 解析独立 credential", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m1-openrouter-"));
@@ -43,6 +49,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
 
     const application = await createOpenRouterCodingAgent({
       workspaceRoot: root,
+      dataDirectory: await temporaryDataDirectory("fast-m1-openrouter-data-"),
       localCredentialPath: credentialPath,
       transport: {
         async send() {
@@ -112,6 +119,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     };
     const application = await createOpenRouterCodingAgent({
       workspaceRoot: root,
+      dataDirectory: await temporaryDataDirectory("fast-m1-openrouter-print-data-"),
       transport,
       credentialSources: [
         createEnvironmentCredentialSource({
@@ -303,6 +311,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
 
     const application = await createOpenAiCodingAgent({
       workspaceRoot: root,
+      dataDirectory: await temporaryDataDirectory("fast-m1-defaults-data-"),
       localCredentialPath: credentialPath,
       transport: {
         async send() {
@@ -327,7 +336,10 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     const result = spawnSync(process.execPath, [entry, "--print", "read answer.txt"], {
       cwd: root,
       encoding: "utf8",
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        FAST_DATA_HOME: await temporaryDataDirectory("fast-m1-process-data-"),
+      },
     });
 
     expect(result.status).toBe(0);
@@ -379,6 +391,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     };
     const application = await createOpenAiCodingAgent({
       workspaceRoot: root,
+      dataDirectory: await temporaryDataDirectory("fast-m1-print-data-"),
       modelId: "gpt-test",
       transport,
       credentialSources: [

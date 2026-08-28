@@ -4,7 +4,8 @@ import path from "node:path";
 import process from "node:process";
 import ts from "typescript";
 
-const baseline = process.env.M2_COVERAGE_BASE ?? "m1";
+const baseline = process.argv[2] ?? process.env.M2_COVERAGE_BASE ?? "m1";
+const milestone = process.argv[3] ?? "changed production";
 const diff = execFileSync(
   "git",
   ["diff", "--unified=0", "--diff-filter=AM", baseline, "--", "packages/*/src/**/*.ts"],
@@ -80,8 +81,8 @@ const coveredLines = [...lineHits.values()].filter((count) => count > 0).length;
 const lines = (coveredLines / lineHits.size) * 100;
 const branches = branchTotal === 0 ? 100 : (branchCovered / branchTotal) * 100;
 console.log(
-  `M2 added production coverage (${runtimeFiles} runtime files, ${lineHits.size} executable lines, ${branchTotal} branches): lines ${lines.toFixed(2)}%, branches ${branches.toFixed(2)}%`,
+  `${milestone} added production coverage (${runtimeFiles} runtime files, ${lineHits.size} executable lines, ${branchTotal} branches): lines ${lines.toFixed(2)}%, branches ${branches.toFixed(2)}%`,
 );
 if (lines < 85 || branches < 80) {
-  throw new Error("M2 added production coverage 未达到 lines 85% / branches 80% gate");
+  throw new Error(`${milestone} added production coverage 未达到 lines 85% / branches 80% gate`);
 }

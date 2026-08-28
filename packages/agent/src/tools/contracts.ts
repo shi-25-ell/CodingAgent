@@ -8,15 +8,17 @@ export interface ArtifactRef {
 }
 
 export interface ArtifactWriteInput {
-  readonly bytes: Uint8Array;
-  readonly mediaType: "text/plain" | "application/json";
+  readonly bytes: Uint8Array | AsyncIterable<Uint8Array>;
+  readonly mediaType: "text/plain" | "application/json" | "application/octet-stream";
   readonly provenance: string;
 }
 
 export interface ArtifactMetadata extends ArtifactRef {
+  readonly digest: { readonly algorithm: "sha256"; readonly hex: string };
   readonly byteLength: number;
   readonly mediaType: ArtifactWriteInput["mediaType"];
   readonly provenance: string;
+  readonly preview: string;
 }
 
 export interface ArtifactIntegrity {
@@ -25,6 +27,7 @@ export interface ArtifactIntegrity {
 
 export interface ArtifactReadOptions {
   readonly signal?: AbortSignal;
+  readonly maxBytes?: number;
 }
 
 export interface ArtifactStore extends AsyncDisposable {

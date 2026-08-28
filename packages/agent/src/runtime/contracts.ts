@@ -14,6 +14,7 @@ export type TerminationReason =
   | "tool_infrastructure_failure"
   | "context_unavailable"
   | "policy_failure"
+  | "recovered_interruption"
   | "persistence_failure";
 
 export type RunPhase =
@@ -144,6 +145,7 @@ export interface AgentRunResult {
 
 export type AgentSemanticEvent = { readonly version: 1 } & (
   | { readonly type: "assistant_message"; readonly response: ModelResponse }
+  | { readonly type: "tool_started"; readonly callId: string }
   | { readonly type: "tool_outcome"; readonly outcome: ToolOutcome }
   | { readonly type: "model_failure"; readonly failure: ModelFailure }
 );

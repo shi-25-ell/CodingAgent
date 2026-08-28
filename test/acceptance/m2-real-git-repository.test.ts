@@ -19,7 +19,8 @@ describe.skipIf(process.platform !== "win32")("M2 real Git repository acceptance
   it("actual Node print process 修复项目，进程外 verifier 与 Git evidence 交叉通过", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m2-acceptance-"));
     const evidenceRoot = await mkdtemp(path.join(tmpdir(), "fast-m2-evidence-"));
-    temporaryDirectories.push(root, evidenceRoot);
+    const dataRoot = await mkdtemp(path.join(tmpdir(), "fast-m3-data-"));
+    temporaryDirectories.push(root, evidenceRoot, dataRoot);
     await writeFile(
       path.join(root, "math.js"),
       "export function add(a, b) {\n  return a - b;\n}\n",
@@ -59,7 +60,11 @@ describe.skipIf(process.platform !== "win32")("M2 real Git repository acceptance
       {
         cwd: root,
         encoding: "utf8",
-        env: { ...process.env, FAST_M2_REPORT_PATH: reportPath },
+        env: {
+          ...process.env,
+          FAST_M2_REPORT_PATH: reportPath,
+          FAST_DATA_HOME: dataRoot,
+        },
       },
     );
     expect(agentProcess.status).toBe(0);
@@ -72,6 +77,18 @@ describe.skipIf(process.platform !== "win32")("M2 real Git repository acceptance
     });
     expect(externalVerifier.status).toBe(0);
     expect(externalVerifier.stdout).toBe("external verifier passed\n");
+
+    const reopenVerifierEntry = fileURLToPath(
+      new URL("../../scripts/verify-m3-durable-session.mjs", import.meta.url),
+    );
+    const durableVerifier = spawnSync(
+      process.execPath,
+      [reopenVerifierEntry, reportPath, dataRoot],
+      { cwd: root, encoding: "utf8", env: { ...process.env } },
+    );
+    expect(durableVerifier.status).toBe(0);
+    expect(durableVerifier.stdout).toBe("");
+    expect(durableVerifier.stderr).toBe("");
 
     const diff = spawnSync("git", ["diff", "--", "math.js"], { cwd: root, encoding: "utf8" });
     expect(diff.status).toBe(0);
@@ -92,6 +109,14 @@ describe.skipIf(process.platform !== "win32")("M2 real Git repository acceptance
         tools: { accepted: 7, settled: 7, succeeded: 7, failed: 0 },
         changedFiles: [{ path: "math.js", change: "modified" }],
         commands: [{ command: "node test.mjs", exitCode: 0 }],
+      },
+      reopened: {
+        terminalTimelineCount: 1,
+        report: {
+          status: "completed",
+          finalAnswer: "已修复加法实现，项目测试通过，Git evidence 已核验。",
+          counts: { toolCallCount: 7, settledToolCallCount: 7 },
+        },
       },
     });
   });

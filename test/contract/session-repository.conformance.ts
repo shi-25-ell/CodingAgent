@@ -141,8 +141,20 @@ export function sessionRepositoryConformance(
         await expect(
           session.enqueue({ commandId: "steer-1", kind: "steering", text: "changed" }),
         ).resolves.toEqual(steering);
+        const edited = await session.updateQueue({
+          commandId: "steer-1",
+          expectedRevision: steering.revision,
+          text: "also inspect integration tests",
+          status: "queued",
+        });
+        expect(edited).toMatchObject({ revision: 2, text: "also inspect integration tests" });
         await expect(lease.drainSteering()).resolves.toEqual([
-          expect.objectContaining({ commandId: "steer-1", status: "delivered" }),
+          expect.objectContaining({
+            commandId: "steer-1",
+            status: "delivered",
+            revision: 3,
+            text: "also inspect integration tests",
+          }),
         ]);
         await lease.append([
           {
@@ -173,6 +185,7 @@ export function sessionRepositoryConformance(
           "assistant_message",
           "user_message",
           "tool_outcome",
+          "run_boundary",
           "run_terminal",
         ]);
         expect(branch.records.filter((record) => record.kind === "run_terminal")).toHaveLength(1);

@@ -122,6 +122,7 @@ try {
     await writeFile(
       reportPath,
       JSON.stringify({
+        sessionRef: summary.ref,
         report: result.report,
         terminalTimelineCount: view.timeline.filter((entry) => entry.type === "terminal").length,
       }),

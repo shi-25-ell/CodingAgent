@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import {
+  type ArtifactStore,
   type Clock,
   createAgent,
   createAgentHarness,
   createFixedRunPolicies,
   createTranscriptContextManager,
   type IdFactory,
-  InMemorySessionRepository,
+  type SessionRepository,
 } from "@coding-agent/agent";
 import {
   createModelRegistry,
@@ -30,6 +32,7 @@ import {
   openAiProfile,
   openRouterProfile,
 } from "@coding-agent/model/providers/openai-compatible";
+import { createSqlitePersistence } from "@coding-agent/sqlite";
 import { createNodeLocalExecutionPorts } from "../adapters/node-local-execution-adapters.js";
 import { type CodingAgent, createCodingAgent } from "../app/coding-agent.js";
 import { type ApprovalBridge, createApprovalBridge } from "../permissions/approval-bridge.js";
@@ -49,6 +52,11 @@ export interface OpenAiCodingAgentOptions {
   readonly maxOutputTokens?: number;
   readonly permissionMode?: PermissionMode;
   readonly approvalBridge?: ApprovalBridge;
+  readonly dataDirectory?: string;
+  readonly persistence?: {
+    readonly sessions: SessionRepository;
+    readonly artifacts: ArtifactStore;
+  };
 }
 
 export type OpenRouterCodingAgentOptions = OpenAiCodingAgentOptions;
@@ -131,6 +139,19 @@ function defaultSources(
   ];
 }
 
+function defaultDataDirectory(): string {
+  const configured = process.env.FAST_DATA_HOME?.trim();
+  if (configured) return path.resolve(configured);
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA?.trim();
+    if (localAppData) return path.join(localAppData, "Fast");
+  }
+  const xdgDataHome = process.env.XDG_DATA_HOME?.trim();
+  return xdgDataHome
+    ? path.join(xdgDataHome, "fast")
+    : path.join(os.homedir(), ".local", "share", "fast");
+}
+
 async function createCompatibleCodingAgent(
   options: OpenAiCodingAgentOptions,
   definition: CompositionDefinition,
@@ -185,22 +206,45 @@ async function createCompatibleCodingAgent(
         return `${scope}-${randomUUID()}`;
       },
     } satisfies IdFactory);
-  const sessions = new InMemorySessionRepository({ clock, ids });
   const approvals = options.approvalBridge ?? createApprovalBridge();
   const redact = (value: string): string =>
     [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value);
-  const tools = createCodingToolHost(
-    {
-      workspaceRoot: options.workspaceRoot,
-      permissionMode: options.permissionMode ?? "autonomous",
-      approvalPort: approvals,
-      redact,
-      registeredSecrets: () => [...resolvedSecrets],
-    },
-    createNodeLocalExecutionPorts(),
-  );
+  const dataDirectory = options.dataDirectory ?? defaultDataDirectory();
+  const sqlite = options.persistence
+    ? undefined
+    : await createSqlitePersistence({
+        databasePath: path.join(dataDirectory, "state.sqlite3"),
+        artifactDirectory: path.join(dataDirectory, "artifacts"),
+        busyTimeoutMs: 2_000,
+        lease: {
+          ownerId: `coding-agent-${process.pid}-${randomUUID()}`,
+          durationMs: 30_000,
+        },
+        clock,
+        ids,
+        previewRedactor: redact,
+      });
+  const persistence = options.persistence ?? sqlite;
+  if (!persistence) throw new Error("SQLite persistence initialization 未返回 Adapter");
+  let tools: ReturnType<typeof createCodingToolHost>;
+  try {
+    tools = createCodingToolHost(
+      {
+        workspaceRoot: options.workspaceRoot,
+        permissionMode: options.permissionMode ?? "autonomous",
+        approvalPort: approvals,
+        redact,
+        registeredSecrets: () => [...resolvedSecrets],
+        artifactStore: persistence.artifacts,
+      },
+      createNodeLocalExecutionPorts(),
+    );
+  } catch (error) {
+    await sqlite?.[Symbol.asyncDispose]();
+    throw error;
+  }
   const agent = createCodingAgent({
-    sessions,
+    sessions: persistence.sessions,
     harness: createAgentHarness({ agent: createAgent(), redact }),
     model,
     tools,
@@ -219,7 +263,7 @@ async function createCompatibleCodingAgent(
     model: model.descriptor,
     async dispose() {
       await tools[Symbol.asyncDispose]();
-      await sessions[Symbol.asyncDispose]();
+      await sqlite?.[Symbol.asyncDispose]();
     },
   };
 }

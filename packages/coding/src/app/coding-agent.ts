@@ -79,6 +79,7 @@ export interface CodingRunHandle {
 export interface CodingSession {
   readonly ref: SessionRef;
   inspect(): Promise<CodingSessionView>;
+  readRunReport(runId: RunId): Promise<RunReport | undefined>;
   startRun(input: StartCodingRunInput): Promise<CodingRunHandle>;
 }
 
@@ -190,6 +191,7 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
         timeline: timeline(branch.records),
       };
     },
+    readRunReport: (runId) => session.readRunReport(runId),
     async startRun(input) {
       if (input.task.trim().length === 0) throw new TypeError("Coding Task 不能为空");
       const snapshot = await session.inspect();

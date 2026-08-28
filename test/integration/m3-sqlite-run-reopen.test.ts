@@ -75,6 +75,9 @@ describe("M3 SQLite Run reopen", () => {
       { type: "terminal", status: "completed", terminationReason: "natural_completion" },
     ]);
     await expect(repositorySession.readRunReport(report.runId)).resolves.toEqual(report);
+    await expect(repositorySession.readContextManifests(report.runId)).resolves.toEqual([
+      expect.objectContaining({ runId: report.runId, modelAttemptCount: 1 }),
+    ]);
 
     await reopenedPersistence[Symbol.asyncDispose]();
     await rm(root, { recursive: true, force: true });

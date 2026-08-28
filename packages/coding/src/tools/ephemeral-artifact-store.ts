@@ -11,6 +11,28 @@ interface StoredArtifact {
   readonly bytes: Uint8Array;
 }
 
+async function collectBytes(
+  source: Uint8Array | AsyncIterable<Uint8Array>,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  if (source instanceof Uint8Array) return Uint8Array.from(source);
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  for await (const chunk of source) {
+    if (signal?.aborted) throw new DOMException("Artifact write 已取消", "AbortError");
+    const copy = Uint8Array.from(chunk);
+    chunks.push(copy);
+    byteLength += copy.byteLength;
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 export function createEphemeralArtifactStore(): ArtifactStore {
   const artifacts = new Map<string, StoredArtifact>();
   let disposed = false;
@@ -21,14 +43,17 @@ export function createEphemeralArtifactStore(): ArtifactStore {
     async put(input: ArtifactWriteInput, options) {
       assertAvailable();
       if (options?.signal?.aborted) throw new DOMException("Artifact write 已取消", "AbortError");
-      const bytes = Uint8Array.from(input.bytes);
-      const id = `ephemeral-sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+      const bytes = await collectBytes(input.bytes, options?.signal);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const id = `ephemeral-sha256:${digest}`;
       artifacts.set(id, {
         metadata: {
           id,
+          digest: { algorithm: "sha256", hex: digest },
           byteLength: bytes.byteLength,
           mediaType: input.mediaType,
           provenance: input.provenance,
+          preview: "",
         },
         bytes,
       });
@@ -45,7 +70,13 @@ export function createEphemeralArtifactStore(): ArtifactStore {
       if (options?.signal?.aborted) throw new DOMException("Artifact read 已取消", "AbortError");
       const bytes = artifacts.get(ref.id)?.bytes;
       if (!bytes) throw new Error("Artifact 不存在");
-      yield Uint8Array.from(bytes);
+      if (
+        options?.maxBytes !== undefined &&
+        (!Number.isInteger(options.maxBytes) || options.maxBytes < 0)
+      ) {
+        throw new TypeError("Artifact maxBytes 必须是非负整数");
+      }
+      yield Uint8Array.from(bytes.subarray(0, options?.maxBytes ?? bytes.byteLength));
     },
     async verify(ref: ArtifactRef) {
       assertAvailable();
