@@ -11,13 +11,15 @@
 ├── CONTEXT.md
 ├── docs/
 │   ├── agents/
-│   └── adr/
-└── src/
+│   ├── adr/
+│   └── step1/
+└── packages/
 ```
 
 - 项目文档统一放在 `docs/`。
 - Domain glossary 与核心概念放在仓库根目录的 `CONTEXT.md`。
 - Architecture Decision Records 统一放在 `docs/adr/`。
+- 当前架构、详细设计和开发计划放在 `docs/step1/`；它们不是 glossary，也不应把实现细节回填到 `CONTEXT.md`。
 - ADR 文件建议使用 `NNNN-short-title.md` 格式，例如 `0001-use-sqlite-for-local-storage.md`。
 
 `CONTEXT.md` 与具体 ADR 按需创建，不需要为了满足目录结构而提前生成空文档。
@@ -38,6 +40,6 @@
 
 若计划或实现与现有 ADR 冲突，必须明确指出冲突，不得静默覆盖原有决策。例如：
 
-> 与 ADR-0007（event-sourced orders）冲突，但由于新的性能数据，建议重新评估该决策。
+> 与 ADR-0002（SQLite Session persistence）冲突，但由于新的恢复测试证据，建议重新评估该决策。
 
 需要改变既有决策时，新建一份 ADR，并在新旧 ADR 中记录 supersede 关系。

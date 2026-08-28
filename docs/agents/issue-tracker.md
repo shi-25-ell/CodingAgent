@@ -1,6 +1,6 @@
 # Issue tracker：GitHub
 
-本仓库的 issue 和 spec 统一存放在 GitHub Issues 中。所有操作优先使用 `gh` CLI。
+本仓库使用 GitHub Issues 跟踪工作项和决策，设计基线保存在 `docs/step1/`。Issue 应链接相应设计章节和验收 gate，不复制或取代本地架构、详细设计与开发计划。所有 GitHub 操作优先使用 `gh` CLI。
 
 ## 基本约定
 

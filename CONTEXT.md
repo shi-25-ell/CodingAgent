@@ -5,15 +5,19 @@
 ## Language
 
 **Fast**:
-第一阶段的任务控制路径；每次由用户发起一个完整 Run，不自动编排多个 Runs 或独立阶段。
-_Avoid_: 快速模型调用、单次模型调用
+本项目的本地 coding agent 产品；Fast v1 是范围收敛但工程完整的第一版产品，不表示临时演示路径或单次模型调用。
+_Avoid_: 第一阶段控制路径、快速模型调用、toy version
+
+**Coding Task**:
+用户提交给一次 Run、要求 Agent 在 workspace 中完成并以可核验证据报告结果的编程目标；后续 Steering 或 Follow-up 可以继续细化该目标。
+_Avoid_: Run、Model Turn、Task/Subagent
 
 **Session**:
 绑定一个 workspace 的持久、可分支交互记录；一个 Session 可以包含多个串行 Runs，同一时刻最多有一个 active Run。
 _Avoid_: Run、单次任务
 
 **Run**:
-Generic Agent Runtime 的一次完整执行；它可以包含多轮模型与工具交互，并以明确的 termination reason 结束。
+Agent 的一次完整执行；它可以包含多轮模型与工具交互，并以明确的 termination reason 结束。
 _Avoid_: 模型调用、请求、Turn
 
 **Model Turn**:
@@ -68,9 +72,9 @@ _Avoid_: 单个 tool call、Run
 一个 ToolCall 在执行前形成的规范化影响声明，记录目标资源、effects、risk 与批准范围；任何会改变实际执行影响的变化都构成新的 Tool Plan。
 _Avoid_: ToolCall、执行结果、permission prompt
 
-**Tool Policy Snapshot**:
-一个 Run 启动时冻结的工具执行策略快照，包含 workspace、Permission Mode、预算、web provider、policy version 与 Secret Registry；Run 中途发生的配置变化只影响后续 Run。
-_Avoid_: 全局可变配置、Tool Plan、用户批准
+**RunConfigSnapshot**:
+一个 Run 启动时冻结的有效配置，包含 model reference、workspace、Permission Mode、预算、tools、search profile、extensions、skills 与 policy versions；credential value 不属于该快照。
+_Avoid_: Tool Policy Snapshot、全局可变配置、credential value
 
 **Tool Outcome**:
 一个 ToolCall 的结构化结算事实；它区分成功、策略拒绝、用户拒绝、执行失败、超时、取消、输出超限与内容冲突，并通过 effect state 保留已经发生或无法确认的 effects。
@@ -79,6 +83,10 @@ _Avoid_: ToolResult 文本、异常字符串、RunReport
 **Hard Guard**:
 任何 Permission Mode 和用户批准都不能绕过的工具安全约束；违反 Hard Guard 时拒绝当前 ToolCall。
 _Avoid_: approval rule、Sandbox
+
+**Permission Mode**:
+决定工具副作用何时需要用户批准的 Run 配置；Fast v1 提供 Safe Mode 与 Autonomous Mode，二者都受 Hard Guard 约束。
+_Avoid_: Sandbox、安全边界
 
 **Safe Mode**:
 需要按照 permission policy 对有副作用的工具调用请求用户批准的 Permission Mode；硬安全约束始终生效。
@@ -95,3 +103,15 @@ _Avoid_: 成功证明、模型最终文本
 **Run Boundary**:
 在同一 Session 的 Model Context 中表示前一 Run terminal 状态的紧凑派生记录；它引用关键结果、未完成项与证据，不等同于完整 RunReport。
 _Avoid_: RunReport、assistant error message
+
+**Interaction Mode**:
+用户或脚本使用 Fast 的交互形态；Fast v1 提供 interactive TUI 和 print mode。
+_Avoid_: 独立 Agent loop、TUI-only runtime
+
+**Extension**:
+用户显式启用、向 Fast 提供额外能力的 trusted local executable code bundle。
+_Avoid_: Skill、sandboxed plugin
+
+**Skill**:
+带 metadata、provenance 和 digest、用于指导 Agent 行为的非 executable instruction/resource bundle。
+_Avoid_: Extension、可执行插件、隐式工具权限
