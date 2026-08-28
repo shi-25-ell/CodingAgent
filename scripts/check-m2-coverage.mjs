@@ -6,6 +6,8 @@ import ts from "typescript";
 
 const baseline = process.argv[2] ?? process.env.M2_COVERAGE_BASE ?? "m1";
 const milestone = process.argv[3] ?? "changed production";
+const minimumLines = Number(process.argv[4] ?? 85);
+const minimumBranches = Number(process.argv[5] ?? 80);
 const diff = execFileSync(
   "git",
   ["diff", "--unified=0", "--diff-filter=AM", baseline, "--", "packages/*/src/**/*.ts"],
@@ -39,13 +41,14 @@ let runtimeFiles = 0;
 
 for (const [file, additions] of changedLines) {
   if (additions.size === 0) continue;
+  const emitted = ts.transpileModule(readFileSync(file, "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const runtimeText = emitted.replace(/export\s*\{\s*\};?/g, "").trim();
+  if (runtimeText.length === 0) continue;
   const evidence = entries.get(file.toLowerCase());
   if (!evidence) {
-    const emitted = ts.transpileModule(readFileSync(file, "utf8"), {
-      compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-    }).outputText;
-    const runtimeText = emitted.replace(/export\s*\{\s*\};?/g, "").trim();
-    if (runtimeText.length > 0) missingRuntimeCoverage.push(path.relative(process.cwd(), file));
+    missingRuntimeCoverage.push(path.relative(process.cwd(), file));
     continue;
   }
   runtimeFiles += 1;
@@ -83,6 +86,8 @@ const branches = branchTotal === 0 ? 100 : (branchCovered / branchTotal) * 100;
 console.log(
   `${milestone} added production coverage (${runtimeFiles} runtime files, ${lineHits.size} executable lines, ${branchTotal} branches): lines ${lines.toFixed(2)}%, branches ${branches.toFixed(2)}%`,
 );
-if (lines < 85 || branches < 80) {
-  throw new Error(`${milestone} added production coverage 未达到 lines 85% / branches 80% gate`);
+if (lines < minimumLines || branches < minimumBranches) {
+  throw new Error(
+    `${milestone} added production coverage 未达到 lines ${minimumLines}% / branches ${minimumBranches}% gate`,
+  );
 }
