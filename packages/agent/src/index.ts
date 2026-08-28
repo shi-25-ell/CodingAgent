@@ -22,4 +22,8 @@ export { createFixedRunPolicies, type FixedRunPolicyOptions } from "./policies/f
 export * from "./runtime/contracts.js";
 export * from "./session/contracts.js";
 export { SessionError, type SessionErrorCode } from "./session/errors.js";
+export {
+  InMemorySessionRepository,
+  type InMemorySessionRepositoryOptions,
+} from "./session/in-memory-session-repository.js";
 export * from "./tools/contracts.js";

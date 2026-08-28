@@ -14,3 +14,13 @@ export {
   type ModeDescriptor,
   type StartCodingRunInput,
 } from "./app/coding-agent.js";
+export {
+  CodingCompositionError,
+  createOpenAiCodingAgent,
+  type OpenAiCodingAgent,
+  type OpenAiCodingAgentOptions,
+} from "./composition/openai-composition.js";
+export {
+  type CodingToolHostOptions,
+  createCodingToolHost,
+} from "./tools/coding-tool-host.js";

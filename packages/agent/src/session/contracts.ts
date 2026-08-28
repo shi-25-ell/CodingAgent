@@ -1,6 +1,7 @@
 import type { AssistantMessage, ModelFailure } from "@coding-agent/model";
 import type { BranchId, RecordId, RunId, SessionId } from "../contracts/primitives.js";
 import type { RunReport } from "../runtime/contracts.js";
+import type { ToolOutcome } from "../tools/contracts.js";
 
 export interface SessionRef {
   readonly sessionId: SessionId;
@@ -59,10 +60,12 @@ export type LedgerRecord =
   | (LedgerRecordBase & { readonly kind: "user_message"; readonly text: string })
   | (LedgerRecordBase & { readonly kind: "assistant_message"; readonly message: AssistantMessage })
   | (LedgerRecordBase & { readonly kind: "model_failure"; readonly failure: ModelFailure })
+  | (LedgerRecordBase & { readonly kind: "tool_outcome"; readonly outcome: ToolOutcome })
   | (LedgerRecordBase & { readonly kind: "run_terminal"; readonly report: RunReport });
 
 export type NewLedgerRecord =
   | { readonly kind: "assistant_message"; readonly message: AssistantMessage }
+  | { readonly kind: "tool_outcome"; readonly outcome: ToolOutcome }
   | { readonly kind: "model_failure"; readonly failure: ModelFailure };
 
 export interface AgentInputMessage {

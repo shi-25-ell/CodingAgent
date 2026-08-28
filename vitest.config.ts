@@ -4,11 +4,38 @@ import { defineConfig } from "vitest/config";
 const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
+  test: {
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary"],
+      include: [
+        "packages/model/src/auth/{contracts,credential-resolver,environment-credential-source,local-config-credential-source}.ts",
+        "packages/model/src/catalog/model-registry.ts",
+        "packages/model/src/providers/openai-compatible/{fetch-transport,profile,provider}.ts",
+        "packages/agent/src/agent/agent.ts",
+        "packages/agent/src/context/transcript-context.ts",
+        "packages/agent/src/harness/agent-harness.ts",
+        "packages/coding/src/app/coding-agent.ts",
+        "packages/coding/src/composition/openai-composition.ts",
+        "packages/coding/src/modes/print/print-entry.ts",
+        "packages/coding/src/tools/coding-tool-host.ts",
+      ],
+      thresholds: { lines: 85, branches: 80 },
+    },
+  },
   resolve: {
     alias: [
       {
         find: "@coding-agent/model/testing",
         replacement: `${root}packages/model/src/testing/index.ts`,
+      },
+      {
+        find: "@coding-agent/model/providers/openai-compatible",
+        replacement: `${root}packages/model/src/providers/openai-compatible/index.ts`,
+      },
+      {
+        find: "@coding-agent/model/auth",
+        replacement: `${root}packages/model/src/auth/index.ts`,
       },
       { find: "@coding-agent/model", replacement: `${root}packages/model/src/index.ts` },
       {

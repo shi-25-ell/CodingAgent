@@ -1,0 +1,4 @@
+data: {"choices":[{"index":0,"delta":{"content":"process vertical slice complete"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":5,"total_tokens":25}}
+
+data: [DONE]
+

@@ -9,6 +9,7 @@ import {
   createTranscriptContextManager,
   type HarnessEvent,
   type RunReport,
+  type ToolExecutor,
 } from "../../src/index.js";
 import {
   InMemorySessionRepository,
@@ -41,7 +42,10 @@ async function collect<T>(values: AsyncIterable<T>): Promise<readonly T[]> {
   return collected;
 }
 
-async function runScenario(model: ScriptedModel): Promise<Scenario> {
+async function runScenario(
+  model: ScriptedModel,
+  policyOptions = { maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 },
+): Promise<Scenario> {
   const clock = new ManualClock(1_000);
   const ids = new SequentialIdFactory();
   const repository = new InMemorySessionRepository({ clock, ids });
@@ -60,7 +64,7 @@ async function runScenario(model: ScriptedModel): Promise<Scenario> {
       instructions: [{ type: "text", text: "你是 coding agent" }],
       maxOutputTokens: 256,
     }),
-    policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
+    policies: createFixedRunPolicies(policyOptions),
     metadata: { task: "完成目标", configurationRevision: "m0" },
   });
   const eventsPromise = collect(handle.events());
@@ -80,6 +84,322 @@ function expectExactlyOneTerminal(scenario: Scenario, expected: RunReport["statu
 }
 
 describe("AgentHarness terminal contract", () => {
+  it("retry 获批但 Attempt budget 用尽时进入明确 limited 终态", async () => {
+    const scenario = await runScenario(
+      new ScriptedModel([
+        {
+          outcome: {
+            status: "failed",
+            failure: { category: "rate_limit", retryable: true, message: "busy" },
+          },
+        },
+      ]),
+      { maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 1 },
+    );
+
+    expect(scenario.report).toMatchObject({
+      status: "limited",
+      terminationReason: "model_attempt_limit",
+      counts: { modelTurnCount: 1, modelAttemptCount: 1 },
+    });
+  });
+
+  it("retryable ModelFailure 由 Agent policy 在同一 Turn 内重试", async () => {
+    const clock = new ManualClock(800);
+    const repository = new InMemorySessionRepository({
+      clock,
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const model = new ScriptedModel([
+      {
+        outcome: {
+          status: "failed",
+          failure: { category: "rate_limit", retryable: true, message: "稍后重试" },
+        },
+      },
+      { outcome: { status: "completed", response: response("重试后完成") } },
+    ]);
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "重试" }],
+      model,
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 2, maxRetries: 1 }),
+      metadata: { task: "重试", configurationRevision: "m1" },
+    });
+
+    await expect(handle.finished).resolves.toMatchObject({
+      status: "completed",
+      finalAnswer: "重试后完成",
+      counts: { modelTurnCount: 1, modelAttemptCount: 2 },
+    });
+    model.assertConsumed();
+    await repository[Symbol.asyncDispose]();
+  });
+
+  it("tool-call batch 不一致时在执行前失败", async () => {
+    const invalid: ModelResponse = {
+      version: 1,
+      content: [
+        { type: "tool_call", callId: "same", name: "read_file", arguments: {} },
+        { type: "tool_call", callId: "same", name: "read_file", arguments: {} },
+      ],
+      finishReason: "tool_calls",
+    };
+    const scenario = await runScenario(
+      new ScriptedModel([{ outcome: { status: "completed", response: invalid } }]),
+    );
+
+    expect(scenario.report).toMatchObject({
+      status: "failed",
+      terminationReason: "invalid_model_response",
+      counts: { toolCallCount: 0, settledToolCallCount: 0 },
+    });
+    expect(scenario.ledgerKinds).toEqual([
+      "run_started",
+      "user_message",
+      "model_failure",
+      "run_terminal",
+    ]);
+  });
+
+  it("tool batch 完成后没有剩余 Turn 时进入明确 limited 终态", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(850),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const tools: ToolExecutor = {
+      definitions: () => [],
+      execute(call) {
+        return {
+          updates: (async function* () {
+            yield { version: 1 as const, type: "progress" as const, message: "读取中" };
+          })(),
+          outcome: Promise.resolve({
+            callId: call.callId,
+            status: "failed" as const,
+            isError: true,
+            modelContent: "文件不存在",
+            effectState: "none" as const,
+            abortObserved: false,
+            artifacts: [],
+          }),
+        };
+      },
+    };
+    const model = new ScriptedModel([
+      {
+        outcome: {
+          status: "completed",
+          response: {
+            version: 1,
+            content: [
+              { type: "tool_call", callId: "call-limit", name: "read_file", arguments: {} },
+            ],
+            finishReason: "tool_calls",
+          },
+        },
+      },
+    ]);
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "读取" }],
+      model,
+      tools,
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
+      metadata: { task: "读取", configurationRevision: "m1" },
+    });
+
+    await expect(handle.finished).resolves.toMatchObject({
+      status: "limited",
+      terminationReason: "model_turn_limit",
+      counts: { toolCallCount: 1, settledToolCallCount: 1 },
+      tools: { failed: 1 },
+    });
+    await repository[Symbol.asyncDispose]();
+  });
+
+  it("ToolExecutor 的同步异常被收敛为基础设施失败", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(875),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "调用" }],
+      model: new ScriptedModel([
+        {
+          outcome: {
+            status: "completed",
+            response: {
+              version: 1,
+              content: [
+                { type: "tool_call", callId: "call-broken", name: "broken", arguments: {} },
+              ],
+              finishReason: "tool_calls",
+            },
+          },
+        },
+      ]),
+      tools: {
+        definitions: () => [],
+        execute() {
+          throw new Error("private executor detail");
+        },
+      },
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
+      metadata: { task: "调用", configurationRevision: "m1" },
+    });
+
+    const report = await handle.finished;
+    expect(report).toMatchObject({
+      status: "failed",
+      terminationReason: "tool_infrastructure_failure",
+      error: { code: "TOOL_INFRASTRUCTURE_FAILURE" },
+    });
+    expect(JSON.stringify(report)).not.toContain("private executor detail");
+    await repository[Symbol.asyncDispose]();
+  });
+
+  it("assistant durable 后执行 tool，并把 outcome 配对到下一次 Model Turn", async () => {
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(900),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    let executeCount = 0;
+    const tools: ToolExecutor = {
+      definitions: () => [
+        {
+          name: "read_file",
+          description: "读取文件",
+          inputSchema: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+            additionalProperties: false,
+          },
+        },
+      ],
+      execute(call) {
+        executeCount += 1;
+        return {
+          updates: (async function* () {})(),
+          outcome: (async () => {
+            const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
+            expect(branch.records.at(-1)?.kind).toBe("assistant_message");
+            return {
+              callId: call.callId,
+              status: "succeeded" as const,
+              isError: false,
+              modelContent: "file contents",
+              effectState: "none" as const,
+              abortObserved: false,
+              artifacts: [],
+            };
+          })(),
+        };
+      },
+    };
+    const model = new ScriptedModel([
+      {
+        outcome: {
+          status: "completed",
+          response: {
+            version: 1,
+            content: [
+              {
+                type: "tool_call",
+                callId: "call-1",
+                name: "read_file",
+                arguments: { path: "src/a.ts" },
+              },
+            ],
+            finishReason: "tool_calls",
+          },
+        },
+      },
+      {
+        assertRequest(request) {
+          expect(request.messages).toEqual([
+            { role: "user", content: [{ type: "text", text: "读取并回答" }] },
+            {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_call",
+                  callId: "call-1",
+                  name: "read_file",
+                  arguments: { path: "src/a.ts" },
+                },
+              ],
+              finishReason: "tool_calls",
+            },
+            { role: "tool", callId: "call-1", content: "file contents", isError: false },
+          ]);
+        },
+        outcome: { status: "completed", response: response("最终回答") },
+      },
+    ]);
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "读取并回答" }],
+      model,
+      tools,
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
+      metadata: { task: "读取并回答", configurationRevision: "m1" },
+    });
+
+    const report = await handle.finished;
+    const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
+
+    expect(executeCount).toBe(1);
+    expect(report).toMatchObject({
+      status: "completed",
+      finalAnswer: "最终回答",
+      counts: {
+        modelTurnCount: 2,
+        modelAttemptCount: 2,
+        toolCallCount: 1,
+        settledToolCallCount: 1,
+      },
+      tools: { accepted: 1, settled: 1, succeeded: 1, failed: 0 },
+    });
+    expect(branch.records.map((record) => record.kind)).toEqual([
+      "run_started",
+      "user_message",
+      "assistant_message",
+      "tool_outcome",
+      "assistant_message",
+      "run_terminal",
+    ]);
+    model.assertConsumed();
+    await repository[Symbol.asyncDispose]();
+  });
+
   it("completed：assistant commit 后才提交唯一 terminal", async () => {
     const scenario = await runScenario(
       new ScriptedModel([{ outcome: { status: "completed", response: response("已完成") } }]),

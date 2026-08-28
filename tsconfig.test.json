@@ -9,6 +9,10 @@
     "baseUrl": ".",
     "paths": {
       "@coding-agent/model": ["packages/model/src/index.ts"],
+      "@coding-agent/model/auth": ["packages/model/src/auth/index.ts"],
+      "@coding-agent/model/providers/openai-compatible": [
+        "packages/model/src/providers/openai-compatible/index.ts"
+      ],
       "@coding-agent/model/testing": ["packages/model/src/testing/index.ts"],
       "@coding-agent/agent": ["packages/agent/src/index.ts"],
       "@coding-agent/agent/session": ["packages/agent/src/session/index.ts"],

@@ -1,5 +1,6 @@
 import type { ModelFailure, ModelResponse, ModelUsage } from "@coding-agent/model";
 import type { RunId } from "../contracts/primitives.js";
+import type { ToolOutcome, ToolUpdate } from "../tools/contracts.js";
 
 export type RunStatus = "completed" | "aborted" | "failed" | "limited";
 export type TerminationReason =
@@ -8,7 +9,9 @@ export type TerminationReason =
   | "model_failure"
   | "model_output_limit"
   | "model_attempt_limit"
+  | "model_turn_limit"
   | "invalid_model_response"
+  | "tool_infrastructure_failure"
   | "context_unavailable"
   | "policy_failure"
   | "persistence_failure";
@@ -18,6 +21,8 @@ export type RunPhase =
   | "preparing_context"
   | "model_streaming"
   | "assistant_committing"
+  | "tool_batch"
+  | "safe_point"
   | "completion_candidate"
   | "finalizing"
   | "terminal";
@@ -131,6 +136,7 @@ export interface AgentRunResult {
 
 export type AgentSemanticEvent = { readonly version: 1 } & (
   | { readonly type: "assistant_message"; readonly response: ModelResponse }
+  | { readonly type: "tool_outcome"; readonly outcome: ToolOutcome }
   | { readonly type: "model_failure"; readonly failure: ModelFailure }
 );
 
@@ -141,6 +147,7 @@ export type AgentProgressEvent = { readonly version: 1 } & (
       readonly modelTurnCount: number;
       readonly modelAttemptCount: number;
     }
+  | { readonly type: "tool_update"; readonly callId: string; readonly update: ToolUpdate }
 );
 
 export type AgentEvent = AgentProgressEvent | AgentSemanticEvent;

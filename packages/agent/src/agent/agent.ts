@@ -3,6 +3,7 @@ import {
   type Model,
   type ModelFailure,
   type ModelResponse,
+  type ToolCall,
 } from "@coding-agent/model";
 import type { ContextPrepareInput, PreparedContext } from "../context/contracts.js";
 import type { RunId } from "../contracts/primitives.js";
@@ -18,7 +19,7 @@ import {
   type RunPolicies,
   type UsageSummary,
 } from "../runtime/contracts.js";
-import type { ToolExecutor } from "../tools/contracts.js";
+import type { ToolExecutor, ToolOutcome } from "../tools/contracts.js";
 
 export interface AgentHost {
   prepareContext(
@@ -77,7 +78,7 @@ function aborted(counts: RunCounts, usage: UsageSummary): AgentRunResult {
   };
 }
 
-type DependencyKind = "context" | "persistence" | "policy";
+type DependencyKind = "context" | "persistence" | "policy" | "tool";
 
 class AgentDependencyFailure extends Error {
   readonly kind: DependencyKind;
@@ -118,6 +119,11 @@ function dependencyFailure(
       code: "RUN_POLICY_FAILURE",
       message: "Run policy failed",
     },
+    tool: {
+      terminationReason: "tool_infrastructure_failure" as const,
+      code: "TOOL_INFRASTRUCTURE_FAILURE",
+      message: "Tool executor infrastructure failed",
+    },
   }[failure.kind];
   return {
     status: "failed",
@@ -149,87 +155,110 @@ class DefaultAgent implements Agent {
     let usage = emptyUsageSummary();
     if (input.signal.aborted) return aborted(counts, usage);
     try {
-      counts = { ...counts, modelTurnCount: 1 };
-      let retriesInTurn = 0;
-
       while (true) {
         if (input.signal.aborted) return aborted(counts, usage);
-        if (counts.modelAttemptCount >= input.policies.budgets.maxModelAttempts) {
+        if (counts.modelTurnCount >= input.policies.budgets.maxModelTurns) {
           return {
             status: "limited",
-            terminationReason: "model_attempt_limit",
+            terminationReason: "model_turn_limit",
             counts,
             usage,
-            unfinishedWork: ["Model Attempt 达到 Run 上限"],
+            unfinishedWork: ["Model Turn 达到 Run 上限"],
           };
         }
+        counts = { ...counts, modelTurnCount: counts.modelTurnCount + 1 };
+        let retriesInTurn = 0;
+        let response: ModelResponse;
 
-        const nextAttemptCount = counts.modelAttemptCount + 1;
-        publish({ version: 1, type: "phase_changed", phase: "preparing_context" });
-        const prepared = await callDependency("context", () =>
-          host.prepareContext({
-            runId: input.runId,
-            modelAttemptCount: nextAttemptCount,
-          }),
-        );
-        if (input.signal.aborted) return aborted(counts, usage);
-        counts = { ...counts, modelAttemptCount: nextAttemptCount };
-        publish({
-          version: 1,
-          type: "model_attempt_started",
-          modelTurnCount: counts.modelTurnCount,
-          modelAttemptCount: counts.modelAttemptCount,
-        });
-        publish({ version: 1, type: "phase_changed", phase: "model_streaming" });
-        const turn = await collectModelTurn(
-          input.model.stream(prepared.request, { signal: input.signal }),
-        );
-
-        if (
-          input.signal.aborted ||
-          (turn.status === "failed" && turn.failure.category === "cancelled")
-        ) {
-          return aborted(counts, usage);
-        }
-
-        if (turn.status === "failed") {
-          const decision = await callDependency("policy", () =>
-            input.policies.retryPolicy.decide({
-              failure: turn.failure,
-              modelTurnCount: counts.modelTurnCount,
-              modelAttemptCount: counts.modelAttemptCount,
-              retriesInTurn,
+        while (true) {
+          if (counts.modelAttemptCount >= input.policies.budgets.maxModelAttempts) {
+            return {
+              status: "limited",
+              terminationReason: "model_attempt_limit",
+              counts,
+              usage,
+              unfinishedWork: ["Model Attempt 达到 Run 上限"],
+            };
+          }
+          const nextAttemptCount = counts.modelAttemptCount + 1;
+          publish({ version: 1, type: "phase_changed", phase: "preparing_context" });
+          const prepared = await callDependency("context", () =>
+            host.prepareContext({
+              runId: input.runId,
+              modelAttemptCount: nextAttemptCount,
             }),
           );
           if (input.signal.aborted) return aborted(counts, usage);
-          if (decision.action === "retry") {
-            retriesInTurn += 1;
-            continue;
-          }
-          await callDependency("persistence", () =>
-            host.commit({ version: 1, type: "model_failure", failure: turn.failure }),
+          counts = { ...counts, modelAttemptCount: nextAttemptCount };
+          publish({
+            version: 1,
+            type: "model_attempt_started",
+            modelTurnCount: counts.modelTurnCount,
+            modelAttemptCount: counts.modelAttemptCount,
+          });
+          publish({ version: 1, type: "phase_changed", phase: "model_streaming" });
+          const turn = await collectModelTurn(
+            input.model.stream(prepared.request, { signal: input.signal }),
           );
-          if (input.signal.aborted) return aborted(counts, usage);
-          return {
-            status: "failed",
-            terminationReason:
-              turn.failure.category === "invalid_response" ||
-              turn.failure.category === "adapter_bug"
-                ? "invalid_model_response"
-                : "model_failure",
-            counts,
-            usage,
-            unfinishedWork: ["模型未产生可提交的最终回答"],
-            error: modelError(turn.failure),
-          };
+          if (
+            input.signal.aborted ||
+            (turn.status === "failed" && turn.failure.category === "cancelled")
+          ) {
+            return aborted(counts, usage);
+          }
+          if (turn.status === "failed") {
+            const decision = await callDependency("policy", () =>
+              input.policies.retryPolicy.decide({
+                failure: turn.failure,
+                modelTurnCount: counts.modelTurnCount,
+                modelAttemptCount: counts.modelAttemptCount,
+                retriesInTurn,
+              }),
+            );
+            if (input.signal.aborted) return aborted(counts, usage);
+            if (decision.action === "retry") {
+              retriesInTurn += 1;
+              continue;
+            }
+            await callDependency("persistence", () =>
+              host.commit({ version: 1, type: "model_failure", failure: turn.failure }),
+            );
+            if (input.signal.aborted) return aborted(counts, usage);
+            return {
+              status: "failed",
+              terminationReason:
+                turn.failure.category === "invalid_response" ||
+                turn.failure.category === "adapter_bug"
+                  ? "invalid_model_response"
+                  : "model_failure",
+              counts,
+              usage,
+              unfinishedWork: ["模型未产生可提交的最终回答"],
+              error: modelError(turn.failure),
+            };
+          }
+          response = turn.response;
+          break;
         }
 
-        usage = addUsage(usage, turn.response.usage);
-        if (turn.response.content.some((part) => part.type === "tool_call")) {
+        usage = addUsage(usage, response.usage);
+        const calls = response.content.filter(
+          (part): part is ToolCall => part.type === "tool_call",
+        );
+        const duplicateCallIds = new Set<string>();
+        const invalidBatch =
+          (calls.length > 0 && response.finishReason !== "tool_calls") ||
+          (calls.length === 0 && response.finishReason === "tool_calls") ||
+          calls.some((call) => {
+            if (duplicateCallIds.has(call.callId)) return true;
+            duplicateCallIds.add(call.callId);
+            return false;
+          });
+        if (invalidBatch) {
           const failure: ModelFailure = {
             category: "invalid_response",
             retryable: false,
-            message: "未声明工具的 Model Turn 返回了 tool call",
+            message: "Model Turn 的 tool-call batch 与 finish reason 不一致或 callId 重复",
           };
           await callDependency("persistence", () =>
             host.commit({ version: 1, type: "model_failure", failure }),
@@ -240,23 +269,66 @@ class DefaultAgent implements Agent {
             terminationReason: "invalid_model_response",
             counts,
             usage,
-            unfinishedWork: ["工具调用未执行"],
+            unfinishedWork: ["无效 tool-call batch 未执行"],
             error: modelError(failure),
           };
         }
 
         publish({ version: 1, type: "phase_changed", phase: "assistant_committing" });
         await callDependency("persistence", () =>
-          host.commit({ version: 1, type: "assistant_message", response: turn.response }),
+          host.commit({ version: 1, type: "assistant_message", response }),
         );
+        if (calls.length > 0) {
+          counts = { ...counts, toolCallCount: counts.toolCallCount + calls.length };
+          publish({ version: 1, type: "phase_changed", phase: "tool_batch" });
+          for (const call of calls) {
+            let outcome: ToolOutcome;
+            if (input.signal.aborted) {
+              outcome = {
+                callId: call.callId,
+                status: "cancelled",
+                isError: true,
+                modelContent: "ToolCall 在启动前被取消",
+                effectState: "none",
+                abortObserved: true,
+                artifacts: [],
+              };
+            } else {
+              let execution: ReturnType<ToolExecutor["execute"]>;
+              try {
+                execution = input.tools.execute(call, { signal: input.signal });
+              } catch (_error) {
+                throw new AgentDependencyFailure("tool");
+              }
+              const updates = callDependency("tool", async () => {
+                for await (const update of execution.updates) {
+                  publish({ version: 1, type: "tool_update", callId: call.callId, update });
+                }
+              });
+              outcome = await callDependency("tool", () => execution.outcome);
+              await updates;
+            }
+            if (outcome.callId !== call.callId) throw new AgentDependencyFailure("tool");
+            await callDependency("persistence", () =>
+              host.commit({ version: 1, type: "tool_outcome", outcome }),
+            );
+            counts = {
+              ...counts,
+              settledToolCallCount: counts.settledToolCallCount + 1,
+            };
+          }
+          if (input.signal.aborted) return aborted(counts, usage);
+          publish({ version: 1, type: "phase_changed", phase: "safe_point" });
+          continue;
+        }
         if (input.signal.aborted) return aborted(counts, usage);
         publish({ version: 1, type: "phase_changed", phase: "completion_candidate" });
         const stop = await callDependency("policy", () =>
-          input.policies.stopPolicy.evaluate({ response: turn.response, counts }),
+          input.policies.stopPolicy.evaluate({ response, counts }),
         );
         if (input.signal.aborted) return aborted(counts, usage);
         if (stop.action === "limited") {
-          const answer = finalText(turn.response);
+          const answer = finalText(response);
           return {
             status: "limited",
             terminationReason: stop.reason,
@@ -266,7 +338,7 @@ class DefaultAgent implements Agent {
             unfinishedWork: ["模型输出达到上限，回答可能不完整"],
           };
         }
-        const answer = finalText(turn.response);
+        const answer = finalText(response);
         return {
           status: "completed",
           terminationReason: "natural_completion",

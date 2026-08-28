@@ -188,6 +188,41 @@ export interface Model {
   stream(request: ModelRequest, options: ModelCallOptions): AsyncIterable<ModelEvent>;
 }
 
+export interface ModelRef {
+  readonly providerId: ProviderId;
+  readonly modelId: ModelId;
+}
+
+export interface CreateModelInput extends ModelRef {}
+
+export interface ModelQuery {
+  readonly providerId?: ProviderId;
+  readonly require?: Partial<ModelCapabilities>;
+  readonly signal?: AbortSignal;
+}
+
+export interface ProviderSummary {
+  readonly id: ProviderId;
+}
+
+export interface Registration {
+  dispose(): void;
+}
+
+export interface ModelProvider {
+  readonly id: ProviderId;
+  listModels(options?: { readonly signal?: AbortSignal }): Promise<readonly ModelDescriptor[]>;
+  createModel(input: CreateModelInput): Promise<Model>;
+}
+
+export interface ModelRegistry {
+  registerProvider(provider: ModelProvider): Registration;
+  unregisterProvider(id: ProviderId): boolean;
+  listProviders(): readonly ProviderSummary[];
+  listModels(query?: ModelQuery): Promise<readonly ModelDescriptor[]>;
+  resolve(ref: ModelRef): Promise<Model>;
+}
+
 export type ModelTurnResult =
   | { readonly status: "completed"; readonly response: ModelResponse }
   | { readonly status: "failed"; readonly failure: ModelFailure };

@@ -19,8 +19,8 @@ import type {
   SessionSummary,
   TerminalCommit,
   WorkspaceBinding,
-} from "../session/contracts.js";
-import { SessionError } from "../session/errors.js";
+} from "./contracts.js";
+import { SessionError } from "./errors.js";
 
 interface BranchState {
   readonly id: BranchId;

@@ -5,6 +5,9 @@
   "files": [
     "dist"
   ],
+  "bin": {
+    "coding-agent": "./dist/cli/entry.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

@@ -13,6 +13,14 @@
     "./testing": {
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "import": "./dist/auth/index.js"
+    },
+    "./providers/openai-compatible": {
+      "types": "./dist/providers/openai-compatible/index.d.ts",
+      "import": "./dist/providers/openai-compatible/index.js"
     }
   },
   "scripts": {

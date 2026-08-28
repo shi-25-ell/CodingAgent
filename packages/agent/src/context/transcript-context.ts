@@ -12,6 +12,16 @@ function projectMessages(input: ContextPrepareInput): readonly ModelMessage[] {
       return [{ role: "user", content: [{ type: "text", text: record.text }] }];
     }
     if (record.kind === "assistant_message") return [record.message];
+    if (record.kind === "tool_outcome") {
+      return [
+        {
+          role: "tool",
+          callId: record.outcome.callId,
+          content: record.outcome.modelContent,
+          isError: record.outcome.isError,
+        },
+      ];
+    }
     return [];
   });
 }
@@ -44,7 +54,10 @@ export function createTranscriptContextManager(
           modelAttemptCount: input.modelAttemptCount,
           selectedRecordIds: input.branch.records
             .filter(
-              (record) => record.kind === "user_message" || record.kind === "assistant_message",
+              (record) =>
+                record.kind === "user_message" ||
+                record.kind === "assistant_message" ||
+                record.kind === "tool_outcome",
             )
             .map((record) => record.recordId),
           omitted: [],

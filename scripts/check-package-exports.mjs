@@ -1,6 +1,8 @@
 const expected = [
   "@coding-agent/model",
   "@coding-agent/model/testing",
+  "@coding-agent/model/auth",
+  "@coding-agent/model/providers/openai-compatible",
   "@coding-agent/agent",
   "@coding-agent/agent/session",
   "@coding-agent/agent/context",

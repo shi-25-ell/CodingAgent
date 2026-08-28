@@ -17,6 +17,45 @@ const completedResponse: ModelResponse = {
 };
 
 describe("ModelTurnAccumulator", () => {
+  it("归约 fragmented reasoning 与 multiple tool calls，允许 missing usage", () => {
+    const response: ModelResponse = {
+      version: 1,
+      content: [
+        { type: "reasoning", text: "分析" },
+        { type: "tool_call", callId: "one", name: "read_file", arguments: { path: "a" } },
+        { type: "tool_call", callId: "two", name: "read_file", arguments: { path: "b" } },
+      ],
+      finishReason: "tool_calls",
+    };
+    const accumulator = new ModelTurnAccumulator();
+    const events: readonly ModelEvent[] = [
+      { version: 1, type: "turn_started", attemptId: "attempt" },
+      { version: 1, type: "part_started", index: 0, part: { type: "reasoning" } },
+      { version: 1, type: "reasoning_delta", index: 0, delta: "分" },
+      { version: 1, type: "reasoning_delta", index: 0, delta: "析" },
+      { version: 1, type: "part_completed", index: 0 },
+      {
+        version: 1,
+        type: "part_started",
+        index: 1,
+        part: { type: "tool_call", callId: "one", name: "read_file" },
+      },
+      { version: 1, type: "tool_call_delta", index: 1, delta: { argumentsDelta: '{"path":"a"}' } },
+      { version: 1, type: "part_completed", index: 1 },
+      {
+        version: 1,
+        type: "part_started",
+        index: 2,
+        part: { type: "tool_call", callId: "two", name: "read_file" },
+      },
+      { version: 1, type: "tool_call_delta", index: 2, delta: { argumentsDelta: '{"path":"b"}' } },
+      { version: 1, type: "part_completed", index: 2 },
+      { version: 1, type: "turn_completed", response },
+    ];
+    for (const event of events) accumulator.accept(event);
+    expect(accumulator.result()).toEqual({ status: "completed", response });
+  });
+
   it("只在完整且有序的事件流结束后产生 canonical response", () => {
     const accumulator = new ModelTurnAccumulator();
     const events: readonly ModelEvent[] = [

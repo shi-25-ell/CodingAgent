@@ -18,12 +18,19 @@
     "test:unit": "vitest run packages/model/test/unit packages/agent/test/unit packages/coding/test/unit",
     "test:contract": "vitest run packages/model/test/contract packages/agent/test/contract packages/coding/test/contract test/contract",
     "test:integration": "npm run build && vitest run test/integration",
+    "test:model": "vitest run packages/model/test",
+    "test:wire": "vitest run packages/model/test/contract/openai-compatible.contract.test.ts packages/model/test/unit/turn-accumulator.test.ts",
+    "test:tools": "vitest run packages/coding/test/contract/coding-tool-host.contract.test.ts packages/agent/test/contract/agent-harness.contract.test.ts",
+    "test:cli": "npm run build && node scripts/run-m1-deterministic-print.mjs --print \"read test/fixtures/openai/final-answer.sse\"",
+    "test:coverage": "vitest run --coverage",
     "test:boundary": "npm run build && node scripts/check-package-boundaries.mjs && node scripts/check-package-exports.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test:unit && npm run test:contract && npm run test:integration && npm run test:boundary"
+    "scan:production": "node scripts/check-production-readiness.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test:unit && npm run test:contract && npm run test:integration && npm run test:boundary && npm run test:coverage && npm run scan:production"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.2",
     "@types/node": "24.3.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "typescript": "5.9.2",
     "vitest": "3.2.7"
   },

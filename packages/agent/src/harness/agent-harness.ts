@@ -11,6 +11,7 @@ import type {
   CommandEvidence,
   RunPolicies,
   RunReport,
+  ToolSummary,
 } from "../runtime/contracts.js";
 import type { AgentInputMessage, RunMetadata, SessionHandle } from "../session/contracts.js";
 import type { ToolExecutor } from "../tools/contracts.js";
@@ -60,7 +61,7 @@ export interface AgentHarnessOptions {
   readonly agent: Agent;
 }
 
-function reportFromResult(run: RunId, result: AgentRunResult): RunReport {
+function reportFromResult(run: RunId, result: AgentRunResult, tools: ToolSummary): RunReport {
   return {
     version: 1,
     runId: run,
@@ -69,7 +70,7 @@ function reportFromResult(run: RunId, result: AgentRunResult): RunReport {
     ...(result.finalAnswer ? { finalAnswer: result.finalAnswer } : {}),
     counts: result.counts,
     usage: result.usage,
-    tools: { accepted: 0, settled: 0, succeeded: 0, failed: 0 },
+    tools,
     permissions: { requested: 0, allowed: 0, denied: 0 },
     changedFiles: [],
     commands: [] satisfies readonly CommandEvidence[],
@@ -95,6 +96,7 @@ class DefaultAgentHarness implements AgentHarness {
     const stream = new ReplayEventStream<HarnessEvent>();
     const controller = new AbortController();
     let abortApplied = false;
+    let toolSummary: ToolSummary = { accepted: 0, settled: 0, succeeded: 0, failed: 0 };
     let lifecycle: "active" | "finalizing" | "terminal" = "active";
     stream.publish({ version: 1, type: "run_started", runId: lease.runId });
 
@@ -104,9 +106,17 @@ class DefaultAgentHarness implements AgentHarness {
           { kind: "assistant_message", message: responseAsAssistantMessage(event.response) },
         ]);
         stream.publish({ version: 1, type: "assistant_committed", runId: lease.runId });
-      } else {
+      } else if (event.type === "model_failure") {
         await lease.append([{ kind: "model_failure", failure: event.failure }]);
         stream.publish({ version: 1, type: "model_failure_committed", runId: lease.runId });
+      } else {
+        await lease.append([{ kind: "tool_outcome", outcome: event.outcome }]);
+        toolSummary = {
+          accepted: toolSummary.accepted + 1,
+          settled: toolSummary.settled + 1,
+          succeeded: toolSummary.succeeded + (event.outcome.status === "succeeded" ? 1 : 0),
+          failed: toolSummary.failed + (event.outcome.status === "succeeded" ? 0 : 1),
+        };
       }
     };
 
@@ -146,7 +156,7 @@ class DefaultAgentHarness implements AgentHarness {
               unfinishedWork: ["Run 在 finalizing 前收到取消请求"],
             }
           : result;
-        const requestedReport = reportFromResult(lease.runId, arbitratedResult);
+        const requestedReport = reportFromResult(lease.runId, arbitratedResult, toolSummary);
         const terminalCommit = await lease.finish(requestedReport);
         const report = terminalCommit.report;
         lifecycle = "terminal";
