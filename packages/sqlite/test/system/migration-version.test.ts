@@ -4,7 +4,7 @@ import path from "node:path";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { openDatabase } from "../../src/connection/database.js";
+import { openDatabase, translateSqliteError } from "../../src/connection/database.js";
 import { createSqlitePersistence, SqliteStorageError } from "../../src/index.js";
 
 describe("SQLite migration runner", () => {
@@ -85,5 +85,51 @@ describe("SQLite migration runner", () => {
         lease: { ownerId: "network-test", durationMs: 1_000 },
       }),
     ).rejects.toMatchObject({ code: "NETWORK_FILESYSTEM" });
+  });
+
+  it("配置、transaction rollback 与 disposed connection 都 fail closed", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-m3-database-guards-"));
+    for (const busyTimeoutMs of [0, 30_001, 1.5]) {
+      await expect(
+        openDatabase({
+          databasePath: path.join(root, `${busyTimeoutMs}.sqlite3`),
+          busyTimeoutMs,
+          now: () => 1_000,
+        }),
+      ).rejects.toMatchObject({ code: "SQLITE_CONFIGURATION" });
+    }
+    await expect(
+      openDatabase({ databasePath: "relative.sqlite3", busyTimeoutMs: 100, now: () => 1_000 }),
+    ).rejects.toMatchObject({ code: "SQLITE_CONFIGURATION" });
+    expect(() => translateSqliteError({ code: "SQLITE_LOCKED" }, "test")).toThrowError(
+      SqliteStorageError,
+    );
+    const original = new Error("ordinary failure");
+    expect(() => translateSqliteError(original, "test")).toThrow(original);
+
+    const database = await openDatabase({
+      databasePath: path.join(root, "state.sqlite3"),
+      busyTimeoutMs: 100,
+      now: () => 1_000,
+    });
+    expect(() =>
+      database.immediate(() => {
+        database.raw
+          .prepare(
+            "INSERT INTO sessions(session_id, workspace_root, workspace_fingerprint, revision, current_branch_id, active_run_id, degraded_reason, created_at, updated_at, lease_epoch) VALUES ('rolled-back', 'D:/work', 'head:x', 1, NULL, NULL, NULL, 1, 1, 0)",
+          )
+          .run();
+        throw original;
+      }),
+    ).toThrow(original);
+    expect(
+      database.raw
+        .prepare("SELECT COUNT(*) AS count FROM sessions WHERE session_id = 'rolled-back'")
+        .get(),
+    ).toEqual({ count: 0 });
+    database.close();
+    database.close();
+    expect(() => database.immediate(() => undefined)).toThrowError(SqliteStorageError);
+    await rm(root, { recursive: true, force: true });
   });
 });

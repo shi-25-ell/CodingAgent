@@ -1,7 +1,12 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, truncate } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  DurableArtifactStore,
+  SqliteArtifactError,
+} from "../../src/artifacts/durable-artifact-store.js";
+import { openDatabase } from "../../src/connection/database.js";
 import { createSqlitePersistence } from "../../src/index.js";
 
 async function* chunks(): AsyncIterable<Uint8Array> {
@@ -107,6 +112,82 @@ describe("durable content-addressed ArtifactStore", () => {
     expect(branch.records.filter((record) => record.kind === "tool_outcome")).toHaveLength(0);
 
     await persistence[Symbol.asyncDispose]();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("拒绝无效 stream 与读取边界，并检测 committed bytes 截断", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-m3-artifact-guards-"));
+    const database = await openDatabase({
+      databasePath: path.join(root, "state.sqlite3"),
+      busyTimeoutMs: 100,
+      now: () => 1_000,
+    });
+    await expect(
+      DurableArtifactStore.create({ database, directory: "relative", clock: { now: () => 1_000 } }),
+    ).rejects.toMatchObject({ code: "ARTIFACT_CONFIGURATION" });
+    await expect(
+      DurableArtifactStore.create({
+        database,
+        directory: "\\\\server\\share\\artifacts",
+        clock: { now: () => 1_000 },
+      }),
+    ).rejects.toMatchObject({ code: "ARTIFACT_CONFIGURATION" });
+
+    const directory = path.join(root, "artifacts");
+    const store = await DurableArtifactStore.create({
+      database,
+      directory,
+      clock: { now: () => 1_000 },
+    });
+    await expect(
+      store.put({ bytes: Buffer.from("x"), mediaType: "text/plain", provenance: "  " }),
+    ).rejects.toBeInstanceOf(TypeError);
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(
+      store.put(
+        { bytes: Buffer.from("x"), mediaType: "text/plain", provenance: "abort" },
+        { signal: aborted.signal },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    async function* invalidStream(): AsyncIterable<Uint8Array> {
+      yield "not bytes" as unknown as Uint8Array;
+    }
+    await expect(
+      store.put({ bytes: invalidStream(), mediaType: "text/plain", provenance: "invalid" }),
+    ).rejects.toBeInstanceOf(TypeError);
+
+    const bytes = Buffer.from("binary durable bytes");
+    const ref = await store.put({
+      bytes,
+      mediaType: "application/octet-stream",
+      provenance: "binary",
+    });
+    await expect(
+      store.put({ bytes, mediaType: "application/octet-stream", provenance: "binary" }),
+    ).resolves.toEqual(ref);
+    await expect(store.stat(ref)).resolves.toMatchObject({ preview: "" });
+    await expect(readText(store, ref, -1)).rejects.toBeInstanceOf(TypeError);
+    await expect(readText(store, ref, 1.5)).rejects.toBeInstanceOf(TypeError);
+    await expect(
+      (async () => {
+        for await (const _part of store.read(ref, { signal: aborted.signal })) {
+          // no-op
+        }
+      })(),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    await expect(store.stat({ id: `sha256:${"0".repeat(64)}` })).rejects.toMatchObject({
+      code: "ARTIFACT_NOT_FOUND",
+    });
+
+    const digest = ref.id.slice("sha256:".length);
+    await truncate(path.join(directory, "sha256", digest.slice(0, 2), digest), 1);
+    await expect(readText(store, ref)).rejects.toMatchObject({ code: "ARTIFACT_CORRUPT" });
+    await expect(store.verify(ref)).resolves.toEqual({ status: "corrupt" });
+    await store[Symbol.asyncDispose]();
+    await expect(store.stat(ref)).rejects.toBeInstanceOf(SqliteArtifactError);
+
+    database.close();
     await rm(root, { recursive: true, force: true });
   });
 });
