@@ -9,6 +9,7 @@ import type { RunId } from "../contracts/primitives.js";
 import { ReplayEventStream } from "../events/replay-event-stream.js";
 import {
   type AgentEvent,
+  type AgentProgressEvent,
   type AgentRunResult,
   type AgentSemanticEvent,
   addUsage,
@@ -24,7 +25,7 @@ export interface AgentHost {
     input: Pick<ContextPrepareInput, "runId" | "modelAttemptCount">,
   ): Promise<PreparedContext>;
   commit(event: AgentSemanticEvent): Promise<void>;
-  reportProgress(event: AgentEvent): void;
+  reportProgress(event: AgentProgressEvent): void;
 }
 
 export interface AgentRunInput {
@@ -76,10 +77,62 @@ function aborted(counts: RunCounts, usage: UsageSummary): AgentRunResult {
   };
 }
 
+type DependencyKind = "context" | "persistence" | "policy";
+
+class AgentDependencyFailure extends Error {
+  readonly kind: DependencyKind;
+
+  constructor(kind: DependencyKind) {
+    super(`${kind} dependency failed`);
+    this.name = "AgentDependencyFailure";
+    this.kind = kind;
+  }
+}
+
+async function callDependency<T>(kind: DependencyKind, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (_error) {
+    throw new AgentDependencyFailure(kind);
+  }
+}
+
+function dependencyFailure(
+  failure: AgentDependencyFailure,
+  counts: RunCounts,
+  usage: UsageSummary,
+): AgentRunResult {
+  const detail = {
+    context: {
+      terminationReason: "context_unavailable" as const,
+      code: "CONTEXT_UNAVAILABLE",
+      message: "Model Context unavailable",
+    },
+    persistence: {
+      terminationReason: "persistence_failure" as const,
+      code: "SESSION_COMMIT_FAILURE",
+      message: "Session commit failed",
+    },
+    policy: {
+      terminationReason: "policy_failure" as const,
+      code: "RUN_POLICY_FAILURE",
+      message: "Run policy failed",
+    },
+  }[failure.kind];
+  return {
+    status: "failed",
+    terminationReason: detail.terminationReason,
+    counts,
+    usage,
+    unfinishedWork: ["Agent dependency 未能完成当前 Run"],
+    error: { code: detail.code, message: detail.message },
+  };
+}
+
 class DefaultAgent implements Agent {
   run(input: AgentRunInput, host: AgentHost): AgentExecution {
     const stream = new ReplayEventStream<AgentEvent>();
-    const publish = (event: AgentEvent): void => {
+    const publish = (event: AgentProgressEvent): void => {
       stream.publish(event);
       host.reportProgress(event);
     };
@@ -90,7 +143,7 @@ class DefaultAgent implements Agent {
   async #execute(
     input: AgentRunInput,
     host: AgentHost,
-    publish: (event: AgentEvent) => void,
+    publish: (event: AgentProgressEvent) => void,
   ): Promise<AgentRunResult> {
     let counts = initialCounts();
     let usage = emptyUsageSummary();
@@ -111,18 +164,23 @@ class DefaultAgent implements Agent {
           };
         }
 
-        counts = { ...counts, modelAttemptCount: counts.modelAttemptCount + 1 };
-        publish({ type: "phase_changed", phase: "preparing_context" });
-        const prepared = await host.prepareContext({
-          runId: input.runId,
-          modelAttemptCount: counts.modelAttemptCount,
-        });
+        const nextAttemptCount = counts.modelAttemptCount + 1;
+        publish({ version: 1, type: "phase_changed", phase: "preparing_context" });
+        const prepared = await callDependency("context", () =>
+          host.prepareContext({
+            runId: input.runId,
+            modelAttemptCount: nextAttemptCount,
+          }),
+        );
+        if (input.signal.aborted) return aborted(counts, usage);
+        counts = { ...counts, modelAttemptCount: nextAttemptCount };
         publish({
+          version: 1,
           type: "model_attempt_started",
           modelTurnCount: counts.modelTurnCount,
           modelAttemptCount: counts.modelAttemptCount,
         });
-        publish({ type: "phase_changed", phase: "model_streaming" });
+        publish({ version: 1, type: "phase_changed", phase: "model_streaming" });
         const turn = await collectModelTurn(
           input.model.stream(prepared.request, { signal: input.signal }),
         );
@@ -135,17 +193,23 @@ class DefaultAgent implements Agent {
         }
 
         if (turn.status === "failed") {
-          const decision = await input.policies.retryPolicy.decide({
-            failure: turn.failure,
-            modelTurnCount: counts.modelTurnCount,
-            modelAttemptCount: counts.modelAttemptCount,
-            retriesInTurn,
-          });
+          const decision = await callDependency("policy", () =>
+            input.policies.retryPolicy.decide({
+              failure: turn.failure,
+              modelTurnCount: counts.modelTurnCount,
+              modelAttemptCount: counts.modelAttemptCount,
+              retriesInTurn,
+            }),
+          );
+          if (input.signal.aborted) return aborted(counts, usage);
           if (decision.action === "retry") {
             retriesInTurn += 1;
             continue;
           }
-          await host.commit({ type: "model_failure", failure: turn.failure });
+          await callDependency("persistence", () =>
+            host.commit({ version: 1, type: "model_failure", failure: turn.failure }),
+          );
+          if (input.signal.aborted) return aborted(counts, usage);
           return {
             status: "failed",
             terminationReason:
@@ -167,7 +231,10 @@ class DefaultAgent implements Agent {
             retryable: false,
             message: "未声明工具的 Model Turn 返回了 tool call",
           };
-          await host.commit({ type: "model_failure", failure });
+          await callDependency("persistence", () =>
+            host.commit({ version: 1, type: "model_failure", failure }),
+          );
+          if (input.signal.aborted) return aborted(counts, usage);
           return {
             status: "failed",
             terminationReason: "invalid_model_response",
@@ -178,10 +245,16 @@ class DefaultAgent implements Agent {
           };
         }
 
-        publish({ type: "phase_changed", phase: "assistant_committing" });
-        await host.commit({ type: "assistant_message", response: turn.response });
-        publish({ type: "phase_changed", phase: "completion_candidate" });
-        const stop = await input.policies.stopPolicy.evaluate({ response: turn.response, counts });
+        publish({ version: 1, type: "phase_changed", phase: "assistant_committing" });
+        await callDependency("persistence", () =>
+          host.commit({ version: 1, type: "assistant_message", response: turn.response }),
+        );
+        if (input.signal.aborted) return aborted(counts, usage);
+        publish({ version: 1, type: "phase_changed", phase: "completion_candidate" });
+        const stop = await callDependency("policy", () =>
+          input.policies.stopPolicy.evaluate({ response: turn.response, counts }),
+        );
+        if (input.signal.aborted) return aborted(counts, usage);
         if (stop.action === "limited") {
           const answer = finalText(turn.response);
           return {
@@ -203,16 +276,10 @@ class DefaultAgent implements Agent {
           unfinishedWork: [],
         };
       }
-    } catch (_error) {
+    } catch (error) {
       if (input.signal.aborted) return aborted(counts, usage);
-      return {
-        status: "failed",
-        terminationReason: "persistence_failure",
-        counts,
-        usage,
-        unfinishedWork: ["Agent dependency 未能完成当前 Run"],
-        error: { code: "AGENT_DEPENDENCY_FAILURE", message: "Agent dependency failed" },
-      };
+      if (error instanceof AgentDependencyFailure) return dependencyFailure(error, counts, usage);
+      throw error;
     }
   }
 }

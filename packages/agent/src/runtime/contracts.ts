@@ -9,6 +9,8 @@ export type TerminationReason =
   | "model_output_limit"
   | "model_attempt_limit"
   | "invalid_model_response"
+  | "context_unavailable"
+  | "policy_failure"
   | "persistence_failure";
 
 export type RunPhase =
@@ -127,17 +129,19 @@ export interface AgentRunResult {
   readonly error?: RedactedErrorSummary;
 }
 
-export type AgentSemanticEvent =
+export type AgentSemanticEvent = { readonly version: 1 } & (
   | { readonly type: "assistant_message"; readonly response: ModelResponse }
-  | { readonly type: "model_failure"; readonly failure: ModelFailure };
+  | { readonly type: "model_failure"; readonly failure: ModelFailure }
+);
 
-export type AgentProgressEvent =
+export type AgentProgressEvent = { readonly version: 1 } & (
   | { readonly type: "phase_changed"; readonly phase: RunPhase }
   | {
       readonly type: "model_attempt_started";
       readonly modelTurnCount: number;
       readonly modelAttemptCount: number;
-    };
+    }
+);
 
 export type AgentEvent = AgentProgressEvent | AgentSemanticEvent;
 

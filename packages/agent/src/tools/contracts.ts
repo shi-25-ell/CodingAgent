@@ -7,6 +7,7 @@ export interface ToolExecutionContext {
 }
 
 export interface ToolUpdate {
+  readonly version: 1;
   readonly type: "progress";
   readonly message: string;
 }

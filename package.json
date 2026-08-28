@@ -13,10 +13,11 @@
     "typecheck:packages": "tsc -b --pretty false",
     "typecheck:tests": "tsc -p tsconfig.test.json --noEmit --pretty false",
     "lint": "biome check .",
+    "print:deterministic": "node scripts/run-deterministic-print.mjs",
     "test": "vitest run",
     "test:unit": "vitest run packages/model/test/unit packages/agent/test/unit packages/coding/test/unit",
     "test:contract": "vitest run packages/model/test/contract packages/agent/test/contract packages/coding/test/contract test/contract",
-    "test:integration": "vitest run test/integration",
+    "test:integration": "npm run build && vitest run test/integration",
     "test:boundary": "npm run build && node scripts/check-package-boundaries.mjs && node scripts/check-package-exports.mjs",
     "check": "npm run typecheck && npm run lint && npm run test:unit && npm run test:contract && npm run test:integration && npm run test:boundary"
   },

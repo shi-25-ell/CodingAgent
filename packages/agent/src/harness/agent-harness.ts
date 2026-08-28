@@ -37,12 +37,13 @@ export interface CommandAck {
   readonly status: "accepted" | "already_applied" | "not_active";
 }
 
-export type HarnessEvent =
+export type HarnessEvent = { readonly version: 1 } & (
   | { readonly type: "run_started"; readonly runId: RunId }
   | { readonly type: "progress"; readonly event: AgentEvent }
   | { readonly type: "assistant_committed"; readonly runId: RunId }
   | { readonly type: "model_failure_committed"; readonly runId: RunId }
-  | { readonly type: "terminal"; readonly report: RunReport };
+  | { readonly type: "terminal"; readonly report: RunReport }
+);
 
 export interface HarnessRunHandle {
   readonly runId: RunId;
@@ -78,6 +79,20 @@ function reportFromResult(run: RunId, result: AgentRunResult): RunReport {
   };
 }
 
+function terminalCommitFailure(report: RunReport): RunReport {
+  const { finalAnswer: _omittedFinalAnswer, ...withoutFinalAnswer } = report;
+  return {
+    ...withoutFinalAnswer,
+    status: "failed",
+    terminationReason: "persistence_failure",
+    unfinishedWork: [...report.unfinishedWork, "terminal commit 首次失败，已执行保守重试"],
+    error: {
+      code: "SESSION_TERMINAL_COMMIT_FAILURE",
+      message: "Terminal commit failed",
+    },
+  };
+}
+
 class DefaultAgentHarness implements AgentHarness {
   readonly #options: AgentHarnessOptions;
 
@@ -95,17 +110,17 @@ class DefaultAgentHarness implements AgentHarness {
     const controller = new AbortController();
     let abortApplied = false;
     let terminal = false;
-    stream.publish({ type: "run_started", runId: lease.runId });
+    stream.publish({ version: 1, type: "run_started", runId: lease.runId });
 
     const commit = async (event: AgentSemanticEvent): Promise<void> => {
       if (event.type === "assistant_message") {
         await lease.append([
           { kind: "assistant_message", message: responseAsAssistantMessage(event.response) },
         ]);
-        stream.publish({ type: "assistant_committed", runId: lease.runId });
+        stream.publish({ version: 1, type: "assistant_committed", runId: lease.runId });
       } else {
         await lease.append([{ kind: "model_failure", failure: event.failure }]);
-        stream.publish({ type: "model_failure_committed", runId: lease.runId });
+        stream.publish({ version: 1, type: "model_failure_committed", runId: lease.runId });
       }
     };
 
@@ -128,17 +143,36 @@ class DefaultAgentHarness implements AgentHarness {
         },
         commit,
         reportProgress(event) {
-          stream.publish({ type: "progress", event });
+          stream.publish({ version: 1, type: "progress", event });
         },
       },
     );
 
     const finished = execution.result
       .then(async (result) => {
-        const report = reportFromResult(lease.runId, result);
-        await lease.finish(report);
+        let report = reportFromResult(lease.runId, result);
+        try {
+          await lease.finish(report);
+        } catch (_error) {
+          report = terminalCommitFailure(report);
+          try {
+            await lease.finish(report);
+          } catch (_retryError) {
+            report = {
+              ...report,
+              unfinishedWork: [
+                ...report.unfinishedWork,
+                "terminal 持久化状态未知，需要 persistence recovery",
+              ],
+              error: {
+                code: "SESSION_TERMINAL_STATE_UNKNOWN",
+                message: "Terminal persistence state is unknown",
+              },
+            };
+          }
+        }
         terminal = true;
-        stream.publish({ type: "terminal", report });
+        stream.publish({ version: 1, type: "terminal", report });
         return report;
       })
       .finally(async () => {

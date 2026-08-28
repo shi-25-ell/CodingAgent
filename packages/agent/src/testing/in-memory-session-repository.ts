@@ -43,6 +43,8 @@ interface SessionState {
 export interface InMemorySessionRepositoryOptions {
   readonly clock: Clock;
   readonly ids: IdFactory;
+  readonly beforeAppend?: () => Promise<void>;
+  readonly finishFailures?: number;
 }
 
 function clone<T>(value: T): T {
@@ -52,12 +54,19 @@ function clone<T>(value: T): T {
 export class InMemorySessionRepository implements SessionRepository {
   readonly #clock: Clock;
   readonly #ids: IdFactory;
+  readonly #beforeAppend: (() => Promise<void>) | undefined;
   readonly #sessions = new Map<SessionId, SessionState>();
+  #finishFailures: number;
   #disposed = false;
 
   constructor(options: InMemorySessionRepositoryOptions) {
     this.#clock = options.clock;
     this.#ids = options.ids;
+    this.#beforeAppend = options.beforeAppend;
+    this.#finishFailures = options.finishFailures ?? 0;
+    if (!Number.isSafeInteger(this.#finishFailures) || this.#finishFailures < 0) {
+      throw new TypeError("finishFailures 必须是非负整数");
+    }
   }
 
   async create(input: CreateSessionInput): Promise<SessionHandle> {
@@ -246,6 +255,8 @@ export class InMemorySessionRepository implements SessionRepository {
       append: async (entries): Promise<CommitReceipt> => {
         assertLease();
         if (entries.length === 0) throw new TypeError("append entries 不能为空");
+        await this.#beforeAppend?.();
+        assertLease();
         const first = state.ledgerSeq + 1;
         for (const entry of entries) this.#appendRecord(state, branch, id, entry);
         return { firstLedgerSeq: first, lastLedgerSeq: state.ledgerSeq };
@@ -259,6 +270,10 @@ export class InMemorySessionRepository implements SessionRepository {
           return { committed: false, report: clone(existing) };
         }
         assertLease();
+        if (this.#finishFailures > 0) {
+          this.#finishFailures -= 1;
+          throw new SessionError("SESSION_STORAGE", "Injected terminal commit failure");
+        }
         if (report.runId !== id) throw new TypeError("RunReport runId 与 lease 不一致");
         this.#appendRecord(state, branch, id, { kind: "run_terminal", report });
         state.terminalReports.set(id, clone(report));

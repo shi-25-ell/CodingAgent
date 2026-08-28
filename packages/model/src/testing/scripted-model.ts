@@ -50,25 +50,27 @@ function partEvents(content: readonly AssistantContentPart[]): readonly ModelEve
   const events: ModelEvent[] = [];
   content.forEach((part, index) => {
     if (part.type === "text" || part.type === "reasoning") {
-      events.push({ type: "part_started", index, part: { type: part.type } });
+      events.push({ version: 1, type: "part_started", index, part: { type: part.type } });
       events.push(
         part.type === "text"
-          ? { type: "text_delta", index, delta: part.text }
-          : { type: "reasoning_delta", index, delta: part.text },
+          ? { version: 1, type: "text_delta", index, delta: part.text }
+          : { version: 1, type: "reasoning_delta", index, delta: part.text },
       );
     } else {
       events.push({
+        version: 1,
         type: "part_started",
         index,
         part: { type: "tool_call", callId: part.callId, name: part.name },
       });
       events.push({
+        version: 1,
         type: "tool_call_delta",
         index,
         delta: { argumentsDelta: JSON.stringify(part.arguments) },
       });
     }
-    events.push({ type: "part_completed", index });
+    events.push({ version: 1, type: "part_completed", index });
   });
   return events;
 }
@@ -76,14 +78,14 @@ function partEvents(content: readonly AssistantContentPart[]): readonly ModelEve
 function outcomeEvents(outcome: ModelTurnResult, attemptId: string): readonly ModelEvent[] {
   if (outcome.status === "failed") {
     return [
-      { type: "turn_started", attemptId },
-      { type: "turn_failed", failure: outcome.failure },
+      { version: 1, type: "turn_started", attemptId },
+      { version: 1, type: "turn_failed", failure: outcome.failure },
     ];
   }
   return [
-    { type: "turn_started", attemptId },
+    { version: 1, type: "turn_started", attemptId },
     ...partEvents(outcome.response.content),
-    { type: "turn_completed", response: outcome.response },
+    { version: 1, type: "turn_completed", response: outcome.response },
   ];
 }
 
@@ -116,8 +118,9 @@ export class ScriptedModel implements Model {
     }
     await step.before?.(options.signal);
     if (options.signal.aborted) {
-      yield { type: "turn_started", attemptId: `scripted-${this.#requests.length}` };
+      yield { version: 1, type: "turn_started", attemptId: `scripted-${this.#requests.length}` };
       yield {
+        version: 1,
         type: "turn_failed",
         failure: { category: "cancelled", retryable: false, message: "Model Attempt 已取消" },
       };

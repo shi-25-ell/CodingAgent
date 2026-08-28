@@ -4,6 +4,22 @@ import { ScriptedModel, scriptedTextResponse } from "@coding-agent/model/testing
 import { describe, expect, it } from "vitest";
 
 describe("CLI → CodingAgent → AgentHarness → Agent → Model → RunReport", () => {
+  it("真实 Node CLI 进程使用显式 deterministic composition", () => {
+    const workspaceRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const entry = fileURLToPath(
+      new URL("../../scripts/run-deterministic-print.mjs", import.meta.url),
+    );
+    const result = spawnSync(process.execPath, [entry, "--print", "进程级任务"], {
+      cwd: workspaceRoot,
+      env: { ...process.env, FAST_SCRIPTED_RESPONSE: "进程级答案" },
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("进程级答案\n");
+    expect(result.stderr).toBe("");
+  });
+
   it("无工具任务只走一条 production-shaped path，并可从 facade 复核 durable projection", async () => {
     const model = new ScriptedModel([
       {
@@ -56,3 +72,6 @@ describe("CLI → CodingAgent → AgentHarness → Agent → Model → RunReport
     await application.dispose();
   });
 });
+
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";

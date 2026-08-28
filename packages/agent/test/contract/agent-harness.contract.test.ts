@@ -149,11 +149,100 @@ describe("AgentHarness terminal contract", () => {
 
     expect(report).toMatchObject({
       status: "failed",
-      terminationReason: "persistence_failure",
-      counts: { modelTurnCount: 1, modelAttemptCount: 1 },
-      error: { code: "AGENT_DEPENDENCY_FAILURE", message: "Agent dependency failed" },
+      terminationReason: "context_unavailable",
+      counts: { modelTurnCount: 1, modelAttemptCount: 0 },
+      error: { code: "CONTEXT_UNAVAILABLE", message: "Model Context unavailable" },
     });
     expect(JSON.stringify(report)).not.toContain("sensitive local detail");
+    expectExactlyOneTerminal(
+      { report, events, ledgerKinds: branch.records.map((record) => record.kind) },
+      "failed",
+    );
+    await repository[Symbol.asyncDispose]();
+  });
+
+  it("aborted：assistant commit 期间接受 abort 后不能落入 completed", async () => {
+    const commitGate = new ManualGate();
+    const clock = new ManualClock(1_750);
+    const ids = new SequentialIdFactory();
+    const repository = new InMemorySessionRepository({
+      clock,
+      ids,
+      beforeAppend: () => commitGate.wait().then(() => undefined),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const harness = createAgentHarness({ agent: createAgent() });
+    const handle = await harness.startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "commit 中取消" }],
+      model: new ScriptedModel([
+        { outcome: { status: "completed", response: response("已生成但尚未 commit") } },
+      ]),
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
+      metadata: { task: "commit 中取消", configurationRevision: "m0" },
+    });
+    const eventsPromise = collect(handle.events());
+    await commitGate.waitUntilBlocked();
+
+    await handle.dispatch({ commandId: "abort-commit", type: "abort" });
+    commitGate.open();
+    const report = await handle.finished;
+    const events = await eventsPromise;
+    const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
+
+    expect(report).toMatchObject({ status: "aborted", terminationReason: "user_abort" });
+    expect(branch.records.map((record) => record.kind)).toEqual([
+      "run_started",
+      "user_message",
+      "assistant_message",
+      "run_terminal",
+    ]);
+    expectExactlyOneTerminal(
+      { report, events, ledgerKinds: branch.records.map((record) => record.kind) },
+      "aborted",
+    );
+    await repository[Symbol.asyncDispose]();
+  });
+
+  it("failed：terminal commit 首次失败时以唯一 persistence failure 收敛", async () => {
+    const clock = new ManualClock(1_900);
+    const ids = new SequentialIdFactory();
+    const repository = new InMemorySessionRepository({ clock, ids, finishFailures: 1 });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const harness = createAgentHarness({ agent: createAgent() });
+    const handle = await harness.startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "terminal fault" }],
+      model: new ScriptedModel([
+        { outcome: { status: "completed", response: response("原始完成回答") } },
+      ]),
+      tools: createDisabledToolExecutor(),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 1, maxModelAttempts: 1, maxRetries: 0 }),
+      metadata: { task: "terminal fault", configurationRevision: "m0" },
+    });
+    const eventsPromise = collect(handle.events());
+
+    const report = await handle.finished;
+    const events = await eventsPromise;
+    const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
+
+    expect(report).toMatchObject({
+      status: "failed",
+      terminationReason: "persistence_failure",
+      error: { code: "SESSION_TERMINAL_COMMIT_FAILURE", message: "Terminal commit failed" },
+    });
+    expect(report.finalAnswer).toBeUndefined();
     expectExactlyOneTerminal(
       { report, events, ledgerKinds: branch.records.map((record) => record.kind) },
       "failed",

@@ -5,13 +5,16 @@ export type ProviderId = string & { readonly [providerIdBrand]: true };
 export type ModelId = string & { readonly [modelIdBrand]: true };
 
 export function providerId(value: string): ProviderId {
-  if (value.trim().length === 0) throw new TypeError("ProviderId 不能为空");
-  return value as ProviderId;
+  return branded<ProviderId>(value, "ProviderId");
 }
 
 export function modelId(value: string): ModelId {
-  if (value.trim().length === 0) throw new TypeError("ModelId 不能为空");
-  return value as ModelId;
+  return branded<ModelId>(value, "ModelId");
+}
+
+function branded<T extends string>(value: string, name: string): T {
+  if (value.trim().length === 0) throw new TypeError(`${name} 不能为空`);
+  return value as T;
 }
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -164,7 +167,7 @@ export interface ToolCallDelta {
   readonly argumentsDelta: string;
 }
 
-export type ModelEvent =
+export type ModelEvent = { readonly version: 1 } & (
   | { readonly type: "turn_started"; readonly attemptId: string }
   | { readonly type: "part_started"; readonly index: number; readonly part: PartHeader }
   | { readonly type: "text_delta"; readonly index: number; readonly delta: string }
@@ -172,7 +175,8 @@ export type ModelEvent =
   | { readonly type: "tool_call_delta"; readonly index: number; readonly delta: ToolCallDelta }
   | { readonly type: "part_completed"; readonly index: number }
   | { readonly type: "turn_completed"; readonly response: ModelResponse }
-  | { readonly type: "turn_failed"; readonly failure: ModelFailure };
+  | { readonly type: "turn_failed"; readonly failure: ModelFailure }
+);
 
 export interface ModelCallOptions {
   readonly signal: AbortSignal;
