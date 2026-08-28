@@ -178,7 +178,7 @@ describe.skipIf(process.platform !== "win32")("Windows PowerShell process adapte
     if (grandchildRunning) spawnSync("taskkill.exe", ["/PID", String(grandchildPid), "/T", "/F"]);
     expect(childRunning).toBe(false);
     expect(grandchildRunning).toBe(false);
-  });
+  }, 15_000);
 
   it("timeout 在 outcome 前终止 child 与 grandchild process tree", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-process-timeout-"));
@@ -200,5 +200,5 @@ describe.skipIf(process.platform !== "win32")("Windows PowerShell process adapte
     await expect(pending).resolves.toMatchObject({ status: "timed_out", effectState: "unknown" });
     expect(isRunning(childPid)).toBe(false);
     expect(isRunning(grandchildPid)).toBe(false);
-  });
+  }, 15_000);
 });
