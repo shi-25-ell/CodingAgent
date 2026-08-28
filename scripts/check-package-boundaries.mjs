@@ -12,7 +12,7 @@ const allowed = {
   coding: new Set(["model", "agent", "sqlite"]),
 };
 const publicSubpaths = {
-  model: new Set(["testing", "auth", "providers/openai-compatible"]),
+  model: new Set(["testing", "auth", "providers/openai-compatible", "providers/anthropic"]),
   agent: new Set(["session", "context", "testing"]),
   sqlite: new Set(),
   coding: new Set(["print", "testing"]),

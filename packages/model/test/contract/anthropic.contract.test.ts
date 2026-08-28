@@ -16,6 +16,7 @@ import {
   type AnthropicTransportRequest,
   anthropicProfile,
   createAnthropicProvider,
+  createFetchAnthropicTransport,
 } from "@coding-agent/model/providers/anthropic";
 import { describe, expect, it } from "vitest";
 
@@ -115,6 +116,34 @@ async function modelFor(transport: AnthropicTransport, source?: CredentialSource
 }
 
 describe("Anthropic native adapter", () => {
+  it("production fetch transport preserves headers, abort signal and streamed UTF-8", async () => {
+    const originalFetch = globalThis.fetch;
+    let init: RequestInit | undefined;
+    globalThis.fetch = async (_input, requestInit) => {
+      init = requestInit;
+      return new Response("分片响应", {
+        status: 200,
+        headers: { "request-id": "req-fetch" },
+      });
+    };
+    try {
+      const signal = new AbortController().signal;
+      const response = await createFetchAnthropicTransport().send({
+        url: "https://api.anthropic.com/v1/messages",
+        headers: { "x-api-key": "transport-secret" },
+        body: "{}",
+        signal,
+      });
+      let streamed = "";
+      for await (const chunk of response.body) streamed += chunk;
+      expect(response).toMatchObject({ status: 200, headers: { "request-id": "req-fetch" } });
+      expect(streamed).toBe("分片响应");
+      expect(init).toMatchObject({ method: "POST", body: "{}", signal });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("maps native raw wire reasoning and multiple tool uses into the canonical Model contract", async () => {
     const fixture = await readFile(
       new URL("../../../../test/fixtures/anthropic/reasoning-tools.sse", import.meta.url),

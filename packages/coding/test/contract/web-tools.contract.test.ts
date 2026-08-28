@@ -28,6 +28,92 @@ async function bytes(value: string): Promise<AsyncIterable<Uint8Array>> {
 }
 
 describe("M5 web safety and ToolExecutor contract", () => {
+  it("Brave production transport and stable auth/response failures remain bounded", async () => {
+    const originalFetch = globalThis.fetch;
+    let sent: { input: string | URL | Request; init?: RequestInit } | undefined;
+    globalThis.fetch = async (input, init) => {
+      sent = { input, ...(init ? { init } : {}) };
+      return new Response(
+        JSON.stringify({ web: { results: [{ title: "One", url: "https://example.com/one" }] } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    try {
+      const provider = createBraveWebSearchProvider({
+        credentials: createCredentialResolver([
+          {
+            id: "production-transport",
+            async resolve() {
+              return {
+                status: "found",
+                credential: { kind: "api_key", value: new SecretString("fetch-secret") },
+                sourceId: "production-transport",
+              };
+            },
+          },
+        ]),
+      });
+      await expect(
+        provider.search(
+          { query: "bounded", maximumResults: 1 },
+          { signal: new AbortController().signal, timeoutMs: 1_000 },
+        ),
+      ).resolves.toMatchObject({ status: "succeeded", results: [{ title: "One" }] });
+      expect(String(sent?.input)).toContain("api.search.brave.com");
+      expect(sent?.init).toMatchObject({ method: "GET" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const missing = createBraveWebSearchProvider({
+      credentials: createCredentialResolver([
+        {
+          id: "missing",
+          async resolve() {
+            return { status: "missing" };
+          },
+        },
+      ]),
+    });
+    await expect(
+      missing.search(
+        { query: "missing", maximumResults: 1 },
+        { signal: new AbortController().signal, timeoutMs: 1_000 },
+      ),
+    ).resolves.toMatchObject({ status: "not_configured" });
+
+    const malformed = createBraveWebSearchProvider({
+      credentials: createCredentialResolver([
+        {
+          id: "malformed",
+          async resolve() {
+            return {
+              status: "found",
+              credential: { kind: "api_key", value: new SecretString("malformed-secret") },
+              sourceId: "malformed",
+            };
+          },
+        },
+      ]),
+      transport: {
+        async send() {
+          return {
+            status: 200,
+            async json() {
+              return { web: { results: "invalid" } };
+            },
+          };
+        },
+      },
+    });
+    await expect(
+      malformed.search(
+        { query: "malformed", maximumResults: 1 },
+        { signal: new AbortController().signal, timeoutMs: 1_000 },
+      ),
+    ).resolves.toMatchObject({ status: "failed" });
+  });
+
   it("web_fetch validates every redirect hop, pins the approved address and extracts bounded text", async () => {
     const resolutions: string[] = [];
     const requests: PinnedHttpRequest[] = [];
@@ -115,6 +201,7 @@ describe("M5 web safety and ToolExecutor contract", () => {
   });
 
   it.each([
+    "not a URL",
     "file:///etc/passwd",
     "https://user:pass@example.com/",
     "http://localhost/",
@@ -230,6 +317,29 @@ describe("M5 web safety and ToolExecutor contract", () => {
         timeoutMs: 1_000,
       }),
     ).resolves.toMatchObject({ status: "output_limit" });
+
+    const compressed = createSafeWebFetchPort({
+      resolver,
+      transport: {
+        async get() {
+          return {
+            status: 200,
+            headers: { "content-type": "text/plain", "content-encoding": "gzip" },
+            body: await bytes("encoded"),
+          };
+        },
+      },
+    });
+    await expect(
+      compressed.fetch({
+        url: "https://public.example/",
+        signal: new AbortController().signal,
+        timeoutMs: 1_000,
+      }),
+    ).resolves.toMatchObject({
+      status: "rejected",
+      message: expect.stringContaining("compressed"),
+    });
   });
 
   it("maps web_fetch and web_search timeout/abort without leaking credentials", async () => {
@@ -384,5 +494,61 @@ describe("M5 web safety and ToolExecutor contract", () => {
     expect(fetchOutcome).toMatchObject({ status: "succeeded", effectState: "none", artifacts: [] });
     expect(fetchOutcome.modelContent).toContain("[REDACTED]");
     await host[Symbol.asyncDispose]();
+  });
+
+  it("unconfigured and failed web adapters produce one stable ToolOutcome", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-web-failures-"));
+    temporaryDirectories.push(root);
+    const unconfigured = createCodingToolHost({ workspaceRoot: root });
+    await expect(
+      unconfigured.execute(
+        {
+          type: "tool_call",
+          callId: "search-missing",
+          name: "web_search",
+          arguments: { query: "x" },
+        },
+        { runId: runId("web-failure"), signal: new AbortController().signal },
+      ).outcome,
+    ).resolves.toMatchObject({ status: "failed", isError: true });
+    await unconfigured[Symbol.asyncDispose]();
+
+    const cancelled = createCodingToolHost({
+      workspaceRoot: root,
+      webSearchProvider: {
+        id: "cancelled",
+        async search() {
+          return { status: "cancelled", message: "cancelled" };
+        },
+      },
+      webFetch: {
+        async fetch() {
+          return { status: "output_limit", message: "bounded" };
+        },
+      },
+    });
+    await expect(
+      cancelled.execute(
+        {
+          type: "tool_call",
+          callId: "search-cancel",
+          name: "web_search",
+          arguments: { query: "x" },
+        },
+        { runId: runId("web-failure"), signal: new AbortController().signal },
+      ).outcome,
+    ).resolves.toMatchObject({ status: "cancelled", abortObserved: true });
+    await expect(
+      cancelled.execute(
+        {
+          type: "tool_call",
+          callId: "fetch-limit",
+          name: "web_fetch",
+          arguments: { url: "https://example.com" },
+        },
+        { runId: runId("web-failure"), signal: new AbortController().signal },
+      ).outcome,
+    ).resolves.toMatchObject({ status: "output_limit", isError: true });
+    await cancelled[Symbol.asyncDispose]();
   });
 });
