@@ -43,6 +43,75 @@ function toolTurn(callId: string) {
 }
 
 describe("M2 CodingAgent approval integration", () => {
+  it("deny 不启动 Adapter，ToolOutcome 对模型可见且 Run 可正常继续", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-m2-approval-deny-"));
+    temporaryDirectories.push(root);
+    const approvals = createApprovalBridge();
+    const requests = approvals.requests()[Symbol.asyncIterator]();
+    const sessions = new InMemorySessionRepository({
+      clock: new ManualClock(500),
+      ids: new SequentialIdFactory(),
+    });
+    const model = new ScriptedModel([
+      { outcome: { status: "completed", response: toolTurn("create-denied") } },
+      {
+        assertRequest(request) {
+          expect(request.messages.at(-1)).toMatchObject({
+            role: "tool",
+            callId: "create-denied",
+            isError: true,
+            content: expect.stringContaining("拒绝"),
+          });
+        },
+        outcome: {
+          status: "completed",
+          response: {
+            version: 1,
+            content: [{ type: "text", text: "用户拒绝后已安全停止修改" }],
+            finishReason: "stop",
+          },
+        },
+      },
+    ]);
+    const application = createCodingAgent({
+      sessions,
+      harness: createAgentHarness({ agent: createAgent() }),
+      model,
+      tools: createCodingToolHost({
+        workspaceRoot: root,
+        permissionMode: "safe",
+        approvalPort: approvals,
+      }),
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
+      configurationRevision: "m2-approval-deny",
+      approvals,
+    });
+    const session = await application.createSession({
+      workspace: { root, fingerprint: "fixture" },
+    });
+    const handle = await session.startRun({ task: "尝试创建文件" });
+    const request = await requests.next();
+    if (!request.value) throw new Error("permission request 未发布");
+    await handle.dispatch({
+      commandId: "deny-1",
+      type: "respond_permission",
+      approvalId: request.value.approvalId,
+      decision: "deny",
+      planFingerprint: request.value.plan.fingerprint,
+    });
+
+    await expect(handle.finished).resolves.toMatchObject({
+      status: "completed",
+      finalAnswer: "用户拒绝后已安全停止修改",
+      permissions: { requested: 1, allowed: 0, denied: 1 },
+      tools: { accepted: 1, settled: 1, succeeded: 0, failed: 1 },
+    });
+    await expect(access(path.join(root, "created.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    model.assertConsumed();
+    await sessions[Symbol.asyncDispose]();
+  });
+
   it("respond_permission command 通过 Harness→ToolHost correlation 后继续 Model Turn", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m2-approval-agent-"));
     temporaryDirectories.push(root);

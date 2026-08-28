@@ -898,9 +898,26 @@ async function applyPatchTool(
 }
 
 function sanitizedEnvironment(registeredSecrets: readonly string[] = []): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    "APPDATA",
+    "COMSPEC",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+  ]);
   return Object.fromEntries(
     Object.entries(process.env).filter(
       ([name, value]) =>
+        allowed.has(name.toUpperCase()) &&
         !/(?:credential|secret|token|password|api[_-]?key)/i.test(name) &&
         (value === undefined || !registeredSecrets.includes(value)),
     ),
@@ -1301,13 +1318,24 @@ export function createCodingToolHost(options: CodingToolHostOptions): CodingTool
             const artifactRefs: { readonly id: string }[] = [];
             if (error.artifactBytes) {
               const artifactText = redact(decodeUtf8(error.artifactBytes));
-              artifactRefs.push(
-                await artifacts.put({
-                  bytes: Buffer.from(artifactText, "utf8"),
-                  mediaType: "text/plain",
-                  provenance: `${call.name}:${call.callId}:output_limit`,
-                }),
-              );
+              try {
+                artifactRefs.push(
+                  await artifacts.put({
+                    bytes: Buffer.from(artifactText, "utf8"),
+                    mediaType: "text/plain",
+                    provenance: `${call.name}:${call.callId}:output_limit`,
+                  }),
+                );
+              } catch (_artifactError) {
+                return outcomeFromFailure(
+                  call.callId,
+                  new ToolFailure("failed", "Artifact spill failed", {
+                    effectState: error.effectState,
+                    abortObserved: error.abortObserved,
+                    evidence: evidence({ artifactSpillFailed: true }),
+                  }),
+                );
+              }
             }
             return outcomeFromFailure(
               call.callId,

@@ -187,17 +187,18 @@ async function createCompatibleCodingAgent(
     } satisfies IdFactory);
   const sessions = new InMemorySessionRepository({ clock, ids });
   const approvals = options.approvalBridge ?? createApprovalBridge();
+  const tools = createCodingToolHost({
+    workspaceRoot: options.workspaceRoot,
+    permissionMode: options.permissionMode ?? "autonomous",
+    approvalPort: approvals,
+    redact: (value) =>
+      [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value),
+  });
   const agent = createCodingAgent({
     sessions,
     harness: createAgentHarness({ agent: createAgent() }),
     model,
-    tools: createCodingToolHost({
-      workspaceRoot: options.workspaceRoot,
-      permissionMode: options.permissionMode ?? "autonomous",
-      approvalPort: approvals,
-      redact: (value) =>
-        [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value),
-    }),
+    tools,
     context: createTranscriptContextManager({
       instructions: options.instructions ?? [
         { type: "text", text: "你是 Fast coding agent。使用工具核验事实并完成 Coding Task。" },
@@ -213,6 +214,7 @@ async function createCompatibleCodingAgent(
     model: model.descriptor,
     approvals,
     async dispose() {
+      await tools[Symbol.asyncDispose]();
       await sessions[Symbol.asyncDispose]();
     },
   };

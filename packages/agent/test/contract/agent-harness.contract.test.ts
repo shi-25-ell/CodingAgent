@@ -876,4 +876,82 @@ describe("AgentHarness terminal contract", () => {
     );
     await repository[Symbol.asyncDispose]();
   });
+
+  it("abort during model continuation 不重复 tool settlement 或 terminal", async () => {
+    const continuationGate = new ManualGate();
+    const repository = new InMemorySessionRepository({
+      clock: new ManualClock(2_100),
+      ids: new SequentialIdFactory(),
+    });
+    const session = await repository.create({
+      workspace: { root: "D:/work/demo", fingerprint: "head:abc" },
+    });
+    const snapshot = await session.inspect();
+    const model = new ScriptedModel([
+      {
+        outcome: {
+          status: "completed",
+          response: {
+            version: 1,
+            content: [
+              { type: "tool_call", callId: "continuation-tool", name: "read_file", arguments: {} },
+            ],
+            finishReason: "tool_calls",
+          },
+        },
+      },
+      {
+        before: (signal) => continuationGate.wait(signal).then(() => undefined),
+        outcome: { status: "completed", response: response("late continuation") },
+      },
+    ]);
+    const handle = await createAgentHarness({ agent: createAgent() }).startRun({
+      session,
+      branchId: snapshot.currentBranchId,
+      initialMessages: [{ role: "user", text: "先工具后取消" }],
+      model,
+      tools: {
+        definitions: () => [],
+        execute(call) {
+          return {
+            updates: (async function* () {})(),
+            outcome: Promise.resolve({
+              callId: call.callId,
+              status: "succeeded" as const,
+              isError: false,
+              modelContent: "done",
+              effectState: "none" as const,
+              abortObserved: false,
+              artifacts: [],
+            }),
+          };
+        },
+      },
+      context: createTranscriptContextManager({ instructions: [], maxOutputTokens: 256 }),
+      policies: createFixedRunPolicies({ maxModelTurns: 2, maxModelAttempts: 2, maxRetries: 0 }),
+      metadata: { task: "先工具后取消", configurationRevision: "m2" },
+    });
+    const eventsPromise = collect(handle.events());
+    await continuationGate.waitUntilBlocked();
+    await handle.dispatch({ commandId: "abort-continuation", type: "abort" });
+    const report = await handle.finished;
+    const events = await eventsPromise;
+    const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
+
+    expect(report).toMatchObject({
+      status: "aborted",
+      counts: {
+        modelTurnCount: 2,
+        modelAttemptCount: 2,
+        toolCallCount: 1,
+        settledToolCallCount: 1,
+      },
+    });
+    expectExactlyOneTerminal(
+      { report, events, ledgerKinds: branch.records.map((record) => record.kind) },
+      "aborted",
+    );
+    model.assertConsumed();
+    await repository[Symbol.asyncDispose]();
+  });
 });

@@ -257,6 +257,38 @@ describe("CodingToolHost ToolExecutor contract", () => {
     ).resolves.toMatchObject({ status: "conflict", effectState: "none" });
     await expect(readFile(target, "utf8")).resolves.toBe("concurrent");
   });
+
+  it("ToolPlan fingerprint 对相同 plan 稳定，并在 volatile precondition 变化后失效", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-tools-fingerprint-"));
+    temporaryDirectories.push(root);
+    const target = path.join(root, "a.txt");
+    await writeFile(target, "before one", "utf8");
+    const fingerprints: string[] = [];
+    const host = createCodingToolHost({
+      workspaceRoot: root,
+      permissionMode: "safe",
+      approvalPort: {
+        async request(request) {
+          fingerprints.push(request.plan.fingerprint);
+          return { decision: "deny", planFingerprint: request.plan.fingerprint };
+        },
+      },
+    });
+    const call = {
+      type: "tool_call" as const,
+      callId: "stable-plan",
+      name: "apply_patch",
+      arguments: { path: "a.txt", oldText: "before", newText: "after" },
+    };
+    await outcome(host, call);
+    await outcome(host, call);
+    await writeFile(target, "before two", "utf8");
+    await outcome(host, call);
+
+    expect(fingerprints).toHaveLength(3);
+    expect(fingerprints[0]).toBe(fingerprints[1]);
+    expect(fingerprints[2]).not.toBe(fingerprints[0]);
+  });
   it("四个真实工具共享 strict validation、workspace containment 与明确 ToolOutcome", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-tools-"));
     temporaryDirectories.push(root);
@@ -396,6 +428,37 @@ describe("CodingToolHost ToolExecutor contract", () => {
         arguments: { path: "a" },
       }),
     ).resolves.toMatchObject({ status: "output_limit", effectState: "none" });
+  });
+
+  it("Artifact spill failure 仍 resolve exactly-one failed ToolOutcome", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "fast-tools-artifact-failure-"));
+    temporaryDirectories.push(root);
+    await writeFile(path.join(root, "large.txt"), "content larger than budget", "utf8");
+    const host = createCodingToolHost({
+      workspaceRoot: root,
+      maxOutputBytes: 8,
+      artifactStore: {
+        async put() {
+          throw new Error("private artifact failure");
+        },
+        async stat() {
+          return undefined;
+        },
+        async read() {
+          return undefined;
+        },
+        async [Symbol.asyncDispose]() {},
+      },
+    });
+
+    const result = await outcome(host, {
+      type: "tool_call",
+      callId: "artifact-failure",
+      name: "read_file",
+      arguments: { path: "large.txt" },
+    });
+    expect(result).toMatchObject({ status: "failed", effectState: "none", artifacts: [] });
+    expect(JSON.stringify(result)).not.toContain("private artifact failure");
   });
 
   it("run_command 在 path preflight 期间收到 abort 时不启动 process", async () => {

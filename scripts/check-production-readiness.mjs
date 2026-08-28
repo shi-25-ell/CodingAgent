@@ -2,6 +2,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 
 const forbidden = /TODO|FIXME|NotImplemented|not implemented/i;
+const productionFake =
+  /(?:@coding-agent\/(?:model|agent)\/testing|ScriptedModel|ManualClock|ManualGate|SequentialIdFactory)/;
+const credentialLiteral = /(?:sk-[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9_-]{20,})/;
 const files = execFileSync(
   "git",
   ["ls-files", "--cached", "--others", "--exclude-standard", "packages/*/src/**"],
@@ -17,6 +20,12 @@ for (const file of files) {
   const text = readFileSync(file, "utf8");
   text.split(/\r?\n/).forEach((line, index) => {
     if (forbidden.test(line)) findings.push(`${file}:${index + 1}:${line.trim()}`);
+    if (!file.includes("/src/testing/") && productionFake.test(line)) {
+      findings.push(`${file}:${index + 1}:production source 引用了 testing fake`);
+    }
+    if (credentialLiteral.test(line)) {
+      findings.push(`${file}:${index + 1}:疑似 credential literal`);
+    }
   });
 }
 if (findings.length > 0) {
