@@ -7,3 +7,5 @@ coverage/
 !.env.example
 .fast/credentials.json
 .dex
+AGENTS.md
+CONTEXT.md
