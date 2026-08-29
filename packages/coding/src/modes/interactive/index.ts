@@ -25,6 +25,12 @@ export {
   type OpenTuiRendererOptions,
 } from "./opentui-renderer.js";
 export {
+  createOpenTuiSyntaxStyle,
+  type OpenTuiTheme,
+  resolveOpenTuiTheme,
+  toOpenTuiColor,
+} from "./opentui-theme-adapter.js";
+export {
   type InteractiveFatalEvent,
   type InteractiveProcessHost,
   InteractiveProcessLifecycle,
@@ -41,6 +47,17 @@ export {
   type RendererResource,
   type RendererStopReason,
 } from "./renderer-lifecycle.js";
+export {
+  asciiPresentationGlyphs,
+  type PresentationGlyphs,
+  presentationGlyphs,
+  resolveTerminalPresentationCapabilities,
+  type TerminalColorLevel,
+  type TerminalGlyphMode,
+  type TerminalPresentationCapabilities,
+  type TerminalPresentationProbe,
+  unicodePresentationGlyphs,
+} from "./terminal-presentation.js";
 export {
   detectTerminalThemeMode,
   type InteractiveTheme,
