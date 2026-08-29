@@ -1,6 +1,6 @@
 # Dex Code M5.3 TUI design baseline
 
-> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A、V2 与 V3-A 已确认，V4–V7 按依赖顺序补充。未经确认的结构性方案不得进入 production composer、approval、dedicated diff route 或 keymap behavior。
+> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A、V2、V3-A 与 V4-A 已确认，V5–V7 按依赖顺序补充。未经确认的结构性方案不得进入 approval、dedicated diff route 或 keymap behavior。
 
 ## 1. N1：产品、CLI 与 namespace 命名
 
@@ -157,7 +157,38 @@ tool details 默认显示。全局 Hide tool details 只隐藏 `succeeded` compl
 
 tool output 在进入 renderable 前移除 ANSI escape/control injection，并按 Unicode code point 截断；preview 不能拆分 surrogate pair。颜色只按 pending/running/success/warning/error semantic tone 分配，不为每种 tool 发明独立高饱和颜色。
 
-## 5. Owner checkpoint 状态
+## 5. V4：Run-aware direct Composer
+
+确认日期：2026-08-29
+
+项目 owner 选择 V4-A。Session 始终只有一个底部 Composer；idle/terminal submit 映射为 `submit_task`，active Run submit 默认映射为 `steer`。用户可以在同一 Composer footer 把 delivery mode 切换为 `FOLLOW-UP`。切换只改变 delivery metadata，不创建第二输入区、不改变 draft value/revision identity，也不新增常驻 Queue workspace。
+
+```text
+idle / terminal                    active Run
+draft -> submit_task               draft + STEER -> durable steering queue
+                                     │
+                                     └ toggle footer only
+                                       draft + FOLLOW-UP -> durable follow-up queue
+```
+
+提交协议分成两个 ack：
+
+1. controller 以 Composer revision 和 command ID 提交；active Run 通过 `CodingRunHandle.dispatch()` 进入 durable queue；
+2. queue admission ack 为 `accepted` / `already_applied` 后，controller 才按原 revision 清空 Composer；失败、conflict 或 Run race 均保留原 draft；
+3. Transcript 立即以 stable queue command ID 显示 `queued` user message；
+4. Run loop 在下一个 safe point 消费 steering/follow-up；application event/ack 把同一消息更新为 `delivered`，不得追加重复消息；
+5. queue edit/cancel 必须携带 target command ID 与 expected revision。CAS conflict 或拒绝不覆盖 durable 原文，并产生 `QUEUE_REVISION_CONFLICT` / `QUEUE_UPDATE_REJECTED` typed diagnostic。
+
+Composer editor policy：
+
+- OpenTUI `Textarea` 使用 word wrap；Enter submit，Shift+Enter newline；
+- history 仅在 cursor 位于首个/末个 visual row 且没有 selection 时响应 Up/Down；离开 history 时恢复导航前 draft；
+- bracketed paste 先移除 ANSI，再把 CRLF/CR 统一为 LF；三行以上或超过 150 Unicode code points 的 paste 保留完整实际文本，但以 compact placeholder 表示；
+- submit 读取 `plainText` 前 double-defer，允许 terminal IME composition 同步；pending submit 拒绝重入；
+- `height < 12` 时沿用 V1 low-height policy：Composer editor 最少 1 行、最多 3 行，footer 保留 1 行，secondary status/hints 让位于 Transcript；
+- Composer 的 durable command 只能经过 `UiIntent -> InteractiveController -> CodingSession/CodingRunHandle`，Textarea Adapter 不直接持有 Session 或 Run。
+
+## 6. Owner checkpoint 状态
 
 | ID | 状态 | 记录 |
 | --- | --- | --- |
@@ -165,7 +196,7 @@ tool output 在进入 renderable 前移除 ANSI escape/control injection，并�
 | V1 | 已确认 | V1-A：stretch root、wide auto dock、narrow/regular explicit overlay |
 | V2 | 已确认 | 默认 `dex` dark/light palette；可选 terminal-adaptive `system` |
 | V3 | 已确认 | V3-A：semantic inline tools；mutation diff 留在 Transcript |
-| V4 | 待确认 | composer、queue 与 steering flow |
+| V4 | 已确认 | V4-A：单一 run-aware Composer；active 默认 STEER，footer 可切 FOLLOW-UP |
 | V5 | 待确认 | approval 与危险操作 flow |
 | V6 | 待确认 | diff 导航与 width matrix |
 | V7 | 待确认 | executable keymap、可发现性与 conflict report |

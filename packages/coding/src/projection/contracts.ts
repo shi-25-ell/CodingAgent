@@ -140,6 +140,7 @@ export type UiSurface =
 export interface ComposerLocalState {
   readonly value: string;
   readonly revision: number;
+  readonly deliveryMode: "steering" | "follow_up";
 }
 
 export interface TranscriptViewportState {

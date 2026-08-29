@@ -1,3 +1,14 @@
+export {
+  type ComposerDeliveryMode,
+  ComposerHistory,
+  type ComposerHistoryDirection,
+  ComposerSubmitGate,
+  type ComposerSubmitGateOptions,
+  type ComposerVisualBoundary,
+  normalizeComposerPaste,
+  type PreparedComposerPaste,
+  prepareComposerPaste,
+} from "./composer-policy.js";
 export * from "./contracts.js";
 export {
   createInteractiveController,
@@ -20,6 +31,12 @@ export {
   observeTranscriptGrowth,
   reduceInteractiveLocalState,
 } from "./local-ui-state.js";
+export {
+  bindOpenTuiComposer,
+  createOpenTuiComposerOptions,
+  type OpenTuiComposerBindingOptions,
+  type OpenTuiComposerOptions,
+} from "./opentui-composer-adapter.js";
 export {
   type CodeAdapterOptions,
   createOpenTuiCodeOptions,

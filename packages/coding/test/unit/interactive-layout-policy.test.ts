@@ -103,7 +103,7 @@ describe("Transcript-first responsive layout policy", () => {
       expect(layout).toMatchObject({
         heightClass,
         statusRows,
-        composer: { minRows: composerMin, maxRows: composerMax },
+        composer: { minRows: composerMin, maxRows: composerMax, footerRows: 1 },
       });
       expect(layout.primaryRegion).toBe("transcript");
     },

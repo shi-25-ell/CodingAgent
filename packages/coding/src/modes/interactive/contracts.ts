@@ -34,6 +34,10 @@ export type UiLocalIntent = UiIntentBase &
     | { readonly type: "set_expanded"; readonly id: string; readonly expanded: boolean }
     | { readonly type: "composer_changed"; readonly value: string }
     | {
+        readonly type: "set_composer_delivery";
+        readonly delivery: "steering" | "follow_up";
+      }
+    | {
         readonly type: "transcript_viewport_changed";
         readonly scrollTop: number;
         readonly followTail: boolean;
@@ -58,6 +62,11 @@ export type UiApplicationIntent = UiIntentBase &
         readonly type: "submit_task";
         readonly text: string;
         readonly model?: ModelRef;
+        readonly acceptWorkspaceFingerprint?: string;
+      }
+    | {
+        readonly type: "submit_composer";
+        readonly expectedRevision: number;
         readonly acceptWorkspaceFingerprint?: string;
       }
     | {

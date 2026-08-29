@@ -43,7 +43,7 @@ describe("InteractiveController contract", () => {
       transcript: [],
       ui: {
         focusedRegion: "composer",
-        composer: { value: "", revision: 0 },
+        composer: { value: "", revision: 0, deliveryMode: "steering" },
         terminal: { width: 100, height: 28 },
         sidebar: { preference: "auto", open: false },
         themeId: "dex",
@@ -66,7 +66,7 @@ describe("InteractiveController contract", () => {
 
     expect(controller.current().ui).toMatchObject({
       focusedRegion: "transcript",
-      composer: { value: "本地草稿", revision: 1 },
+      composer: { value: "本地草稿", revision: 1, deliveryMode: "steering" },
       sidebar: { preference: "hide", open: true },
       themeId: "system",
       toolDisplay: { showDetails: false, showGenericOutput: false },
@@ -79,7 +79,7 @@ describe("InteractiveController contract", () => {
     await application.dispose();
   });
 
-  it("submit_task 只通过 CodingSession 启动 Run，并从 event stream 更新 TuiViewModel", async () => {
+  it("idle Composer submit 只通过 CodingSession 启动 Run，并在 admission 后清空", async () => {
     const model = new ScriptedModel([
       { outcome: { status: "completed", response: scriptedTextResponse("controller answer") } },
     ]);
@@ -89,11 +89,11 @@ describe("InteractiveController contract", () => {
     });
     const controller = createInteractiveController({ session, width: 80, height: 24 });
     await controller.start();
-    await controller.dispatch({ version: 1, type: "composer_changed", value: "draft" });
+    await controller.dispatch({ version: 1, type: "composer_changed", value: "检查项目" });
     const terminalView = waitForView(controller, (view) => view.terminalReport !== undefined);
 
     await expect(
-      controller.dispatch({ version: 1, type: "submit_task", text: "检查项目" }),
+      controller.dispatch({ version: 1, type: "submit_composer", expectedRevision: 1 }),
     ).resolves.toMatchObject({ status: "applied" });
     const completed = await terminalView;
 
@@ -130,7 +130,7 @@ describe("InteractiveController contract", () => {
     });
     const run = await session.startRun({ task: "等待 command" });
     await gate.waitUntilBlocked();
-    const commandIds = ["steer-1", "edit-1", "stale-1", "abort-1"];
+    const commandIds = ["steer-1", "follow-1", "edit-1", "stale-1", "abort-1"];
     const controller = createInteractiveController({
       session,
       width: 80,
@@ -139,16 +139,26 @@ describe("InteractiveController contract", () => {
     });
     await controller.start();
 
+    await controller.dispatch({ version: 1, type: "composer_changed", value: "先检查测试" });
     await expect(
-      controller.dispatch({
-        version: 1,
-        type: "send_run_message",
-        delivery: "steering",
-        text: "先检查测试",
-      }),
+      controller.dispatch({ version: 1, type: "submit_composer", expectedRevision: 1 }),
     ).resolves.toMatchObject({ status: "applied", commandAck: { commandId: "steer-1" } });
-    const [queued] = await session.listQueue(run.runId);
+    expect(controller.current().ui.composer).toMatchObject({
+      value: "",
+      deliveryMode: "steering",
+    });
+    await controller.dispatch({
+      version: 1,
+      type: "set_composer_delivery",
+      delivery: "follow_up",
+    });
+    await controller.dispatch({ version: 1, type: "composer_changed", value: "完成后再运行测试" });
+    await expect(
+      controller.dispatch({ version: 1, type: "submit_composer", expectedRevision: 3 }),
+    ).resolves.toMatchObject({ status: "applied", commandAck: { commandId: "follow-1" } });
+    const [queued, followUp] = await session.listQueue(run.runId);
     if (!queued) throw new Error("steering queue 未创建");
+    expect(followUp).toMatchObject({ kind: "follow_up", status: "queued" });
     await expect(
       controller.dispatch({
         version: 1,
@@ -172,6 +182,10 @@ describe("InteractiveController contract", () => {
       status: "rejected",
       commandAck: { commandId: "stale-1", status: "conflict" },
     });
+    expect(controller.current().diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "QUEUE_REVISION_CONFLICT" })]),
+    );
+    expect((await session.listQueue(run.runId))[0]?.text).toBe("先检查 contract tests");
     await expect(
       controller.dispatch({ version: 1, type: "abort_run", reason: "contract complete" }),
     ).resolves.toMatchObject({ status: "applied", commandAck: { commandId: "abort-1" } });

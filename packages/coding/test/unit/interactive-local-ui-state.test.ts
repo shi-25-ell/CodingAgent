@@ -17,7 +17,7 @@ describe("interactive local UI state", () => {
     expect(state).toMatchObject({
       version: 1,
       focusedRegion: "composer",
-      composer: { value: "", revision: 0 },
+      composer: { value: "", revision: 0, deliveryMode: "steering" },
       transcriptViewport: { scrollTop: 0, followTail: true, unseenBlockCount: 0 },
       terminal: { width: 80, height: 24 },
       sidebar: { preference: "auto", open: false },
@@ -90,7 +90,11 @@ describe("interactive local UI state", () => {
     );
 
     expect(expanded.focusedRegion).toBe("transcript");
-    expect(expanded.composer).toEqual({ value: "检查工作树", revision: 1 });
+    expect(expanded.composer).toEqual({
+      value: "检查工作树",
+      revision: 1,
+      deliveryMode: "steering",
+    });
     expect(expanded.expandedIds.has("tool:1")).toBe(true);
     expect(() => (expanded.expandedIds as Set<string>).delete("tool:1")).toThrow();
     expect(
@@ -99,6 +103,23 @@ describe("interactive local UI state", () => {
         intent({ type: "set_expanded", id: "tool:1", expanded: true }),
       ),
     ).toBe(expanded);
+  });
+
+  it("切换 STEER/FOLLOW-UP 只改变 footer mode，不改变 draft identity", () => {
+    const edited = reduceInteractiveLocalState(
+      createInteractiveLocalState({ width: 80, height: 24 }),
+      intent({ type: "composer_changed", value: "保留 draft" }),
+    );
+    const followUp = reduceInteractiveLocalState(
+      edited,
+      intent({ type: "set_composer_delivery", delivery: "follow_up" }),
+    );
+
+    expect(followUp.composer).toEqual({
+      value: "保留 draft",
+      revision: edited.composer.revision,
+      deliveryMode: "follow_up",
+    });
   });
 
   it("surface stack 以 semantic identity 去重并把重新打开项移到顶层", () => {

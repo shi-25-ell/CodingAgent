@@ -44,7 +44,7 @@ export function createInteractiveLocalState(
     version: 1,
     focusedRegion: options.focusedRegion ?? "composer",
     expandedIds: immutableReadonlySet<string>(),
-    composer: { value: "", revision: 0 },
+    composer: { value: "", revision: 0, deliveryMode: "steering" },
     transcriptViewport: { scrollTop: 0, followTail: true, unseenBlockCount: 0 },
     surfaceStack: [],
     terminal: {
@@ -87,7 +87,18 @@ export function reduceInteractiveLocalState(
         ? previous
         : freezeState({
             ...previous,
-            composer: { value: intent.value, revision: previous.composer.revision + 1 },
+            composer: {
+              ...previous.composer,
+              value: intent.value,
+              revision: previous.composer.revision + 1,
+            },
+          });
+    case "set_composer_delivery":
+      return previous.composer.deliveryMode === intent.delivery
+        ? previous
+        : freezeState({
+            ...previous,
+            composer: { ...previous.composer, deliveryMode: intent.delivery },
           });
     case "transcript_viewport_changed": {
       if (!Number.isFinite(intent.scrollTop) || intent.scrollTop < 0) {

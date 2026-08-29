@@ -24,6 +24,7 @@ export interface InteractiveLayout {
   readonly composer: {
     readonly minRows: number;
     readonly maxRows: number;
+    readonly footerRows: 1;
   };
 }
 
@@ -98,10 +99,10 @@ export function resolveInteractiveLayout(
     headerRows: constrained ? 1 : 1,
     statusRows: constrained ? 0 : 1,
     composer: constrained
-      ? { minRows: 1, maxRows: 3 }
+      ? { minRows: 1, maxRows: 3, footerRows: 1 as const }
       : compact
-        ? { minRows: 2, maxRows: 5 }
-        : { minRows: 3, maxRows: 8 },
+        ? { minRows: 2, maxRows: 5, footerRows: 1 as const }
+        : { minRows: 3, maxRows: 8, footerRows: 1 as const },
   };
   return Object.freeze(base);
 }

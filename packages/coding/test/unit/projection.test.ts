@@ -402,7 +402,7 @@ describe("pure Coding projection", () => {
     const projection = reduceProjection(undefined, snapshot);
     const viewModel = selectTuiViewModel(projection, {
       focusedRegion: "context",
-      composer: { value: "draft", revision: 2 },
+      composer: { value: "draft", revision: 2, deliveryMode: "steering" },
       transcriptViewport: {
         scrollTop: 3,
         followTail: false,
@@ -415,7 +415,7 @@ describe("pure Coding projection", () => {
 
     expect(viewModel.ui).toMatchObject({
       focusedRegion: "context",
-      composer: { value: "draft", revision: 2 },
+      composer: { value: "draft", revision: 2, deliveryMode: "steering" },
       transcriptViewport: { followTail: false, unseenBlockCount: 1 },
       terminal: { width: 120, height: 32 },
       surfaceStack: [{ kind: "context" }],

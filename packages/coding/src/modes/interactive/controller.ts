@@ -54,6 +54,7 @@ const localIntentTypes: ReadonlySet<UiLocalIntent["type"]> = new Set([
   "focus_region",
   "set_expanded",
   "composer_changed",
+  "set_composer_delivery",
   "transcript_viewport_changed",
   "open_surface",
   "close_surface",
@@ -198,6 +199,38 @@ class ProductionInteractiveController implements InteractiveController {
         await this.#attachRun(run, false);
         return this.#applied(intent);
       }
+      case "submit_composer": {
+        if (intent.expectedRevision !== this.#local.composer.revision) {
+          return this.#rejected(intent, "Composer revision 已变化，请重新提交");
+        }
+        const text = this.#local.composer.value.trim();
+        if (text.length === 0) return this.#rejected(intent, "Composer 不能为空");
+        if (this.#run && this.#projection?.activeRunId) {
+          const ack = await this.#run.dispatch({
+            commandId: this.#createCommandId(),
+            type: this.#local.composer.deliveryMode === "steering" ? "steer" : "follow_up",
+            text,
+          });
+          if (commandAccepted(ack)) this.#clearComposer(intent.expectedRevision);
+          else this.#appendCommandDiagnostic("QUEUE_ADMISSION_REJECTED", ack.status);
+          return this.#fromAck(intent, ack);
+        }
+        const selectedModel = this.#local.selectedModel;
+        const input = {
+          task: text,
+          ...(selectedModel ? { model: selectedModel } : {}),
+          ...(intent.acceptWorkspaceFingerprint
+            ? { acceptWorkspaceFingerprint: intent.acceptWorkspaceFingerprint }
+            : {}),
+        };
+        const hasHistory = (this.#projection?.runOrder.length ?? 0) > 0;
+        const run = hasHistory
+          ? await this.#session.resume(input)
+          : await this.#session.startRun(input);
+        this.#clearComposer(intent.expectedRevision);
+        await this.#attachRun(run, false);
+        return this.#applied(intent);
+      }
       case "send_run_message": {
         const text = intent.text.trim();
         if (text.length === 0) return this.#rejected(intent, "queue message 不能为空");
@@ -230,6 +263,12 @@ class ProductionInteractiveController implements InteractiveController {
           status: intent.status,
           ...(intent.text !== undefined ? { text: intent.text } : {}),
         });
+        if (!commandAccepted(ack)) {
+          this.#appendCommandDiagnostic(
+            ack.status === "conflict" ? "QUEUE_REVISION_CONFLICT" : "QUEUE_UPDATE_REJECTED",
+            ack.status,
+          );
+        }
         return this.#fromAck(intent, ack);
       }
       case "abort_run": {
@@ -265,6 +304,27 @@ class ProductionInteractiveController implements InteractiveController {
   #requireActiveRun(): CodingRunHandle {
     if (!this.#run || !this.#projection?.activeRunId) throw new Error("当前没有 active Run");
     return this.#run;
+  }
+
+  #clearComposer(expectedRevision: number): void {
+    if (this.#local.composer.revision !== expectedRevision) return;
+    this.#local = reduceInteractiveLocalState(this.#local, {
+      version: 1,
+      type: "composer_changed",
+      value: "",
+    });
+    this.#emit();
+  }
+
+  #appendCommandDiagnostic(code: string, status: CodingCommandAck["status"]): void {
+    this.#appendDiagnostic({
+      id: `controller:command:${++this.#diagnosticSequence}`,
+      source: "controller",
+      severity: status === "conflict" ? "warning" : "error",
+      code,
+      message: `application command ${status}`,
+      recoverable: true,
+    });
   }
 
   async #attachRun(run: CodingRunHandle, resync: boolean): Promise<void> {

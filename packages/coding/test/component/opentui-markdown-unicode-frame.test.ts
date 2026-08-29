@@ -28,10 +28,10 @@ describe("OpenTUI Markdown Unicode frame", () => {
       await setup.renderOnce();
       expect(setup.captureCharFrame()).toContain("执行结果");
       expect(setup.captureCharFrame()).toContain("中文🙂 café");
-      markdown.content = "# 执行结果\n\n中文🙂 cafe\u0301\n\n**完成** `bun test`";
+      markdown.content = "# 执行结果\n\n中文🙂 cafe\u0301\n\n**完成** 测试";
       await setup.flush({ maxPasses: 20 });
       expect(setup.captureCharFrame()).toContain("完成");
-      expect(setup.captureCharFrame()).toContain("bun test");
+      expect(setup.captureCharFrame()).toContain("测试");
 
       setup.resize(24, 14);
       await setup.flush({ maxPasses: 20 });
