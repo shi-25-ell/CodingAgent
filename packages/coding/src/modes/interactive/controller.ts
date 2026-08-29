@@ -62,6 +62,7 @@ const localIntentTypes: ReadonlySet<UiLocalIntent["type"]> = new Set([
   "select_model",
   "set_sidebar_preference",
   "set_sidebar_open",
+  "select_theme",
 ]);
 
 function isLocalIntent(intent: UiIntent): intent is UiLocalIntent {

@@ -156,6 +156,7 @@ export interface TerminalDimensions {
 }
 
 export type SidebarPreference = "auto" | "hide";
+export type UiThemeId = "dex" | "system";
 
 export interface SidebarLocalState {
   readonly preference: SidebarPreference;
@@ -182,6 +183,7 @@ export interface LocalUiState {
   readonly dismissedDiagnosticIds?: ReadonlySet<string>;
   readonly selectedModel?: ModelRef;
   readonly sidebar?: SidebarLocalState;
+  readonly themeId?: UiThemeId;
 }
 
 export interface TuiLocalViewModel {
@@ -193,6 +195,7 @@ export interface TuiLocalViewModel {
   readonly terminal: TerminalDimensions;
   readonly selectedModel?: ModelRef;
   readonly sidebar: SidebarLocalState;
+  readonly themeId: UiThemeId;
 }
 
 export interface TuiViewModel {

@@ -42,6 +42,17 @@ export {
   type RendererStopReason,
 } from "./renderer-lifecycle.js";
 export {
+  detectTerminalThemeMode,
+  type InteractiveTheme,
+  interactiveSpacingTokens,
+  type ResolveInteractiveThemeOptions,
+  resolveInteractiveTheme,
+  type TerminalThemeColors,
+  type ThemeColorValue,
+  type ThemeMode,
+  themeContrastRatio,
+} from "./theme.js";
+export {
   captureTranscriptViewport,
   restoreTranscriptViewport,
   type TranscriptBlockLayout,

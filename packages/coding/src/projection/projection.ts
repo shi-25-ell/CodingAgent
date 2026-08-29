@@ -533,6 +533,7 @@ export function selectTuiViewModel(
       terminal: local.terminal ?? { width: 80, height: 24 },
       ...(local.selectedModel ? { selectedModel: local.selectedModel } : {}),
       sidebar: local.sidebar ?? { preference: "auto", open: false },
+      themeId: local.themeId ?? "dex",
     },
   });
 }

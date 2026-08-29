@@ -21,6 +21,7 @@ describe("interactive local UI state", () => {
       transcriptViewport: { scrollTop: 0, followTail: true, unseenBlockCount: 0 },
       terminal: { width: 80, height: 24 },
       sidebar: { preference: "auto", open: false },
+      themeId: "dex",
     });
     expect(state.surfaceStack).toEqual([]);
     expect(state.expandedIds.size).toBe(0);
@@ -42,6 +43,19 @@ describe("interactive local UI state", () => {
     expect(hidden.sidebar).toEqual({ preference: "hide", open: false });
     expect(explicitlyOpen.sidebar).toEqual({ preference: "hide", open: true });
     expect(Object.isFrozen(explicitlyOpen.sidebar)).toBe(true);
+  });
+
+  it("theme selection 是 UI-local preference", () => {
+    const initial = createInteractiveLocalState({ width: 80, height: 24 });
+    const system = reduceInteractiveLocalState(
+      initial,
+      intent({ type: "select_theme", themeId: "system" }),
+    );
+
+    expect(system.themeId).toBe("system");
+    expect(
+      reduceInteractiveLocalState(system, intent({ type: "select_theme", themeId: "system" })),
+    ).toBe(system);
   });
 
   it("composer/focus/expanded update 不写入 durable projection", () => {

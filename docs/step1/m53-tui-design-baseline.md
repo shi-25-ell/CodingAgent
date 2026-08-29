@@ -1,6 +1,6 @@
 # Dex Code M5.3 TUI design baseline
 
-> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1 与 V1-A 已确认，V2–V7 按依赖顺序补充。未经确认的结构性方案不得进入 production theme、component behavior 或 keymap。
+> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A 与 V2 已确认，V3–V7 按依赖顺序补充。未经确认的结构性方案不得进入 production component behavior 或 keymap。
 
 ## 1. N1：产品、CLI 与 namespace 命名
 
@@ -103,17 +103,51 @@ Narrow / regular（sidebar explicitly opened）
 - 不单独限制 markdown 正文宽度；
 - 不用 sidebar 承载 inline tool activity 或 full-screen diff。
 
-## 3. Owner checkpoint 状态
+## 3. V2：theme architecture 与视觉 tokens
+
+确认日期：2026-08-29
+
+默认 active theme 是 `dex`，不是 terminal-palette adaptive theme。`dex` 提供自有的完整 dark/light palette；terminal environment 只用于检测 dark/light mode，随后选择对应 variant。root/background 默认使用 palette 中明确的 opaque color。另提供显式可选的 `system` theme；只有 `system` 才读取 terminal foreground/background/palette，并让 root foreground/background 继承 terminal default。
+
+视觉方向为 neutral dark/light UI 加 blue、green、light-purple semantic identity：
+
+| Token group | 角色 |
+| --- | --- |
+| `primary` | blue；focus、selection、主要交互、Markdown link 与部分关键状态 |
+| `secondary` | green；completed execution、positive state、diff add 与部分 code/command semantics |
+| `accent` | light purple；reasoning、agent-related secondary emphasis、Markdown heading 与少量高层级 metadata |
+| `info/success/warning/error/pending` | blue/cyan、green、amber/yellow、soft red、muted purple/gray |
+| `background/backgroundPanel/backgroundElement/backgroundMenu` | 接近黑或接近白的 neutral surface steps，仅作轻微明度区分 |
+| `text/textMuted/textSubtle/textDisabled` | neutral text hierarchy；普通正文不使用品牌色 |
+| `border/borderActive/borderSubtle/focus` | neutral border hierarchy；focus 使用 primary blue |
+| Markdown / syntax | 从完整 semantic roles 映射的克制多色 system，不为每个 tool 分配独立强色 |
+| diff | add=green、remove=soft red、context=neutral、hunk=info；background 使用低强度 tint |
+
+### 3.1 使用约束
+
+- 大面积 root、panel、element 不使用 blue/purple tinted background；
+- normal running state 不持续铺设大面积 success green；
+- 不以 cyan/neon blue 制造“科技感”，不使用 rainbow-style high-saturation syntax；
+- primary/secondary/accent 用于信息层级，不用于装饰；
+- `dex` dark/light 正文与 selection 必须分别达到 WCAG AA；正文目标为 7:1，selection 最低 4.5:1；
+- `system` 的 terminal default foreground/background 对比度由用户 terminal theme 负责，派生 panel/border 只用于层级，不假称由 Dex Code 修复 terminal palette；
+- 无颜色环境下，后续 component 必须同时提供 text marker、glyph/ASCII 与 attribute fallback，不能只靠 token hue 传达状态。
+
+### 3.2 Token ownership
+
+theme resolver 只输出 presentation token，不进入 `CodingEvent`、projection durable state 或 `CodingSession`。当前 theme selection 属于 UI-local preference；renderer 把 token 转为 OpenTUI color/style。Markdown、syntax 与 diff Adapter 消费同一 resolved theme，component 不内嵌 hex。
+
+## 4. Owner checkpoint 状态
 
 | ID | 状态 | 记录 |
 | --- | --- | --- |
 | N1 | 已确认 | 本文第 1 节 |
 | V1 | 已确认 | V1-A：stretch root、wide auto dock、narrow/regular explicit overlay |
-| V2 | 待确认 | 视觉方向与 token sheet |
+| V2 | 已确认 | 默认 `dex` dark/light palette；可选 terminal-adaptive `system` |
 | V3 | 待确认 | tool activity 呈现与展开规则 |
 | V4 | 待确认 | composer、queue 与 steering flow |
 | V5 | 待确认 | approval 与危险操作 flow |
 | V6 | 待确认 | diff 导航与 width matrix |
 | V7 | 待确认 | executable keymap、可发现性与 conflict report |
 
-V2–V7 确认后，本文还必须包含完整 end-to-end flows、状态矩阵、visual tokens、keyboard/focus/overlay 规则，以及 `CodingEvent -> TuiViewModel -> visual region -> UiIntent` 的可追踪 mapping。
+V3–V7 确认后，本文还必须包含完整 end-to-end flows、状态矩阵、keyboard/focus/overlay 规则，以及 `CodingEvent -> TuiViewModel -> visual region -> UiIntent` 的可追踪 mapping。

@@ -56,6 +56,7 @@ export function createInteractiveLocalState(
       preference: options.sidebarPreference ?? "auto",
       open: options.sidebarOpen ?? false,
     },
+    themeId: options.themeId ?? "dex",
   });
 }
 
@@ -168,6 +169,10 @@ export function reduceInteractiveLocalState(
             ...previous,
             sidebar: { ...previous.sidebar, open: intent.open },
           });
+    case "select_theme":
+      return previous.themeId === intent.themeId
+        ? previous
+        : freezeState({ ...previous, themeId: intent.themeId });
   }
 }
 

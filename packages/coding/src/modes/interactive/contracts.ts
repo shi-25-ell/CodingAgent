@@ -9,6 +9,7 @@ import type {
   TuiDiagnostic,
   UiFocusRegion,
   UiSurface,
+  UiThemeId,
 } from "../../projection/contracts.js";
 
 export type {
@@ -20,6 +21,7 @@ export type {
   TuiDiagnostic,
   UiFocusRegion,
   UiSurface,
+  UiThemeId,
 } from "../../projection/contracts.js";
 
 interface UiIntentBase {
@@ -45,6 +47,7 @@ export type UiLocalIntent = UiIntentBase &
     | { readonly type: "select_model"; readonly model: ModelRef }
     | { readonly type: "set_sidebar_preference"; readonly preference: SidebarPreference }
     | { readonly type: "set_sidebar_open"; readonly open: boolean }
+    | { readonly type: "select_theme"; readonly themeId: UiThemeId }
   );
 
 export type UiApplicationIntent = UiIntentBase &
@@ -101,6 +104,7 @@ export interface InteractiveLocalState {
   readonly dismissedDiagnosticIds: ReadonlySet<string>;
   readonly selectedModel?: ModelRef;
   readonly sidebar: SidebarLocalState;
+  readonly themeId: UiThemeId;
 }
 
 export interface InteractiveLocalStateOptions {
@@ -109,4 +113,5 @@ export interface InteractiveLocalStateOptions {
   readonly focusedRegion?: UiFocusRegion;
   readonly sidebarPreference?: SidebarPreference;
   readonly sidebarOpen?: boolean;
+  readonly themeId?: UiThemeId;
 }
