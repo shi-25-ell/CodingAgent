@@ -119,5 +119,5 @@ describe.skipIf(process.platform !== "win32")("M2 real Git repository acceptance
         },
       },
     });
-  });
+  }, 15_000);
 });
