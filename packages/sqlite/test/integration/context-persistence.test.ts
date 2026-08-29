@@ -1,3 +1,5 @@
+import { Database } from "bun:sqlite";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,8 +13,6 @@ import type {
   RunReport,
 } from "@coding-agent/agent";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
-import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
 import { createSqlitePersistence } from "../../src/index.js";
 
 function manifest(
@@ -294,9 +294,10 @@ describe("SQLite Context persistence", () => {
     const payload = JSON.stringify(legacy);
     const digest = createHash("sha256").update(payload, "utf8").digest("hex");
     const database = new Database(databasePath);
-    database
-      .prepare("UPDATE context_manifests SET payload_json = ?, digest = ? WHERE manifest_id = ?")
-      .run(payload, digest, legacy.id);
+    database.run(
+      "UPDATE context_manifests SET payload_json = ?, digest = ? WHERE manifest_id = ?",
+      [payload, digest, legacy.id],
+    );
     database.close();
 
     const reopened = await createSqlitePersistence({
@@ -490,26 +491,34 @@ describe("SQLite Context persistence", () => {
     ]);
 
     const database = new Database(databasePath);
-    const manifestRow = database
-      .prepare("SELECT payload_json FROM context_manifests WHERE manifest_id = ?")
-      .get(durableManifest.id) as { readonly payload_json: string };
-    const derivationRow = database
-      .prepare("SELECT payload_json FROM context_derivations WHERE derivation_id = ?")
-      .get(failed.derivationId) as { readonly payload_json: string };
-    database.prepare("UPDATE context_manifests SET payload_json = ? WHERE manifest_id = ?").run(
+    const manifestStatement = database.prepare(
+      "SELECT payload_json FROM context_manifests WHERE manifest_id = ?",
+    );
+    const manifestRow = manifestStatement.get(durableManifest.id) as {
+      readonly payload_json: string;
+    };
+    manifestStatement[Symbol.dispose]();
+    const derivationStatement = database.prepare(
+      "SELECT payload_json FROM context_derivations WHERE derivation_id = ?",
+    );
+    const derivationRow = derivationStatement.get(failed.derivationId) as {
+      readonly payload_json: string;
+    };
+    derivationStatement[Symbol.dispose]();
+    database.run("UPDATE context_manifests SET payload_json = ? WHERE manifest_id = ?", [
       JSON.stringify({
         ...(JSON.parse(manifestRow.payload_json) as ContextManifest),
         requestDigest: "tampered",
       }),
       durableManifest.id,
-    );
-    database.prepare("UPDATE context_derivations SET payload_json = ? WHERE derivation_id = ?").run(
+    ]);
+    database.run("UPDATE context_derivations SET payload_json = ? WHERE derivation_id = ?", [
       JSON.stringify({
         ...(JSON.parse(derivationRow.payload_json) as ContextDerivationRecord),
         failureCode: "tampered",
       }),
       failed.derivationId,
-    );
+    ]);
     database.close();
 
     await expect(lease.commitContext(durableManifest)).rejects.toMatchObject({

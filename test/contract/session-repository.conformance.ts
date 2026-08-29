@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import type {
   ArtifactRef,
   RunLease,
@@ -5,7 +6,6 @@ import type {
   SessionRepository,
   SessionSnapshot,
 } from "@coding-agent/agent";
-import { describe, expect, it } from "vitest";
 
 export interface SessionRepositoryConformanceHarness {
   readonly repository: SessionRepository;

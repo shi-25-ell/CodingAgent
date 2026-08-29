@@ -11,8 +11,7 @@ import {
   sessionId,
   type ToolOutcome,
 } from "@coding-agent/agent";
-import type Database from "better-sqlite3";
-import type { SqliteDatabase } from "../connection/database.js";
+import type { SqliteConnection, SqliteDatabase } from "../connection/database.js";
 import { migrations } from "../migrations/migrations.js";
 import type {
   IntegrityIssue,
@@ -64,7 +63,7 @@ function decodeDigested<T>(value: string, digest: string, label: string): T {
 }
 
 function verifiedContextCount(
-  raw: Database.Database,
+  raw: SqliteConnection,
   sql: string,
   run: string,
   label: string,
@@ -78,7 +77,7 @@ function verifiedContextCount(
 }
 
 function appendLedger(
-  raw: Database.Database,
+  raw: SqliteConnection,
   clock: Clock,
   ids: IdFactory,
   session: string,
@@ -141,7 +140,7 @@ function recoveryOutcome(call: ToolCallRow): ToolOutcome {
   };
 }
 
-function recoveredReport(raw: Database.Database, orphan: OrphanRow): RunReport {
+function recoveredReport(raw: SqliteConnection, orphan: OrphanRow): RunReport {
   const run = raw
     .prepare("SELECT model_turn_count FROM runs WHERE run_id = ?")
     .get(orphan.run_id) as { readonly model_turn_count: number };
@@ -199,7 +198,7 @@ function recoveredReport(raw: Database.Database, orphan: OrphanRow): RunReport {
 
 export class SqliteRecovery {
   readonly #database: SqliteDatabase;
-  readonly #raw: Database.Database;
+  readonly #raw: SqliteConnection;
   readonly #clock: Clock;
   readonly #ids: IdFactory;
   readonly #verifyArtifactRef: (ref: ArtifactRef) => Promise<ArtifactIntegrity>;

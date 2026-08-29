@@ -1,10 +1,10 @@
+import { describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
-import { describe, expect, it } from "vitest";
 import { createSqlitePersistence, SqliteStorageError } from "../../src/index.js";
 
 async function waitForLocked(child: ReturnType<typeof spawn>): Promise<void> {

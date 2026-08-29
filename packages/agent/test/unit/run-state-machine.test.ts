@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { RunStateMachine } from "../../src/agent/run-state-machine.js";
 
 describe("RunStateMachine", () => {

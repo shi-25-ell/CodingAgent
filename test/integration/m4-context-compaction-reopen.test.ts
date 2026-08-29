@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -22,7 +23,6 @@ import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
 import { createCodingAgent, type WorkspaceService } from "@coding-agent/coding";
 import { ScriptedModel, scriptedTextResponse } from "@coding-agent/model/testing";
 import { createSqlitePersistence } from "@coding-agent/sqlite";
-import { describe, expect, it } from "vitest";
 
 const binding = { root: "D:/work/m4", fingerprint: "workspace-m4" };
 

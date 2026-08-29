@@ -12,11 +12,7 @@
     }
   },
   "dependencies": {
-    "@coding-agent/agent": "0.0.0",
-    "better-sqlite3": "13.0.3"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13"
+    "@coding-agent/agent": "0.0.0"
   },
   "scripts": {
     "build": "tsc -b"

@@ -1,7 +1,7 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import { createProjectInstructionsContextSource } from "../../src/context/index.js";
 import { createBuiltInSkillSource, createSkillRegistry } from "../../src/skills/index.js";
 

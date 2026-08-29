@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import {
   collectModelTurn,
   type ModelDescriptor,
@@ -12,7 +13,6 @@ import {
   type OpenAiCompatibleProfile,
   type OpenAiTransportRequest,
 } from "@coding-agent/model/providers/openai-compatible";
-import { describe, expect, it } from "vitest";
 
 const request: ModelRequest = {
   version: 1,
@@ -67,7 +67,7 @@ async function exercise(profile: OpenAiCompatibleProfile): Promise<OpenAiTranspo
       {
         id: "fixture",
         async resolve(credentialRequest) {
-          expect(credentialRequest.ref).toBe(
+          expect(String(credentialRequest.ref)).toBe(
             profile.id === deepSeekProfile.id ? "deepseek.default" : "glm.default",
           );
           return {

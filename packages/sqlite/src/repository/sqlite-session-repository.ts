@@ -34,8 +34,7 @@ import {
   sessionId,
   type TerminalCommit,
 } from "@coding-agent/agent";
-import type Database from "better-sqlite3";
-import type { SqliteDatabase } from "../connection/database.js";
+import type { SqliteConnection, SqliteDatabase } from "../connection/database.js";
 
 interface SessionRow {
   readonly session_id: string;
@@ -144,7 +143,7 @@ function terminalStatus(report: RunReport): Exclude<SessionRow["active_run_id"],
 
 export class SqliteSessionRepository implements SessionRepository {
   readonly #database: SqliteDatabase;
-  readonly #raw: Database.Database;
+  readonly #raw: SqliteConnection;
   readonly #clock: Clock;
   readonly #ids: IdFactory;
   readonly #lease: SqliteLeaseOptions;
@@ -1361,11 +1360,15 @@ export class SqliteSessionRepository implements SessionRepository {
         throw new TypeError("succeeded Context Derivation 缺少 checkpointId 或 outputDigest");
       }
       if (derivation.status === "succeeded") {
+        const checkpointId = derivation.checkpointId;
+        if (!checkpointId) {
+          throw new TypeError("succeeded Context Derivation 缺少 checkpointId");
+        }
         const checkpointExists = this.#raw
           .prepare(
             "SELECT 1 FROM compaction_checkpoints WHERE session_id = ? AND checkpoint_id = ?",
           )
-          .get(identity.session, derivation.checkpointId);
+          .get(identity.session, checkpointId);
         if (!checkpointExists) {
           throw new SessionError(
             "SESSION_CORRUPT",

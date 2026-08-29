@@ -1,9 +1,9 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runId } from "@coding-agent/agent";
 import { createCredentialResolver, SecretString } from "@coding-agent/model/auth";
-import { afterEach, describe, expect, it } from "vitest";
 import {
   createBraveWebSearchProvider,
   createCodingToolHost,
@@ -31,13 +31,13 @@ describe("M5 web safety and ToolExecutor contract", () => {
   it("Brave production transport and stable auth/response failures remain bounded", async () => {
     const originalFetch = globalThis.fetch;
     let sent: { input: string | URL | Request; init?: RequestInit } | undefined;
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       sent = { input, ...(init ? { init } : {}) };
       return new Response(
         JSON.stringify({ web: { results: [{ title: "One", url: "https://example.com/one" }] } }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
-    };
+    }) as unknown as typeof fetch;
     try {
       const provider = createBraveWebSearchProvider({
         credentials: createCredentialResolver([

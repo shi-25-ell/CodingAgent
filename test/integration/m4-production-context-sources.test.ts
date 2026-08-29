@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +8,6 @@ import { createGitWorkspaceService, createOpenAiCodingAgent } from "@coding-agen
 import { createEnvironmentCredentialSource } from "@coding-agent/model/auth";
 import type { OpenAiTransport } from "@coding-agent/model/providers/openai-compatible";
 import { createSqlitePersistence } from "@coding-agent/sqlite";
-import { describe, expect, it } from "vitest";
 
 async function* body(value: string): AsyncIterable<string> {
   yield value;

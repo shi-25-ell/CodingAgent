@@ -1,9 +1,9 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
 
 const temporaryDirectories: string[] = [];
 
@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(process.platform !== "win32")("M2 real Git repository acceptance", () => {
-  it("actual Node print process 修复项目，进程外 verifier 与 Git evidence 交叉通过", async () => {
+  it("actual Bun print process 修复项目，进程外 verifier 与 Git evidence 交叉通过", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m2-acceptance-"));
     const evidenceRoot = await mkdtemp(path.join(tmpdir(), "fast-m2-evidence-"));
     const dataRoot = await mkdtemp(path.join(tmpdir(), "fast-m3-data-"));
@@ -108,7 +108,7 @@ describe.skipIf(process.platform !== "win32")("M2 real Git repository acceptance
         },
         tools: { accepted: 7, settled: 7, succeeded: 7, failed: 0 },
         changedFiles: [{ path: "math.js", change: "modified" }],
-        commands: [{ command: "node test.mjs", exitCode: 0 }],
+        commands: [{ command: "bun test.mjs", exitCode: 0 }],
       },
       reopened: {
         terminalTimelineCount: 1,

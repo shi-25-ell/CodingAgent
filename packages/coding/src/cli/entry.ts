@@ -1,10 +1,15 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import {
   CodingCompositionError,
   createProviderCodingAgent,
   type ProductionProviderId,
 } from "../composition/openai-composition.js";
 import { runPrintEntry } from "../modes/print/print-entry.js";
+import {
+  detectBunRuntime,
+  formatBunRuntimeDiagnostic,
+  supportedBunVersion,
+} from "../runtime/bun-runtime.js";
 import { createGitWorkspaceService } from "../workspace/workspace-service.js";
 
 const root = process.cwd();
@@ -27,42 +32,57 @@ function configuredModel(provider: ProductionProviderId): string | undefined {
   return process.env[variables[provider]];
 }
 
-let application: Awaited<ReturnType<typeof createProviderCodingAgent>> | undefined;
-try {
-  const workspace = (await createGitWorkspaceService().inspect(root)).binding;
-  const configuredProvider = process.env.FAST_MODEL_PROVIDER ?? "openai";
-  if (!supportedProviders.has(configuredProvider as ProductionProviderId)) {
-    throw new CodingCompositionError(
-      "UNSUPPORTED_PROVIDER",
-      `不支持的 model provider: ${configuredProvider}`,
-    );
-  }
-  const provider = configuredProvider as ProductionProviderId;
-  const selectedModel = configuredModel(provider);
-  application = await createProviderCodingAgent({
-    workspaceRoot: root,
-    provider,
-    ...(selectedModel ? { modelId: selectedModel } : {}),
-  });
-  const result = await runPrintEntry(process.argv.slice(2), {
-    agent: application.agent,
-    workspace,
-    io: {
-      stdout: (text) => process.stdout.write(text),
-      stderr: (text) => process.stderr.write(text),
-    },
-  });
-  process.exitCode = result.exitCode;
-} catch (error) {
-  if (error instanceof CodingCompositionError) {
-    process.stderr.write(`${error.message}\n`);
-    process.exitCode = error.code === "UNSUPPORTED_PROVIDER" ? 2 : 3;
-  } else {
+async function main(): Promise<number> {
+  const runtime = detectBunRuntime();
+  if (!runtime.supported) {
     process.stderr.write(
-      "当前目录不是可用的 Git workspace，或 production composition 无法启动。\n",
+      `需要 Bun ${supportedBunVersion}；${formatBunRuntimeDiagnostic(runtime)}\n`,
     );
-    process.exitCode = 4;
+    return 5;
   }
-} finally {
-  await application?.dispose();
+  if (process.argv[2] === "--runtime-diagnostic") {
+    process.stdout.write(`${JSON.stringify(runtime)}\n`);
+    return 0;
+  }
+
+  let application: Awaited<ReturnType<typeof createProviderCodingAgent>> | undefined;
+  try {
+    const workspace = (await createGitWorkspaceService().inspect(root)).binding;
+    const configuredProvider = process.env.FAST_MODEL_PROVIDER ?? "openai";
+    if (!supportedProviders.has(configuredProvider as ProductionProviderId)) {
+      throw new CodingCompositionError(
+        "UNSUPPORTED_PROVIDER",
+        `不支持的 model provider: ${configuredProvider}`,
+      );
+    }
+    const provider = configuredProvider as ProductionProviderId;
+    const selectedModel = configuredModel(provider);
+    application = await createProviderCodingAgent({
+      workspaceRoot: root,
+      provider,
+      ...(selectedModel ? { modelId: selectedModel } : {}),
+    });
+    const result = await runPrintEntry(process.argv.slice(2), {
+      agent: application.agent,
+      workspace,
+      io: {
+        stdout: (text) => process.stdout.write(text),
+        stderr: (text) => process.stderr.write(text),
+      },
+    });
+    return result.exitCode;
+  } catch (error) {
+    if (error instanceof CodingCompositionError) {
+      process.stderr.write(`${error.message}\n`);
+      return error.code === "UNSUPPORTED_PROVIDER" ? 2 : 3;
+    }
+    process.stderr.write(
+      `当前目录不是可用的 Git workspace，或 production composition 无法启动。${formatBunRuntimeDiagnostic(runtime)}\n`,
+    );
+    return 4;
+  } finally {
+    await application?.dispose();
+  }
 }
+
+process.exitCode = await main();

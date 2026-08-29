@@ -1,6 +1,6 @@
+import { Database } from "bun:sqlite";
 import { mkdir, realpath, statfs } from "node:fs/promises";
 import path from "node:path";
-import Database from "better-sqlite3";
 import { migrations } from "../migrations/migrations.js";
 
 const maximumBusyTimeoutMs = 30_000;
@@ -30,9 +30,92 @@ export interface OpenDatabaseOptions {
 }
 
 export interface SqliteDatabase {
-  readonly raw: Database.Database;
+  readonly raw: SqliteConnection;
   immediate<T>(operation: () => T): T;
   close(): void;
+}
+
+type SqliteBinding = string | number | bigint | boolean | null | Uint8Array;
+
+export interface SqliteRunResult {
+  readonly changes: number;
+  readonly lastInsertRowid: number | bigint;
+}
+
+export interface SqliteStatement {
+  run(...bindings: SqliteBinding[]): SqliteRunResult;
+  get(...bindings: SqliteBinding[]): unknown;
+  all(...bindings: SqliteBinding[]): unknown[];
+}
+
+/** Private driver boundary: bun:sqlite types do not cross the connection module. */
+export interface SqliteConnection {
+  readonly inTransaction: boolean;
+  prepare(sql: string): SqliteStatement;
+  exec(sql: string): void;
+  pragma(source: string, options?: { readonly simple?: boolean }): unknown;
+  close(): void;
+}
+
+class BunSqliteConnection implements SqliteConnection {
+  readonly #database: Database;
+
+  constructor(filename: string) {
+    this.#database = new Database(filename, { strict: true });
+  }
+
+  get inTransaction(): boolean {
+    return this.#database.inTransaction;
+  }
+
+  prepare(sql: string): SqliteStatement {
+    const statement = this.#database.prepare(sql);
+    const dispose = (): void => statement[Symbol.dispose]();
+    return {
+      run: (...bindings) => {
+        try {
+          return statement.run(...bindings);
+        } finally {
+          dispose();
+        }
+      },
+      get: (...bindings) => {
+        try {
+          return statement.get(...bindings);
+        } finally {
+          dispose();
+        }
+      },
+      all: (...bindings) => {
+        try {
+          return statement.all(...bindings);
+        } finally {
+          dispose();
+        }
+      },
+    };
+  }
+
+  exec(sql: string): void {
+    this.#database.exec(sql);
+  }
+
+  pragma(source: string, options?: { readonly simple?: boolean }): unknown {
+    const statement = this.#database.prepare(`PRAGMA ${source}`);
+    let rows: Record<string, unknown>[];
+    try {
+      rows = statement.all() as Record<string, unknown>[];
+    } finally {
+      statement[Symbol.dispose]();
+    }
+    if (!options?.simple) return rows;
+    const first = rows[0];
+    return first ? Object.values(first)[0] : undefined;
+  }
+
+  close(): void {
+    this.#database.close(true);
+  }
 }
 
 function sqliteCode(error: unknown): string | undefined {
@@ -71,7 +154,7 @@ async function assertLocalFilesystem(databasePath: string): Promise<void> {
   }
 }
 
-function validateMigrationHistory(database: Database.Database): void {
+function validateMigrationHistory(database: SqliteConnection): void {
   const currentVersion = database.pragma("user_version", { simple: true }) as number;
   const latestVersion = migrations.at(-1)?.version ?? 0;
   if (currentVersion > latestVersion) {
@@ -99,7 +182,7 @@ function validateMigrationHistory(database: Database.Database): void {
 }
 
 function migrate(
-  database: Database.Database,
+  database: SqliteConnection,
   now: () => number,
   beforeCommit?: (version: number) => void,
 ): void {
@@ -148,7 +231,7 @@ export async function openDatabase(options: OpenDatabaseOptions): Promise<Sqlite
     );
   }
   await assertLocalFilesystem(options.databasePath);
-  const raw = new Database(options.databasePath);
+  const raw = new BunSqliteConnection(options.databasePath);
   try {
     raw.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
     raw.pragma("foreign_keys = ON");

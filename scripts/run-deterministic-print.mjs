@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S bun --no-env-file
 import { runPrintEntry } from "@coding-agent/coding/print";
 import { createDeterministicCodingAgent } from "@coding-agent/coding/testing";
 import { ScriptedModel, scriptedTextResponse } from "@coding-agent/model/testing";

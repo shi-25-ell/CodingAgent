@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { watch } from "node:fs";
@@ -6,7 +7,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { runId } from "@coding-agent/agent";
 import type { ToolCall } from "@coding-agent/model";
-import { afterEach, describe, expect, it } from "vitest";
 import { type ApprovalRequest, createCodingToolHost } from "../../src/index.js";
 
 const temporaryDirectories: string[] = [];

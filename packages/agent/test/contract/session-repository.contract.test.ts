@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { sessionRepositoryConformance } from "../../../../test/contract/session-repository.conformance.js";
 import {
   InMemorySessionRepository,

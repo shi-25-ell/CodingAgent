@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import {
   createAgent,
   createAgentHarness,
@@ -11,7 +12,6 @@ import {
   SequentialIdFactory,
 } from "@coding-agent/agent/testing";
 import { ScriptedModel, scriptedTextResponse } from "@coding-agent/model/testing";
-import { describe, expect, it } from "vitest";
 import { type CodingStartError, createCodingAgent } from "../../src/app/coding-agent.js";
 import type { WorkspaceService, WorkspaceSnapshot } from "../../src/workspace/workspace-service.js";
 

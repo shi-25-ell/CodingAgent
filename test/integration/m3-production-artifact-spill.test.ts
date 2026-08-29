@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,7 +9,6 @@ import { modelId, providerId } from "@coding-agent/model";
 import { createEnvironmentCredentialSource } from "@coding-agent/model/auth";
 import type { OpenAiTransport } from "@coding-agent/model/providers/openai-compatible";
 import { createSqlitePersistence } from "@coding-agent/sqlite";
-import { describe, expect, it } from "vitest";
 
 async function* body(value: string): AsyncIterable<string> {
   yield value;
@@ -77,7 +77,7 @@ describe("M3 production Artifact spill", () => {
           ? {
               status: 200,
               headers: {},
-              body: body(toolResponse(`node -e "process.stdout.write('A'.repeat(150000))"`)),
+              body: body(toolResponse(`bun -e "process.stdout.write('A'.repeat(150000))"`)),
             }
           : {
               status: 200,
@@ -147,18 +147,13 @@ describe("M3 production Artifact spill", () => {
     const outcomeRecord = branch.records.find(
       (record) => record.kind === "tool_outcome" && record.outcome.callId === "spill-call",
     );
-    expect(outcomeRecord).toMatchObject({
-      kind: "tool_outcome",
-      outcome: {
-        status: "output_limit",
-        artifacts: [expect.objectContaining({ id: expect.any(String) })],
-      },
-    });
     if (!outcomeRecord || outcomeRecord.kind !== "tool_outcome") {
       throw new Error("durable ToolOutcome missing");
     }
+    expect(outcomeRecord.outcome.status).toBe("output_limit");
     const artifact = outcomeRecord.outcome.artifacts[0];
     if (!artifact) throw new Error("durable ArtifactRef missing");
+    expect(typeof artifact.id).toBe("string");
     await expect(reopened.artifacts.verify(artifact)).resolves.toEqual({ status: "verified" });
     const storedOutput = JSON.parse(await readArtifact(reopened.artifacts, artifact));
     expect(storedOutput).toMatchObject({ exitCode: 0, stderr: "" });

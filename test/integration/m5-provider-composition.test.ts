@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +7,6 @@ import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
 import type { CredentialSource } from "@coding-agent/model/auth";
 import type { AnthropicTransport } from "@coding-agent/model/providers/anthropic";
 import type { OpenAiTransport } from "@coding-agent/model/providers/openai-compatible";
-import { afterEach, describe, expect, it } from "vitest";
 import {
   createProviderCodingAgent,
   type ProductionProviderId,

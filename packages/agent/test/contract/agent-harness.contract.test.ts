@@ -1,6 +1,6 @@
+import { describe, expect, it } from "bun:test";
 import type { Model, ModelFailure, ModelResponse } from "@coding-agent/model";
 import { ScriptedModel } from "@coding-agent/model/testing";
-import { describe, expect, it } from "vitest";
 import {
   ContextError,
   type ContextManager,

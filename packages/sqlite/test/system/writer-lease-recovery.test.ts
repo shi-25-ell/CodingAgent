@@ -1,9 +1,9 @@
+import { describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RunLease, RunReport } from "@coding-agent/agent";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
-import { describe, expect, it } from "vitest";
 import { createSqlitePersistence } from "../../src/index.js";
 
 function completedReport(lease: RunLease): RunReport {

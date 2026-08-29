@@ -10,8 +10,7 @@ import type {
   ArtifactWriteInput,
   Clock,
 } from "@coding-agent/agent";
-import type Database from "better-sqlite3";
-import type { SqliteDatabase } from "../connection/database.js";
+import type { SqliteConnection, SqliteDatabase } from "../connection/database.js";
 
 const previewInputBytes = 4_096;
 const previewOutputCharacters = 1_024;
@@ -155,7 +154,7 @@ async function writeFully(
 
 export class DurableArtifactStore implements ArtifactStore {
   readonly #database: SqliteDatabase;
-  readonly #raw: Database.Database;
+  readonly #raw: SqliteConnection;
   readonly #directory: string;
   readonly #clock: Clock;
   readonly #previewRedactor: (text: string) => string;

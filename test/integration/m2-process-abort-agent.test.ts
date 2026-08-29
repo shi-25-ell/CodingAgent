@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { watch } from "node:fs";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -17,7 +18,6 @@ import {
   type WorkspaceService,
 } from "@coding-agent/coding";
 import { ScriptedModel } from "@coding-agent/model/testing";
-import { afterEach, describe, expect, it } from "vitest";
 
 const temporaryDirectories: string[] = [];
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S bun --no-env-file
 import { readFile, writeFile } from "node:fs/promises";
 import { createOpenAiCodingAgent } from "@coding-agent/coding";
 import { modelId, providerId } from "@coding-agent/model";

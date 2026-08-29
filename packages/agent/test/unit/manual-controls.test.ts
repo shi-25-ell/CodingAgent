@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { ManualClock, ManualGate, SequentialIdFactory } from "../../src/testing/index.js";
 
 describe("deterministic controls", () => {

@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -9,7 +10,6 @@ import { modelId, providerId } from "@coding-agent/model";
 import type { CredentialSource } from "@coding-agent/model/auth";
 import { createEnvironmentCredentialSource } from "@coding-agent/model/auth";
 import type { OpenAiTransport } from "@coding-agent/model/providers/openai-compatible";
-import { afterEach, describe, expect, it } from "vitest";
 import {
   createOpenAiCodingAgent,
   createOpenRouterCodingAgent,
@@ -125,13 +125,12 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
             ),
           };
         }
-        expect(wire.messages.at(-1)).toMatchObject({
-          role: "tool",
-          tool_call_id: "call-openrouter-read",
-          content: expect.stringContaining("openrouter vertical slice"),
-        });
-        expect(wire.messages.at(-1).content).toContain("[REDACTED]");
-        expect(wire.messages.at(-1).content).not.toContain(credential);
+        const toolMessage = wire.messages.at(-1);
+        expect(toolMessage?.role).toBe("tool");
+        expect(toolMessage?.tool_call_id).toBe("call-openrouter-read");
+        expect(toolMessage?.content).toContain("openrouter vertical slice");
+        expect(toolMessage?.content).toContain("[REDACTED]");
+        expect(toolMessage?.content).not.toContain(credential);
         return {
           status: 200,
           headers: {},
@@ -349,7 +348,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     await application.dispose();
   });
 
-  it("actual Node CLI process 使用同一 production facade 完成带工具 Run", async () => {
+  it("actual Bun CLI process 使用同一 production facade 完成带工具 Run", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m1-process-"));
     temporaryDirectories.push(root);
     await writeFile(path.join(root, "answer.txt"), "process fixture", "utf8");
@@ -399,13 +398,12 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
             ),
           };
         }
-        expect(wire.messages.at(-1)).toMatchObject({
-          role: "tool",
-          tool_call_id: "call-read",
-          content: expect.stringContaining("vertical slice"),
-        });
-        expect(wire.messages.at(-1).content).toContain("[REDACTED]");
-        expect(wire.messages.at(-1).content).not.toContain(runtimeCredential);
+        const toolMessage = wire.messages.at(-1);
+        expect(toolMessage?.role).toBe("tool");
+        expect(toolMessage?.tool_call_id).toBe("call-read");
+        expect(toolMessage?.content).toContain("vertical slice");
+        expect(toolMessage?.content).toContain("[REDACTED]");
+        expect(toolMessage?.content).not.toContain(runtimeCredential);
         return {
           status: 200,
           headers: {},

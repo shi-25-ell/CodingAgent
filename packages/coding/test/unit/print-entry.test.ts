@@ -1,5 +1,5 @@
+import { describe, expect, it } from "bun:test";
 import { ScriptedModel, scriptedTextResponse } from "@coding-agent/model/testing";
-import { describe, expect, it } from "vitest";
 import { runPrintEntry } from "../../src/modes/print/index.js";
 import { createDeterministicCodingAgent } from "../../src/testing/index.js";
 

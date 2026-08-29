@@ -51,7 +51,7 @@ import {
   openRouterProfile,
 } from "@coding-agent/model/providers/openai-compatible";
 import { createSqlitePersistence } from "@coding-agent/sqlite";
-import { createNodeLocalExecutionPorts } from "../adapters/node-local-execution-adapters.js";
+import { createBunLocalExecutionPorts } from "../adapters/bun-local-execution-adapters.js";
 import { type CodingAgent, createCodingAgent } from "../app/coding-agent.js";
 import { createProjectInstructionsSnapshot } from "../context/project-instructions.js";
 import { type ApprovalBridge, createApprovalBridge } from "../permissions/approval-bridge.js";
@@ -535,7 +535,7 @@ async function createCompatibleCodingAgent(
         webFetch: options.webFetch ?? createSafeWebFetchPort(),
         ...(options.webTimeoutMs !== undefined ? { webTimeoutMs: options.webTimeoutMs } : {}),
       },
-      createNodeLocalExecutionPorts(),
+      createBunLocalExecutionPorts(),
     );
   } catch (error) {
     await sqlite?.[Symbol.asyncDispose]();

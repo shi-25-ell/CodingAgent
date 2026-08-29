@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import {
   collectModelTurn,
   type Model,
@@ -12,7 +13,6 @@ import {
   createOpenAiCompatibleProvider,
   openAiProfile,
 } from "@coding-agent/model/providers/openai-compatible";
-import { describe, expect, it } from "vitest";
 
 const request: ModelRequest = {
   version: 1,

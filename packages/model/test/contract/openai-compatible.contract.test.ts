@@ -1,5 +1,5 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createCredentialResolver,
   createEnvironmentCredentialSource,
@@ -14,8 +14,10 @@ import {
   openRouterProfile,
 } from "../../src/providers/openai-compatible/index.js";
 
+const originalFetch = globalThis.fetch;
+
 afterEach(() => {
-  vi.unstubAllGlobals();
+  globalThis.fetch = originalFetch;
 });
 
 async function* fragments(values: readonly string[]): AsyncIterable<string> {
@@ -234,22 +236,20 @@ describe("OpenAI-compatible Model contract", () => {
 
   it("default fetch transport 保留 status/headers 并增量解码 body", async () => {
     const encoder = new TextEncoder();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(
-            new ReadableStream({
-              start(controller) {
-                controller.enqueue(encoder.encode("data: one\n"));
-                controller.enqueue(encoder.encode("data: two\n"));
-                controller.close();
-              },
-            }),
-            { status: 202, headers: { "X-Request-Id": "fetch-1" } },
-          ),
-      ),
-    );
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode("data: one\n"));
+            controller.enqueue(encoder.encode("data: two\n"));
+            controller.close();
+          },
+        }),
+        { status: 202, headers: { "X-Request-Id": "fetch-1" } },
+      );
+    }) as unknown as typeof fetch;
     const controller = new AbortController();
     const result = await createFetchOpenAiTransport().send({
       url: "https://example.invalid/v1/chat/completions",
@@ -262,7 +262,7 @@ describe("OpenAI-compatible Model contract", () => {
 
     expect(result).toMatchObject({ status: 202, headers: { "x-request-id": "fetch-1" } });
     expect(chunks.join("")).toBe("data: one\ndata: two\n");
-    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetchCalls).toBe(1);
   });
 
   it("credential missing 映射为 not_configured，且不发网", async () => {

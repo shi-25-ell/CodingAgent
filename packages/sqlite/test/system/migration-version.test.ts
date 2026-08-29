@@ -1,9 +1,9 @@
+import { Database } from "bun:sqlite";
+import { describe, expect, it } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
-import Database from "better-sqlite3";
-import { describe, expect, it } from "vitest";
 import { openDatabase, translateSqliteError } from "../../src/connection/database.js";
 import { createSqlitePersistence, SqliteStorageError } from "../../src/index.js";
 
@@ -23,8 +23,10 @@ describe("SQLite migration runner", () => {
     ).rejects.toMatchObject({ code: "SQLITE_MIGRATION" });
 
     const afterRollback = new Database(databasePath);
-    expect(afterRollback.pragma("user_version", { simple: true })).toBe(1);
-    const columns = afterRollback.pragma("table_info(sessions)") as { readonly name: string }[];
+    expect(afterRollback.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    const columns = afterRollback.query("PRAGMA table_info(sessions)").all() as {
+      readonly name: string;
+    }[];
     expect(columns.map((column) => column.name)).not.toContain("lease_epoch");
     afterRollback.close();
 
@@ -54,7 +56,7 @@ describe("SQLite migration runner", () => {
     await initialized[Symbol.asyncDispose]();
 
     const tampered = new Database(databasePath);
-    tampered.prepare("UPDATE migration_history SET checksum = 'tampered' WHERE version = 1").run();
+    tampered.run("UPDATE migration_history SET checksum = 'tampered' WHERE version = 1");
     tampered.close();
     await expect(createSqlitePersistence(options)).rejects.toMatchObject({
       code: "SQLITE_MIGRATION",
@@ -62,7 +64,7 @@ describe("SQLite migration runner", () => {
 
     const futurePath = path.join(root, "future.sqlite3");
     const future = new Database(futurePath);
-    future.pragma("user_version = 999");
+    future.run("PRAGMA user_version = 999");
     future.close();
     await expect(
       createSqlitePersistence({ ...options, databasePath: futurePath }),

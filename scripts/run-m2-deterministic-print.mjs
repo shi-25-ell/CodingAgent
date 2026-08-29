@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S bun --no-env-file
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createGitWorkspaceService, createOpenAiCodingAgent } from "@coding-agent/coding";
@@ -43,7 +43,7 @@ const responses = [
     oldText: "return a - b;",
     newText: "return a + b;",
   }),
-  toolResponse("verify-1", "run_command", { command: "node test.mjs" }),
+  toolResponse("verify-1", "run_command", { command: "bun test.mjs" }),
   toolResponse("status-1", "git_status", {}),
   toolResponse("diff-1", "git_diff", { path: "math.js" }),
   finalResponse("已修复加法实现，项目测试通过，Git evidence 已核验。"),

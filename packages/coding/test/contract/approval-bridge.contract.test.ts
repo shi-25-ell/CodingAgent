@@ -1,8 +1,8 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runId } from "@coding-agent/agent";
-import { afterEach, describe, expect, it } from "vitest";
 import { createCodingToolHost } from "../../src/index.js";
 import { createApprovalBridge } from "../../src/permissions/approval-bridge.js";
 

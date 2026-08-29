@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { watch } from "node:fs";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -6,19 +7,30 @@ import path from "node:path";
 import { runId } from "@coding-agent/agent";
 import { createCodingToolHost } from "@coding-agent/coding";
 import type { ToolCall } from "@coding-agent/model";
-import { afterEach, describe, expect, it } from "vitest";
-import { createNodeWindowsExecutionPorts } from "../../packages/coding/src/adapters/node-local-execution-adapters.js";
+import { createBunWindowsExecutionPorts } from "../../packages/coding/src/adapters/bun-local-execution-adapters.js";
 import { defineProcessPortConformance } from "./process-port.conformance.js";
 
 const temporaryDirectories: string[] = [];
 
+async function removeTemporaryDirectory(directory: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = error && typeof error === "object" ? Reflect.get(error, "code") : undefined;
+      if (code !== "EBUSY" && code !== "EPERM") throw error;
+      await Bun.sleep(50);
+    }
+  }
+  throw lastError;
+}
+
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((directory) =>
-        rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
-      ),
+    temporaryDirectories.splice(0).map((directory) => removeTemporaryDirectory(directory)),
   );
 });
 
@@ -76,7 +88,7 @@ function isRunning(pid: number): boolean {
 describe.skipIf(process.platform !== "win32")("Windows shared process contract", () => {
   defineProcessPortConformance(
     "Windows PowerShell",
-    () => createNodeWindowsExecutionPorts().process,
+    () => createBunWindowsExecutionPorts().process,
     {
       successCommand: "[Console]::Out.Write((Get-Location).Path); [Console]::Error.Write('err')",
       quotingCommand: `[Console]::Out.Write('space " quote')`,
@@ -210,7 +222,7 @@ describe.skipIf(process.platform !== "win32")("Windows PowerShell process adapte
   it("timeout 在 outcome 前终止 child 与 grandchild process tree", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-process-timeout-"));
     temporaryDirectories.push(root);
-    const host = createCodingToolHost({ workspaceRoot: root, commandTimeoutMs: 3_000 });
+    const host = createCodingToolHost({ workspaceRoot: root, commandTimeoutMs: 8_000 });
     const pending = host.execute(
       {
         type: "tool_call",

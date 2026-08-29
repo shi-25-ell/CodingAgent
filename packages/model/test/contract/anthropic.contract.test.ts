@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import { readFile } from "node:fs/promises";
 import {
   collectModelTurn,
@@ -18,7 +19,6 @@ import {
   createAnthropicProvider,
   createFetchAnthropicTransport,
 } from "@coding-agent/model/providers/anthropic";
-import { describe, expect, it } from "vitest";
 
 const descriptor: ModelDescriptor = {
   providerId: providerId("anthropic"),
@@ -120,13 +120,13 @@ describe("Anthropic native adapter", () => {
   it("production fetch transport preserves headers, abort signal and streamed UTF-8", async () => {
     const originalFetch = globalThis.fetch;
     let init: RequestInit | undefined;
-    globalThis.fetch = async (_input, requestInit) => {
+    globalThis.fetch = (async (_input: string | URL | Request, requestInit?: RequestInit) => {
       init = requestInit;
       return new Response("分片响应", {
         status: 200,
         headers: { "request-id": "req-fetch" },
       });
-    };
+    }) as unknown as typeof fetch;
     try {
       const signal = new AbortController().signal;
       const response = await createFetchAnthropicTransport().send({

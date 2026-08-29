@@ -5,7 +5,7 @@
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
-    "types": ["node", "vitest/globals"],
+    "types": ["bun", "node"],
     "baseUrl": ".",
     "paths": {
       "@coding-agent/model": ["packages/model/src/index.ts"],
@@ -27,5 +27,5 @@
       "@coding-agent/coding/testing": ["packages/coding/src/testing/index.ts"]
     }
   },
-  "include": ["packages/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+  "include": ["packages/**/*.ts", "test/**/*.ts"]
 }

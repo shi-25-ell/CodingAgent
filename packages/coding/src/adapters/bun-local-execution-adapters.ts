@@ -440,7 +440,7 @@ function runGit(
   });
 }
 
-function createNodeFilesystemPort(): LocalFilesystemPort {
+function createBunFilesystemPort(): LocalFilesystemPort {
   return {
     captureWorkspaceRoot: (input) => realpathSync.native(path.resolve(input)),
     realpath,
@@ -488,24 +488,24 @@ function createNodeFilesystemPort(): LocalFilesystemPort {
   };
 }
 
-export function createNodeWindowsExecutionPorts(): LocalExecutionPorts {
+export function createBunWindowsExecutionPorts(): LocalExecutionPorts {
   return {
-    filesystem: createNodeFilesystemPort(),
+    filesystem: createBunFilesystemPort(),
     process: { run: runWindowsPowerShell },
     git: { run: runGit },
   };
 }
 
-export function createNodeLinuxExecutionPorts(): LocalExecutionPorts {
+export function createBunLinuxExecutionPorts(): LocalExecutionPorts {
   return {
-    filesystem: createNodeFilesystemPort(),
+    filesystem: createBunFilesystemPort(),
     process: { run: runLinuxBash },
     git: { run: runGit },
   };
 }
 
-export function createNodeLocalExecutionPorts(): LocalExecutionPorts {
+export function createBunLocalExecutionPorts(): LocalExecutionPorts {
   return process.platform === "win32"
-    ? createNodeWindowsExecutionPorts()
-    : createNodeLinuxExecutionPorts();
+    ? createBunWindowsExecutionPorts()
+    : createBunLinuxExecutionPorts();
 }

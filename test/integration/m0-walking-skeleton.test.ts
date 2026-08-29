@@ -1,10 +1,10 @@
+import { describe, expect, it } from "bun:test";
 import { runPrintEntry } from "@coding-agent/coding/print";
 import { createDeterministicCodingAgent } from "@coding-agent/coding/testing";
 import { ScriptedModel, scriptedTextResponse } from "@coding-agent/model/testing";
-import { describe, expect, it } from "vitest";
 
 describe("CLI → CodingAgent → AgentHarness → Agent → Model → RunReport", () => {
-  it("真实 Node CLI 进程使用显式 deterministic composition", () => {
+  it("真实 Bun CLI 进程使用显式 deterministic composition", () => {
     const workspaceRoot = fileURLToPath(new URL("../..", import.meta.url));
     const entry = fileURLToPath(
       new URL("../../scripts/run-deterministic-print.mjs", import.meta.url),

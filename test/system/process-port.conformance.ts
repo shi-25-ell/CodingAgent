@@ -1,8 +1,8 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import type { LocalProcessPort } from "../../packages/coding/src/tools/local-execution-ports.js";
 
 export interface ProcessConformanceDialect {
@@ -136,14 +136,17 @@ export function defineProcessPortConformance(
     it("confirms process-tree cleanup before returning timeout", async () => {
       const root = await mkdtemp(path.join(tmpdir(), "fast-process-conformance-"));
       temporaryDirectories.push(root);
-      const pending = createPort().run(request(dialect.treeCommand, root, 3_000));
+      // Windows PowerShell may need several seconds to create both nested processes
+      // under a fully loaded system. Keep the process-runtime contract strict while
+      // giving the fixture enough startup budget to emit its PID evidence first.
+      const pending = createPort().run(request(dialect.treeCommand, root, 8_000));
       await waitForFiles(root, ["child.pid", "grandchild.pid"]);
       const childPid = Number(await readFile(path.join(root, "child.pid"), "utf8"));
       const grandchildPid = Number(await readFile(path.join(root, "grandchild.pid"), "utf8"));
       await expect(pending).resolves.toMatchObject({ status: "timed_out" });
       expect(isRunning(childPid)).toBe(false);
       expect(isRunning(grandchildPid)).toBe(false);
-    }, 20_000);
+    }, 25_000);
 
     it("confirms process-tree cleanup before returning cancellation", async () => {
       const root = await mkdtemp(path.join(tmpdir(), "fast-process-conformance-"));

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { collectModelTurn, type ModelRequest, type ModelResponse } from "../../src/index.js";
 import { ScriptedModel } from "../../src/testing/index.js";
 

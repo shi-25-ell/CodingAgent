@@ -1,10 +1,10 @@
+import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runId, sessionId } from "@coding-agent/agent";
 import { ManualClock } from "@coding-agent/agent/testing";
-import { describe, expect, it } from "vitest";
 import { createSqlitePersistence } from "../../src/index.js";
 
 describe("SQLite independent-process crash recovery", () => {

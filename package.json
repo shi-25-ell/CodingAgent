@@ -3,41 +3,45 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.4.0",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "clean": "node scripts/clean.mjs",
+    "clean": "bun --no-env-file scripts/clean.mjs",
     "build": "tsc -b --pretty false",
-    "typecheck": "npm run typecheck:packages && npm run typecheck:tests",
+    "typecheck": "bun run typecheck:packages && bun run typecheck:tests",
     "typecheck:packages": "tsc -b --pretty false",
     "typecheck:tests": "tsc -p tsconfig.test.json --noEmit --pretty false",
     "lint": "biome check .",
-    "print:deterministic": "node scripts/run-deterministic-print.mjs",
-    "test": "vitest run",
-    "test:unit": "vitest run packages/model/test/unit packages/agent/test/unit packages/coding/test/unit",
-    "test:contract": "vitest run packages/model/test/contract packages/agent/test/contract packages/coding/test/contract test/contract",
-    "test:integration": "npm run build && vitest run test/integration",
-    "test:system": "npm run build && vitest run test/system packages/sqlite/test/system",
-    "test:acceptance": "npm run build && vitest run test/acceptance",
-    "test:model": "vitest run packages/model/test",
-    "test:wire": "vitest run packages/model/test/contract/openai-compatible.contract.test.ts packages/model/test/unit/turn-accumulator.test.ts",
-    "test:tools": "vitest run packages/coding/test/contract/coding-tool-host.contract.test.ts packages/agent/test/contract/agent-harness.contract.test.ts",
-    "test:cli": "npm run build && node scripts/run-m1-deterministic-print.mjs --print \"read test/fixtures/openai/final-answer.sse\"",
-    "test:coverage": "vitest run --coverage --maxWorkers=1 --exclude \"test/system/**\" --exclude \"packages/sqlite/test/system/**\" && node scripts/check-m2-coverage.mjs m4 M5 80 70",
-    "test:boundary": "npm run build && node scripts/check-package-boundaries.mjs && node scripts/check-package-exports.mjs",
-    "scan:production": "node scripts/check-production-readiness.mjs",
-    "audit:dependencies": "npm audit --audit-level=moderate",
-    "check": "npm run typecheck && npm run lint && npm run test:unit && npm run test:contract && npm run test:integration && npm run test:system && npm run test:acceptance && npm run test:boundary && npm run test:coverage && npm run scan:production && npm run audit:dependencies"
+    "start:source": "bun --no-env-file packages/coding/src/cli/entry.ts",
+    "start:release": "bun --no-env-file packages/coding/dist/cli/entry.js",
+    "print:deterministic": "bun --no-env-file scripts/run-deterministic-print.mjs",
+    "test": "bun run build && bun test",
+    "test:unit": "bun run build && bun test packages/model/test/unit packages/agent/test/unit packages/coding/test/unit",
+    "test:contract": "bun run build && bun test packages/model/test/contract packages/agent/test/contract packages/coding/test/contract test/contract",
+    "test:integration": "bun run build && bun test test/integration",
+    "test:system": "bun run build && bun test test/system packages/sqlite/test/system",
+    "test:acceptance": "bun run build && bun test test/acceptance",
+    "test:model": "bun run build && bun test packages/model/test",
+    "test:wire": "bun run build && bun test packages/model/test/contract/openai-compatible.contract.test.ts packages/model/test/unit/turn-accumulator.test.ts",
+    "test:tools": "bun run build && bun test packages/coding/test/contract/coding-tool-host.contract.test.ts packages/agent/test/contract/agent-harness.contract.test.ts",
+    "test:cli": "bun run build && bun --no-env-file scripts/run-m1-deterministic-print.mjs --print \"read test/fixtures/openai/final-answer.sse\"",
+    "test:coverage": "bun run build && bun test --coverage --coverage-reporter=text --coverage-reporter=lcov && bun --no-env-file scripts/check-bun-coverage.mjs 75",
+    "test:boundary": "bun run build && bun --no-env-file scripts/check-package-boundaries.mjs && bun --no-env-file scripts/check-package-exports.mjs",
+    "scan:production": "bun --no-env-file scripts/check-production-readiness.mjs",
+    "audit:dependencies": "bun audit --audit-level=moderate",
+    "build:release": "bun run build && bun --no-env-file scripts/build-release.mjs",
+    "smoke:release": "bun --no-env-file scripts/smoke-release.mjs",
+    "check": "bun run typecheck && bun run lint && bun run test:unit && bun run test:contract && bun run test:integration && bun run test:system && bun run test:acceptance && bun run test:boundary && bun run test:coverage && bun run scan:production && bun run audit:dependencies"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.2",
+    "@types/bun": "1.4.0",
     "@types/node": "24.3.0",
-    "@vitest/coverage-v8": "^3.2.7",
-    "typescript": "5.9.2",
-    "vitest": "3.2.7"
+    "typescript": "5.9.2"
   },
   "engines": {
-    "node": ">=22.18"
+    "bun": "1.4.0"
   }
 }

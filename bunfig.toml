@@ -1,0 +1,14 @@
+# Bun is the only supported JavaScript runtime. Product credentials are resolved
+# by explicit credential sources; workspace .env files must never be imported.
+env = false
+
+[install]
+exact = true
+
+[test]
+coverageSkipTestFiles = true
+coveragePathIgnorePatterns = [
+  "**/dist/**",
+  "**/test/**",
+  "test/**",
+]

@@ -1,6 +1,6 @@
+import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { ScriptedModel, scriptedTextResponse } from "@coding-agent/model/testing";
-import { describe, expect, it } from "vitest";
 import { completeModelTurns } from "../../src/context/sources.js";
 import {
   type ArtifactMetadata,

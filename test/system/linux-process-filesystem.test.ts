@@ -1,9 +1,9 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runId } from "@coding-agent/agent";
-import { afterEach, describe, expect, it } from "vitest";
-import { createNodeLinuxExecutionPorts } from "../../packages/coding/src/adapters/node-local-execution-adapters.js";
+import { createBunLinuxExecutionPorts } from "../../packages/coding/src/adapters/bun-local-execution-adapters.js";
 import { createCodingToolHost } from "../../packages/coding/src/tools/coding-tool-host.js";
 import { defineProcessPortConformance } from "./process-port.conformance.js";
 
@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!onLinux)("Linux production adapters", () => {
-  defineProcessPortConformance("Linux Bash", () => createNodeLinuxExecutionPorts().process, {
+  defineProcessPortConformance("Linux Bash", () => createBunLinuxExecutionPorts().process, {
     successCommand: `printf '%s' "$PWD"; printf '%s' 'err' >&2`,
     quotingCommand: `printf '%s' 'space " quote'`,
     failureCommand: `printf '%s' 'bad' >&2; exit 7`,
@@ -36,7 +36,7 @@ describe.skipIf(!onLinux)("Linux production adapters", () => {
     temporaryDirectories.push(root, outside);
     await writeFile(path.join(outside, "secret.txt"), "outside", "utf8");
     await symlink(outside, path.join(root, "escape"), "dir");
-    const host = createCodingToolHost({ workspaceRoot: root }, createNodeLinuxExecutionPorts());
+    const host = createCodingToolHost({ workspaceRoot: root }, createBunLinuxExecutionPorts());
     const result = await host.execute(
       {
         type: "tool_call",
@@ -52,7 +52,7 @@ describe.skipIf(!onLinux)("Linux production adapters", () => {
   it("runs Git evidence through the Linux production port", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-linux-git-"));
     temporaryDirectories.push(root);
-    const initialized = await createNodeLinuxExecutionPorts().git.run(
+    const initialized = await createBunLinuxExecutionPorts().git.run(
       root,
       ["init", "-q"],
       new AbortController().signal,
@@ -60,7 +60,7 @@ describe.skipIf(!onLinux)("Linux production adapters", () => {
       [],
     );
     expect(initialized.status).toBe("succeeded");
-    const status = await createNodeLinuxExecutionPorts().git.run(
+    const status = await createBunLinuxExecutionPorts().git.run(
       root,
       ["status", "--short"],
       new AbortController().signal,

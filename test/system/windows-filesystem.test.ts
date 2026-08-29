@@ -1,3 +1,4 @@
+import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,7 +6,6 @@ import path from "node:path";
 import { runId } from "@coding-agent/agent";
 import { createCodingToolHost } from "@coding-agent/coding";
 import type { ToolCall } from "@coding-agent/model";
-import { afterEach, describe, expect, it } from "vitest";
 
 const temporaryDirectories: string[] = [];
 

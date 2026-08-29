@@ -1,3 +1,4 @@
+import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,7 +6,6 @@ import path from "node:path";
 import { ManualClock, SequentialIdFactory } from "@coding-agent/agent/testing";
 import { createEnvironmentCredentialSource } from "@coding-agent/model/auth";
 import type { OpenAiTransport } from "@coding-agent/model/providers/openai-compatible";
-import { describe, expect, it } from "vitest";
 import { createOpenAiCodingAgent } from "../../src/composition/openai-composition.js";
 import { createGitWorkspaceService } from "../../src/workspace/workspace-service.js";
 
