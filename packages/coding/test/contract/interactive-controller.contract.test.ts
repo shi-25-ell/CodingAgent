@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { branchId, runId, sessionId } from "@coding-agent/agent";
 import { ManualGate } from "@coding-agent/agent/testing";
 import { ScriptedModel, scriptedTextResponse } from "@coding-agent/model/testing";
+import type { CodingRunHandle, CodingSession } from "../../src/app/coding-agent.js";
+import type { CodingEvent } from "../../src/app/coding-events.js";
 import { createInteractiveController, type TuiViewModel } from "../../src/index.js";
+import type { CodingSessionSnapshot } from "../../src/projection/contracts.js";
 import { createDeterministicCodingAgent } from "../../src/testing/index.js";
 
 async function waitForView(
@@ -195,5 +199,88 @@ describe("InteractiveController contract", () => {
 
     await controller.dispose();
     await application.dispose();
+  });
+
+  it("semantic sequence gap 通过 active handle 的 atomic snapshot/live join 重同步", async () => {
+    const activeRunId = runId("run-controller-resync");
+    const currentBranchId = branchId("branch-controller-resync");
+    const ref = { sessionId: sessionId("session-controller-resync") };
+    const snapshot = (revision: number, cursor: number): CodingSessionSnapshot => ({
+      version: 1,
+      ref,
+      workspace: { root: "D:/work/interactive-resync", fingerprint: "head:abc" },
+      revision,
+      currentBranchId,
+      activeRunId,
+      branches: [{ branchId: currentBranchId, recordCount: revision }],
+      runOrder: [activeRunId],
+      runs: {
+        [activeRunId]: {
+          runId: activeRunId,
+          phase: "model_streaming",
+          status: "streaming",
+          terminal: false,
+          tools: {},
+          toolOrder: [],
+          approvals: {},
+          approvalOrder: [],
+          compactions: [],
+        },
+      },
+      transcript: [],
+      queues: [],
+      eventCursors: { [activeRunId]: cursor },
+    });
+    let snapshotCount = 0;
+    let eventSubscriptionCount = 0;
+    const run = {
+      runId: activeRunId,
+      async snapshot() {
+        snapshotCount += 1;
+        const cursor = snapshotCount === 1 ? 0 : 2;
+        return { snapshot: snapshot(snapshotCount, cursor), cursor: { semanticSequence: cursor } };
+      },
+      events() {
+        eventSubscriptionCount += 1;
+        const subscription = eventSubscriptionCount;
+        return {
+          async *[Symbol.asyncIterator](): AsyncIterator<CodingEvent> {
+            if (subscription !== 1) return;
+            yield {
+              version: 1,
+              category: "semantic",
+              type: "session_updated",
+              runId: activeRunId,
+              sequence: 2,
+              eventId: `${activeRunId}:2`,
+              revision: 999,
+              currentBranchId,
+              activeRunId,
+              branches: [{ branchId: currentBranchId, recordCount: 999 }],
+            };
+          },
+        };
+      },
+      diagnostics: () => ({}),
+      dispatch: async () => ({ commandId: "unused", status: "accepted" as const }),
+      finished: new Promise(() => {}),
+    } as unknown as CodingRunHandle;
+    const session = {
+      ref,
+      activeRun: () => run,
+      snapshot: async () => snapshot(0, 0),
+    } as unknown as CodingSession;
+    const controller = createInteractiveController({ session, width: 80, height: 24 });
+
+    await controller.start();
+    const repaired = await waitForView(controller, (view) => view.session.revision === 2);
+
+    expect(repaired.session.revision).toBe(2);
+    expect(repaired.diagnostics).toEqual([]);
+    expect(controller.diagnostics().projectionResyncCount).toBe(1);
+    expect(snapshotCount).toBe(2);
+    expect(eventSubscriptionCount).toBe(2);
+
+    await controller.dispose();
   });
 });

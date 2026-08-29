@@ -422,5 +422,6 @@ describe("pure Coding projection", () => {
     });
     expect("composer" in viewModel.session).toBe(false);
     expect(Object.isFrozen(viewModel.ui)).toBe(true);
+    expect(() => (viewModel.ui.expandedIds as Set<string>).add("renderer-mutation")).toThrow();
   });
 });

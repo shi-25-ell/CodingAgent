@@ -10,6 +10,7 @@ import type {
   LocalUiState,
   TuiViewModel,
 } from "./contracts.js";
+import { immutableReadonlySet } from "./immutable-readonly-set.js";
 
 function freeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
@@ -478,7 +479,7 @@ export function selectTuiViewModel(
         return approval ? [approval] : [];
       })
     : [];
-  const dismissedDiagnosticIds = local.dismissedDiagnosticIds ?? new Set<string>();
+  const dismissedDiagnosticIds = local.dismissedDiagnosticIds ?? immutableReadonlySet<string>();
   const projectionDiagnostics: TuiViewModel["diagnostics"] = projection.diagnostics
     .filter((diagnostic) => diagnostic.code === "SEMANTIC_SEQUENCE_GAP")
     .map((diagnostic) => ({
@@ -521,7 +522,7 @@ export function selectTuiViewModel(
     diagnostics,
     ui: {
       focusedRegion: local.focusedRegion ?? "composer",
-      expandedIds: local.expandedIds ?? new Set<string>(),
+      expandedIds: immutableReadonlySet(local.expandedIds),
       composer: local.composer ?? { value: "", revision: 0 },
       transcriptViewport: local.transcriptViewport ?? {
         scrollTop: 0,

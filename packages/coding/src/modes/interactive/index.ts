@@ -25,6 +25,14 @@ export {
   type OpenTuiRendererOptions,
 } from "./opentui-renderer.js";
 export {
+  type InteractiveFatalEvent,
+  type InteractiveProcessHost,
+  InteractiveProcessLifecycle,
+  type InteractiveProcessLifecycleDiagnostic,
+  type InteractiveProcessLifecycleOptions,
+  type InteractiveProcessSignal,
+} from "./process-lifecycle.js";
+export {
   RendererLifecycle,
   type RendererLifecycleDiagnostic,
   type RendererLifecycleOptions,

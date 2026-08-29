@@ -1,3 +1,4 @@
+import { immutableReadonlySet } from "../../projection/immutable-readonly-set.js";
 import type {
   InteractiveLocalState,
   InteractiveLocalStateOptions,
@@ -41,7 +42,7 @@ export function createInteractiveLocalState(
   return freezeState({
     version: 1,
     focusedRegion: options.focusedRegion ?? "composer",
-    expandedIds: new Set<string>(),
+    expandedIds: immutableReadonlySet<string>(),
     composer: { value: "", revision: 0 },
     transcriptViewport: { scrollTop: 0, followTail: true, unseenBlockCount: 0 },
     surfaceStack: [],
@@ -50,7 +51,7 @@ export function createInteractiveLocalState(
       height: positiveInteger(options.height, "terminal height"),
     },
     diagnostics: [],
-    dismissedDiagnosticIds: new Set<string>(),
+    dismissedDiagnosticIds: immutableReadonlySet<string>(),
     sidebar: {
       preference: options.sidebarPreference ?? "auto",
       open: options.sidebarOpen ?? false,
@@ -69,9 +70,10 @@ export function reduceInteractiveLocalState(
         : freezeState({ ...previous, focusedRegion: intent.region });
     case "set_expanded": {
       if (previous.expandedIds.has(intent.id) === intent.expanded) return previous;
-      const expandedIds = new Set(previous.expandedIds);
-      if (intent.expanded) expandedIds.add(intent.id);
-      else expandedIds.delete(intent.id);
+      const values = [...previous.expandedIds];
+      const expandedIds = intent.expanded
+        ? immutableReadonlySet([...values, intent.id])
+        : immutableReadonlySet(values.filter((id) => id !== intent.id));
       return freezeState({ ...previous, expandedIds });
     }
     case "composer_changed":
@@ -132,7 +134,10 @@ export function reduceInteractiveLocalState(
       if (previous.dismissedDiagnosticIds.has(intent.id)) return previous;
       return freezeState({
         ...previous,
-        dismissedDiagnosticIds: new Set([...previous.dismissedDiagnosticIds, intent.id]),
+        dismissedDiagnosticIds: immutableReadonlySet([
+          ...previous.dismissedDiagnosticIds,
+          intent.id,
+        ]),
       });
     }
     case "select_model":

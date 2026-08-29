@@ -24,6 +24,7 @@ describe("interactive local UI state", () => {
     });
     expect(state.surfaceStack).toEqual([]);
     expect(state.expandedIds.size).toBe(0);
+    expect(() => (state.expandedIds as Set<string>).add("escape")).toThrow();
     expect(Object.isFrozen(state)).toBe(true);
   });
 
@@ -61,6 +62,7 @@ describe("interactive local UI state", () => {
     expect(expanded.focusedRegion).toBe("transcript");
     expect(expanded.composer).toEqual({ value: "检查工作树", revision: 1 });
     expect(expanded.expandedIds.has("tool:1")).toBe(true);
+    expect(() => (expanded.expandedIds as Set<string>).delete("tool:1")).toThrow();
     expect(
       reduceInteractiveLocalState(
         expanded,
