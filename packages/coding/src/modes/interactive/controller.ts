@@ -1,6 +1,12 @@
 import type { ModelRef } from "@coding-agent/model";
-import type { CodingCommandAck, CodingRunHandle, CodingSession } from "../../app/coding-agent.js";
+import type {
+  CodingAgent,
+  CodingCommandAck,
+  CodingRunHandle,
+  CodingSession,
+} from "../../app/coding-agent.js";
 import {
+  type CodingDiffDocument,
   type CodingProjection,
   reduceProjection,
   selectTuiViewModel,
@@ -14,6 +20,7 @@ import type {
   UiIntent,
   UiLocalIntent,
 } from "./contracts.js";
+import { reconcileDiffViewerDocumentState } from "./diff-viewer.js";
 import {
   appendInteractiveDiagnostic,
   createInteractiveLocalState,
@@ -38,6 +45,7 @@ export interface InteractiveControllerDiagnostics {
 
 export interface InteractiveControllerOptions extends InteractiveLocalStateOptions {
   readonly session: CodingSession;
+  readonly agent?: CodingAgent;
   readonly createCommandId?: () => string;
   readonly onQuit?: () => void | Promise<void>;
 }
@@ -67,6 +75,7 @@ const localIntentTypes: ReadonlySet<UiLocalIntent["type"]> = new Set([
   "select_diff_file",
   "set_diff_hunk",
   "set_diff_directory_expanded",
+  "set_diff_all_directories_expanded",
   "set_diff_file_reviewed",
   "set_diff_scroll",
   "transcript_viewport_changed",
@@ -92,7 +101,8 @@ function commandAccepted(ack: CodingCommandAck): boolean {
 }
 
 class ProductionInteractiveController implements InteractiveController {
-  readonly #session: CodingSession;
+  #session: CodingSession;
+  readonly #agent: CodingAgent | undefined;
   readonly #createCommandId: () => string;
   readonly #onQuit: () => void | Promise<void>;
   readonly #listeners = new Set<(viewModel: TuiViewModel) => void>();
@@ -110,9 +120,13 @@ class ProductionInteractiveController implements InteractiveController {
   #listenerFailureCount = 0;
   #projectionResyncCount = 0;
   #intentFailureCount = 0;
+  #renderTimer: ReturnType<typeof setTimeout> | undefined;
+  #catalog: TuiViewModel["catalog"] = { sessions: [], models: [] };
+  #diffDocument: CodingDiffDocument | undefined;
 
   constructor(options: InteractiveControllerOptions) {
     this.#session = options.session;
+    this.#agent = options.agent;
     this.#createCommandId =
       options.createCommandId ?? (() => `ui-${String(++this.#commandSequence).padStart(6, "0")}`);
     this.#onQuit = options.onQuit ?? (() => {});
@@ -127,6 +141,7 @@ class ProductionInteractiveController implements InteractiveController {
   }
 
   async #initialize(): Promise<TuiViewModel> {
+    await this.#refreshCatalog();
     const active = this.#session.activeRun();
     if (active) await this.#attachRun(active, false);
     else this.#replaceProjection(reduceProjection(undefined, await this.#session.snapshot()));
@@ -135,7 +150,7 @@ class ProductionInteractiveController implements InteractiveController {
 
   current(): TuiViewModel {
     if (!this.#projection) throw new Error("InteractiveController 尚未 start");
-    return selectTuiViewModel(this.#projection, this.#local);
+    return selectTuiViewModel(this.#projection, this.#local, this.#catalog, this.#diffDocument);
   }
 
   subscribe(listener: (viewModel: TuiViewModel) => void): () => void {
@@ -167,6 +182,21 @@ class ProductionInteractiveController implements InteractiveController {
         const previous = this.#local;
         this.#local = reduceInteractiveLocalState(previous, intent);
         if (this.#local === previous) return this.#unchanged(intent);
+        if (intent.type === "open_diff_viewer") {
+          const diffViewer = this.#local.diffViewer;
+          if (!diffViewer) throw new Error("Diff route state 未建立");
+          const document = await this.#session.readDiff({ source: diffViewer.source });
+          this.#diffDocument = document;
+          this.#local = Object.freeze({
+            ...this.#local,
+            diffViewer:
+              document.files.length === 0
+                ? Object.freeze({ ...diffViewer, documentRevision: document.revision })
+                : reconcileDiffViewerDocumentState(diffViewer, document),
+          });
+        } else if (intent.type === "close_diff_viewer") {
+          this.#diffDocument = undefined;
+        }
         this.#emit();
         return this.#applied(intent);
       }
@@ -319,6 +349,23 @@ class ProductionInteractiveController implements InteractiveController {
         });
         this.#replaceProjection(reduceProjection(undefined, await this.#session.snapshot()));
         return this.#applied(intent);
+      case "new_session": {
+        if (!this.#agent) return this.#rejected(intent, "controller 未配置 CodingAgent");
+        const workspace = intent.workspace ?? this.#projection?.workspace;
+        if (!workspace) return this.#rejected(intent, "当前没有可复用的 workspace binding");
+        await this.#switchSession(await this.#agent.createSession({ workspace }));
+        await this.#refreshCatalog();
+        return this.#applied(intent);
+      }
+      case "open_session":
+        if (!this.#agent) return this.#rejected(intent, "controller 未配置 CodingAgent");
+        await this.#switchSession(await this.#agent.openSession(intent.ref));
+        await this.#refreshCatalog();
+        return this.#applied(intent);
+      case "refresh_catalog":
+        await this.#refreshCatalog();
+        this.#emit();
+        return this.#applied(intent);
       case "quit":
         await this.#onQuit();
         return this.#applied(intent);
@@ -328,6 +375,32 @@ class ProductionInteractiveController implements InteractiveController {
   #requireActiveRun(): CodingRunHandle {
     if (!this.#run || !this.#projection?.activeRunId) throw new Error("当前没有 active Run");
     return this.#run;
+  }
+
+  async #refreshCatalog(): Promise<void> {
+    if (!this.#agent) return;
+    const [sessions, models] = await Promise.all([
+      this.#agent.listSessions(),
+      this.#agent.listModels(),
+    ]);
+    this.#catalog = Object.freeze({
+      sessions: Object.freeze([...sessions]),
+      models: Object.freeze([...models]),
+    });
+  }
+
+  async #switchSession(session: CodingSession): Promise<void> {
+    await this.#detachRun();
+    this.#session = session;
+    this.#diffDocument = undefined;
+    const active = session.activeRun();
+    if (active) await this.#attachRun(active, false);
+    else this.#replaceProjection(reduceProjection(undefined, await session.snapshot()));
+    this.#local = reduceInteractiveLocalState(this.#local, {
+      version: 1,
+      type: "close_surface",
+    });
+    this.#emit();
   }
 
   #clearComposer(expectedRevision: number): void {
@@ -382,7 +455,8 @@ class ProductionInteractiveController implements InteractiveController {
         this.#reconcileApprovalUi(next);
         const growth = Math.max(0, next.transcript.length - previousTranscriptLength);
         this.#local = observeTranscriptGrowth(this.#local, growth);
-        this.#emit();
+        if (result.value.category === "progress") this.#scheduleEmit();
+        else this.#emit();
         if (result.value.category === "semantic" && result.value.type === "terminal_committed") {
           this.#run = undefined;
         }
@@ -437,8 +511,23 @@ class ProductionInteractiveController implements InteractiveController {
   }
 
   #emit(): void {
+    if (this.#renderTimer) {
+      clearTimeout(this.#renderTimer);
+      this.#renderTimer = undefined;
+    }
     const viewModel = this.current();
     for (const listener of this.#listeners) this.#notifyOne(listener, viewModel);
+  }
+
+  #scheduleEmit(): void {
+    if (this.#renderTimer) return;
+    this.#renderTimer = setTimeout(() => {
+      this.#renderTimer = undefined;
+      if (!this.#disposed && this.#projection) {
+        const viewModel = this.current();
+        for (const listener of this.#listeners) this.#notifyOne(listener, viewModel);
+      }
+    }, 16);
   }
 
   #notifyOne(listener: (viewModel: TuiViewModel) => void, viewModel: TuiViewModel): void {
@@ -489,6 +578,8 @@ class ProductionInteractiveController implements InteractiveController {
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
+    if (this.#renderTimer) clearTimeout(this.#renderTimer);
+    this.#renderTimer = undefined;
     await this.#detachRun();
     await this.#subscriptionTask?.catch(() => {});
     this.#listeners.clear();

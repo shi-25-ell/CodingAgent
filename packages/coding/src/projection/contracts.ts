@@ -14,7 +14,12 @@ import type {
   ToolOutcome,
   WorkspaceBinding,
 } from "@coding-agent/agent";
-import type { AssistantMessage, ModelFailure, ModelRef } from "@coding-agent/model";
+import type {
+  AssistantMessage,
+  ModelDescriptor,
+  ModelFailure,
+  ModelRef,
+} from "@coding-agent/model";
 import type {
   CodingApprovalSummary,
   CodingRecoveryDiagnostic,
@@ -59,6 +64,8 @@ export interface CodingToolProjection {
   readonly status: "planned" | "running" | "settled";
   readonly progress?: string;
   readonly outcome?: ToolOutcome;
+  readonly startedAtMs?: number;
+  readonly elapsedMs?: number;
 }
 
 export interface CodingContextProjection {
@@ -129,6 +136,22 @@ export type DiffViewerSource = "working_tree" | "branch" | "last_turn";
 export type DiffViewerFocus = "files" | "patches";
 export type DiffViewerPatchMode = "all" | "single";
 export type DiffViewerView = "split" | "unified";
+
+export interface CodingDiffFile {
+  readonly path: string;
+  readonly status: "created" | "modified" | "deleted";
+  readonly additions: number;
+  readonly deletions: number;
+  readonly patch?: string;
+  readonly filetype?: string;
+}
+
+export interface CodingDiffDocument {
+  readonly version: 1;
+  readonly revision: string;
+  readonly source: DiffViewerSource;
+  readonly files: readonly CodingDiffFile[];
+}
 
 export interface DiffViewerHunkSelection {
   readonly filePath: string;
@@ -273,6 +296,17 @@ export interface TuiViewModel {
   readonly queues: readonly QueueItem[];
   readonly context?: CodingContextProjection;
   readonly terminalReport?: RunReport;
+  readonly diffDocument?: CodingDiffDocument;
+  readonly runHistory: readonly RunReport[];
+  readonly catalog: {
+    readonly sessions: readonly {
+      readonly ref: SessionRef;
+      readonly workspace: WorkspaceBinding;
+      readonly revision: number;
+      readonly activeRunId?: RunId;
+    }[];
+    readonly models: readonly ModelDescriptor[];
+  };
   readonly diagnostics: readonly TuiDiagnostic[];
   readonly ui: TuiLocalViewModel;
 }

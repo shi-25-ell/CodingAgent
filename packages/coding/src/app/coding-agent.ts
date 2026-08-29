@@ -1,6 +1,7 @@
 import type {
   AgentHarness,
   BranchId,
+  Clock,
   ContextDerivationRecord,
   ContextManager,
   ContextManifest,
@@ -33,7 +34,12 @@ import {
   type ModeRegistry,
 } from "../modes/registry.js";
 import type { ApprovalBridge, ApprovalLifecycleEvent } from "../permissions/approval-bridge.js";
-import type { CodingRunProjection, CodingSessionSnapshot } from "../projection/contracts.js";
+import type {
+  CodingDiffDocument,
+  CodingRunProjection,
+  CodingSessionSnapshot,
+  DiffViewerSource,
+} from "../projection/contracts.js";
 import { reduceProjection } from "../projection/projection.js";
 import type { SkillDescriptor, SkillRegistryDiagnostic } from "../skills/contracts.js";
 import type { ApprovalRequest } from "../tools/coding-tool-host.js";
@@ -136,6 +142,10 @@ export interface CodingSession {
   readRunReport(runId: RunId): Promise<RunReport | undefined>;
   readContextManifests(runId: RunId): Promise<readonly StoredContextManifest[]>;
   readContextDerivations(runId: RunId): Promise<readonly ContextDerivationRecord[]>;
+  readDiff(input: {
+    readonly source: DiffViewerSource;
+    readonly runId?: RunId;
+  }): Promise<CodingDiffDocument>;
   listQueue(runId?: RunId): Promise<readonly QueueItem[]>;
   updateQueue(input: QueueUpdate): Promise<QueueItem>;
   activeRun(): CodingRunHandle | undefined;
@@ -194,6 +204,7 @@ export interface CodingAgentOptions {
   readonly extensions?: readonly LoadedExtension[];
   readonly extensionDiagnostics?: readonly ExtensionDiagnostic[];
   readonly observe?: (event: Readonly<unknown>) => void | Promise<void>;
+  readonly clock?: Clock;
   readonly credentialDiagnostic?: CodingDiagnostics["credential"];
 }
 
@@ -643,7 +654,9 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
           config,
         },
       });
-      const channel = new CodingEventChannel(handle.runId);
+      const channel = new CodingEventChannel(handle.runId, {
+        now: () => options.clock?.now() ?? Date.now(),
+      });
       let runStarted = false;
       const pendingApprovals: ApprovalLifecycleEvent[] = [];
       const publishSemantic = (payload: CodingSemanticPayload): void => {
@@ -861,6 +874,25 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
       readRunReport: (runId) => session.readRunReport(runId),
       readContextManifests: (runId) => session.readContextManifests(runId),
       readContextDerivations: (runId) => session.readContextDerivations(runId),
+      async readDiff(input) {
+        if (!options.workspace.readDiff) {
+          throw new Error("当前 WorkspaceService 不支持 structured Diff");
+        }
+        const sessionSnapshot = await projectSnapshot(session);
+        let paths: readonly string[] | undefined;
+        if (input.source === "last_turn") {
+          const runId = input.runId ?? sessionSnapshot.runOrder.at(-1);
+          if (runId) {
+            const report = await session.readRunReport(runId);
+            paths = report?.changedFiles.map((file) => file.path);
+          }
+        }
+        return options.workspace.readDiff({
+          root: sessionSnapshot.workspace.root,
+          source: input.source,
+          ...(paths ? { paths } : {}),
+        });
+      },
       listQueue: (runId) => session.listQueue(runId),
       updateQueue: (input) => session.updateQueue(input),
       activeRun: () => activeRuns.get(String(session.ref.sessionId)),

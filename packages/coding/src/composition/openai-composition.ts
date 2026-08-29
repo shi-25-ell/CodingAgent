@@ -437,6 +437,15 @@ async function createCompatibleCodingAgent(
     providerId: definition.profile.id,
     modelId: selectedModelId,
   });
+  const modelCatalog = await registry.listModels();
+  const availableModels = await Promise.all(
+    modelCatalog.map((descriptor) =>
+      descriptor.providerId === model.descriptor.providerId &&
+      descriptor.modelId === model.descriptor.modelId
+        ? model
+        : registry.resolve({ providerId: descriptor.providerId, modelId: descriptor.modelId }),
+    ),
+  );
   const clock: Clock = options.clock ?? { now: () => Date.now() };
   const ids: IdFactory =
     options.ids ??
@@ -604,6 +613,7 @@ async function createCompatibleCodingAgent(
     sessions: persistence.sessions,
     harness: createAgentHarness({ agent: createAgent(), redact }),
     model,
+    models: availableModels,
     tools,
     context,
     policies: createFixedRunPolicies({
@@ -630,6 +640,7 @@ async function createCompatibleCodingAgent(
     extensions: extensionSnapshot.extensions,
     extensionDiagnostics: extensionHost.diagnostics(),
     observe: (event) => extensionHost.observe(event),
+    clock,
     credentialDiagnostic:
       preflight.status === "found"
         ? { status: "present", sourceId: preflight.sourceId }

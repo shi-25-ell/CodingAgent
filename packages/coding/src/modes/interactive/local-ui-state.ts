@@ -254,6 +254,17 @@ export function reduceInteractiveLocalState(
         },
       });
     }
+    case "set_diff_all_directories_expanded": {
+      const current = previous.diffViewer;
+      if (!current) return previous;
+      return freezeState({
+        ...previous,
+        diffViewer: {
+          ...current,
+          expandedDirectoryPaths: immutableReadonlySet(intent.expanded ? intent.paths : []),
+        },
+      });
+    }
     case "set_diff_file_reviewed": {
       const current = previous.diffViewer;
       if (!current || current.reviewedFilePaths.has(intent.filePath) === intent.reviewed) {

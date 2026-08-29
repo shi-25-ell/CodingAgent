@@ -159,7 +159,16 @@ function applySemantic(projection: CodingProjection, event: CodingSemanticEvent)
         return {
           ...run,
           status: run.terminal ? run.status : "tool_activity",
-          tools: { ...run.tools, [event.callId]: { ...tool, status: "running" } },
+          tools: {
+            ...run.tools,
+            [event.callId]: {
+              ...tool,
+              status: "running",
+              ...(event.occurredAtMs !== undefined
+                ? { startedAtMs: event.occurredAtMs, elapsedMs: 0 }
+                : {}),
+            },
+          },
         };
       });
     case "tool_settled": {
@@ -212,6 +221,15 @@ function applySemantic(projection: CodingProjection, event: CodingSemanticEvent)
               plan,
               status: "settled",
               ...(prior?.progress ? { progress: prior.progress } : {}),
+              ...(prior?.startedAtMs !== undefined
+                ? {
+                    startedAtMs: prior.startedAtMs,
+                    elapsedMs: Math.max(
+                      0,
+                      (event.occurredAtMs ?? prior.startedAtMs) - prior.startedAtMs,
+                    ),
+                  }
+                : {}),
               outcome: event.outcome,
             },
           },
@@ -414,7 +432,13 @@ function applyProgress(
           ...current,
           tools: {
             ...current.tools,
-            [event.callId]: { ...tool, progress: event.update.message },
+            [event.callId]: {
+              ...tool,
+              progress: event.update.message,
+              ...(tool.startedAtMs !== undefined && event.occurredAtMs !== undefined
+                ? { elapsedMs: Math.max(0, event.occurredAtMs - tool.startedAtMs) }
+                : {}),
+            },
           },
         };
       });
@@ -461,6 +485,8 @@ export function replayProjection(
 export function selectTuiViewModel(
   projection: CodingProjection,
   local: LocalUiState = {},
+  catalog: TuiViewModel["catalog"] = { sessions: [], models: [] },
+  diffDocument?: TuiViewModel["diffDocument"],
 ): TuiViewModel {
   const active = projection.activeRunId
     ? projection.runs[projection.activeRunId]
@@ -519,6 +545,14 @@ export function selectTuiViewModel(
     queues: projection.queues,
     ...(active?.context ? { context: active.context } : {}),
     ...(active?.report ? { terminalReport: active.report } : {}),
+    runHistory: Object.freeze(
+      projection.runOrder.flatMap((runId) => {
+        const report = projection.runs[runId]?.report;
+        return report ? [report] : [];
+      }),
+    ),
+    catalog: freeze(catalog),
+    ...(diffDocument ? { diffDocument: freeze(diffDocument) } : {}),
     diagnostics,
     ui: {
       focusedRegion: local.focusedRegion ?? "composer",

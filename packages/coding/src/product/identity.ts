@@ -28,6 +28,13 @@ export const productEnvironment = Object.freeze({
   glmApiKey: "DEX_GLM_API_KEY",
   anthropicApiKey: "DEX_ANTHROPIC_API_KEY",
   braveSearchApiKey: "DEX_BRAVE_SEARCH_API_KEY",
+  permissionMode: "DEX_PERMISSION_MODE",
+  maxModelTurns: "DEX_MAX_MODEL_TURNS",
+  maxModelAttempts: "DEX_MAX_MODEL_ATTEMPTS",
+  maxRetries: "DEX_MAX_RETRIES",
+  enabledTools: "DEX_TOOLS",
+  enabledExtensions: "DEX_EXTENSIONS",
+  selectedSkills: "DEX_SKILLS",
 } as const);
 
 const legacyEnvironmentMigrations = Object.freeze({

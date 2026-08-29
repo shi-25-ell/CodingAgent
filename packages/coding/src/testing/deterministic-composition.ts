@@ -54,6 +54,9 @@ export function createDeterministicCodingAgent(
           changedPaths: [],
         };
       },
+      async readDiff(input) {
+        return { version: 1, revision: "deterministic-empty", source: input.source, files: [] };
+      },
     },
   });
   return {

@@ -27,6 +27,7 @@ interface ProgressSlot {
 export class CodingEventChannel {
   readonly #runId: RunId;
   readonly #maximumProgressKeys: number;
+  readonly #now: () => number;
   readonly #semantic: CodingSemanticEvent[] = [];
   readonly #progress = new Map<string, ProgressSlot>();
   readonly #waiters = new Set<() => void>();
@@ -37,9 +38,13 @@ export class CodingEventChannel {
   #subscriberCount = 0;
   #closed = false;
 
-  constructor(runId: RunId, options: { readonly maximumProgressKeys?: number } = {}) {
+  constructor(
+    runId: RunId,
+    options: { readonly maximumProgressKeys?: number; readonly now?: () => number } = {},
+  ) {
     this.#runId = runId;
     this.#maximumProgressKeys = options.maximumProgressKeys ?? 64;
+    this.#now = options.now ?? Date.now;
     if (!Number.isSafeInteger(this.#maximumProgressKeys) || this.#maximumProgressKeys < 1) {
       throw new TypeError("maximumProgressKeys 必须是正安全整数");
     }
@@ -67,6 +72,7 @@ export class CodingEventChannel {
       runId: this.#runId,
       sequence: this.#semanticSequence,
       eventId: `${this.#runId}:${this.#semanticSequence}`,
+      occurredAtMs: this.#now(),
       ...payload,
     } as unknown as CodingSemanticEvent;
     this.#semantic.push(event);
@@ -83,6 +89,7 @@ export class CodingEventChannel {
       category: "progress",
       runId: this.#runId,
       revision: this.#progressRevision,
+      occurredAtMs: this.#now(),
       ...payload,
     } as unknown as CodingProgressEvent;
     if (!this.#progress.has(event.key) && this.#progress.size >= this.#maximumProgressKeys) {

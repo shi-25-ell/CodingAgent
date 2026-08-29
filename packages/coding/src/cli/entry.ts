@@ -6,13 +6,14 @@ import {
   type ProductionProviderId,
 } from "../composition/openai-composition.js";
 import { inspectInteractiveTerminal } from "../modes/interactive/terminal-presentation.js";
-import { productEnvironment, productIdentity, productVersion } from "../product/index.js";
+import { productIdentity, productVersion } from "../product/index.js";
 import {
   detectBunRuntime,
   formatBunRuntimeDiagnostic,
   supportedBunVersion,
 } from "../runtime/bun-runtime.js";
 import { createGitWorkspaceService } from "../workspace/workspace-service.js";
+import { resolveDexRunConfiguration } from "./config-loader.js";
 import { type CliCommand, type CliRunOverrides, CliUsageError, cliExitCode } from "./contracts.js";
 import { parseCli } from "./parser.js";
 
@@ -23,17 +24,6 @@ const supportedProviders = new Set<ProductionProviderId>([
   "glm",
   "anthropic",
 ]);
-
-function configuredModel(provider: ProductionProviderId): string | undefined {
-  const variables: Record<ProductionProviderId, string> = {
-    openai: productEnvironment.openAiModel,
-    openrouter: productEnvironment.openRouterModel,
-    deepseek: productEnvironment.deepSeekModel,
-    glm: productEnvironment.glmModel,
-    anthropic: productEnvironment.anthropicModel,
-  };
-  return process.env[variables[provider]];
-}
 
 function usage(): string {
   return `${productIdentity.displayName} ${productVersion}
@@ -63,7 +53,7 @@ function writeValue(value: unknown, structured: boolean): void {
 }
 
 function providerFrom(overrides: CliRunOverrides): ProductionProviderId {
-  const value = overrides.provider ?? process.env[productEnvironment.modelProvider] ?? "openai";
+  const value = overrides.provider ?? "openai";
   if (!supportedProviders.has(value as ProductionProviderId)) {
     throw new CodingCompositionError("UNSUPPORTED_PROVIDER", `不支持的 model provider: ${value}`);
   }
@@ -137,20 +127,27 @@ async function main(): Promise<number> {
   let application: Awaited<ReturnType<typeof createProviderCodingAgent>> | undefined;
   try {
     const workspace = (await createGitWorkspaceService().inspect(root)).binding;
-    const overrides = "overrides" in command ? command.overrides : undefined;
-    const provider = providerFrom(overrides ?? { structured: false });
-    const selectedModel = overrides?.model ?? configuredModel(provider);
+    const commandOverrides =
+      "overrides" in command
+        ? command.overrides
+        : { structured: "structured" in command ? command.structured : false };
+    const overrides = await resolveDexRunConfiguration({
+      workspaceRoot: root,
+      overrides: commandOverrides,
+    });
+    const provider = providerFrom(overrides);
+    const selectedModel = overrides.model;
     application = await createProviderCodingAgent({
       workspaceRoot: root,
       provider,
       ...(selectedModel ? { modelId: selectedModel } : {}),
-      ...(overrides?.permissionMode ? { permissionMode: overrides.permissionMode } : {}),
-      ...(overrides?.maxModelTurns ? { maxModelTurns: overrides.maxModelTurns } : {}),
-      ...(overrides?.maxModelAttempts ? { maxModelAttempts: overrides.maxModelAttempts } : {}),
-      ...(overrides?.maxRetries ? { maxRetries: overrides.maxRetries } : {}),
-      ...(overrides?.tools?.length ? { enabledTools: overrides.tools } : {}),
-      ...(overrides?.extensions?.length ? { enabledExtensionIds: overrides.extensions } : {}),
-      ...(overrides?.skills?.length ? { selectedSkillIds: overrides.skills } : {}),
+      ...(overrides.permissionMode ? { permissionMode: overrides.permissionMode } : {}),
+      ...(overrides.maxModelTurns ? { maxModelTurns: overrides.maxModelTurns } : {}),
+      ...(overrides.maxModelAttempts ? { maxModelAttempts: overrides.maxModelAttempts } : {}),
+      ...(overrides.maxRetries ? { maxRetries: overrides.maxRetries } : {}),
+      ...(overrides.tools?.length ? { enabledTools: overrides.tools } : {}),
+      ...(overrides.extensions?.length ? { enabledExtensionIds: overrides.extensions } : {}),
+      ...(overrides.skills?.length ? { selectedSkillIds: overrides.skills } : {}),
       ...(isAdministrative(command) ? { credentialRequirement: "diagnostic" as const } : {}),
     });
 

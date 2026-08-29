@@ -46,6 +46,7 @@ interface CodingSemanticEventBase {
   readonly runId: RunId;
   readonly sequence: number;
   readonly eventId: string;
+  readonly occurredAtMs?: number;
 }
 
 export type CodingSemanticEvent = CodingSemanticEventBase &
@@ -116,6 +117,7 @@ interface CodingProgressEventBase {
   readonly runId: RunId;
   readonly key: string;
   readonly revision: number;
+  readonly occurredAtMs?: number;
 }
 
 export type CodingProgressEvent = CodingProgressEventBase &

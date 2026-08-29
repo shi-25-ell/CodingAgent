@@ -99,4 +99,20 @@ describe("Git WorkspaceService", () => {
     expect(after.head).not.toBe(before.head);
     expect(after.binding.fingerprint).not.toBe(before.binding.fingerprint);
   });
+
+  it("提供 application-owned working tree Diff document", async () => {
+    const root = await initializeRepository();
+    await writeFile(path.join(root, "README.md"), "initial\nchanged\n", "utf8");
+    await writeFile(path.join(root, "new.ts"), "export const value = 1;\n", "utf8");
+    const service = createGitWorkspaceService();
+    if (!service.readDiff) throw new Error("Git WorkspaceService 必须支持 readDiff");
+    const document = await service.readDiff({ root, source: "working_tree" });
+
+    expect(document.source).toBe("working_tree");
+    expect(document.files.map((file) => [file.path, file.status])).toEqual([
+      ["README.md", "modified"],
+      ["new.ts", "created"],
+    ]);
+    expect(document.files.every((file) => file.patch?.startsWith("diff --git"))).toBe(true);
+  });
 });

@@ -1,5 +1,7 @@
 import { immutableReadonlySet } from "../../projection/immutable-readonly-set.js";
 import type {
+  CodingDiffDocument,
+  CodingDiffFile,
   DiffViewerHunkSelection,
   DiffViewerLocalState,
   DiffViewerSource,
@@ -9,21 +11,8 @@ import type {
 
 export type DiffViewerFileStatus = "created" | "modified" | "deleted";
 
-export interface DiffViewerFile {
-  readonly path: string;
-  readonly status: DiffViewerFileStatus;
-  readonly additions: number;
-  readonly deletions: number;
-  readonly patch?: string;
-  readonly filetype?: string;
-}
-
-export interface DiffViewerDocument {
-  readonly version: 1;
-  readonly revision: string;
-  readonly source: DiffViewerSource;
-  readonly files: readonly DiffViewerFile[];
-}
+export type DiffViewerFile = CodingDiffFile;
+export type DiffViewerDocument = CodingDiffDocument;
 
 export interface DiffViewerTreeRow {
   readonly id: string;

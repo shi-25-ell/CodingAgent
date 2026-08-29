@@ -120,30 +120,31 @@ export async function mountOpenTuiSessionComposition(
   const reportRendererDiagnostic = async (diagnostic: TuiDiagnostic): Promise<void> => {
     await options.controller.dispatch({ version: 1, type: "report_diagnostic", diagnostic });
   };
+  const executeCommand = async (commandId: import("./keymap-policy.js").DexKeymapCommandId) => {
+    const resolution = resolveDexKeymapCommandIntent(current, commandId);
+    if (resolution.status === "unhandled") return false;
+    if (resolution.status === "unavailable") {
+      await reportRendererDiagnostic(resolution.diagnostic);
+      return true;
+    }
+    const result = await options.controller.dispatch(resolution.intent);
+    if (result.status === "rejected") {
+      await reportRendererDiagnostic({
+        id: `keymap:rejected:${commandId}:${++diagnosticSequence}`,
+        source: "renderer",
+        severity: "warning",
+        code: "KEYMAP_COMMAND_REJECTED",
+        message: result.message ?? `${commandId} 被 controller 拒绝`,
+        recoverable: true,
+      });
+    }
+    return true;
+  };
   const keymap = createOpenTuiKeymapAdapter({
     ...options.keymap,
     renderer: options.renderer,
     modeStack,
-    async onCommand(commandId) {
-      const resolution = resolveDexKeymapCommandIntent(current, commandId);
-      if (resolution.status === "unhandled") return false;
-      if (resolution.status === "unavailable") {
-        await reportRendererDiagnostic(resolution.diagnostic);
-        return true;
-      }
-      const result = await options.controller.dispatch(resolution.intent);
-      if (result.status === "rejected") {
-        await reportRendererDiagnostic({
-          id: `keymap:rejected:${commandId}:${++diagnosticSequence}`,
-          source: "renderer",
-          severity: "warning",
-          code: "KEYMAP_COMMAND_REJECTED",
-          message: result.message ?? `${commandId} 被 controller 拒绝`,
-          recoverable: true,
-        });
-      }
-      return true;
-    },
+    onCommand: executeCommand,
     onDiagnostic(diagnostic) {
       void reportRendererDiagnostic({
         id: `keymap:runtime:${++diagnosticSequence}`,
@@ -219,6 +220,9 @@ export async function mountOpenTuiSessionComposition(
         theme={theme}
         syntaxStyle={syntax}
         commandPaletteEntries={() => keymap.commandPaletteEntries()}
+        onCommand={async (commandId) => {
+          await executeCommand(commandId as import("./keymap-policy.js").DexKeymapCommandId);
+        }}
         onIntent={async (intent: UiIntent) => {
           await options.controller.dispatch(intent);
         }}

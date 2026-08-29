@@ -1,5 +1,11 @@
 import type { TuiDiagnostic, TuiViewModel, UiSurface } from "../../projection/contracts.js";
 import type { UiIntent } from "./contracts.js";
+import {
+  allDiffDirectoryPaths,
+  collectDiffViewerHunks,
+  moveDiffFileSelection,
+  moveDiffHunkSelection,
+} from "./diff-viewer.js";
 import type { DexKeymapCommandId } from "./keymap-policy.js";
 import { resolveInteractiveLayout } from "./layout-policy.js";
 
@@ -136,11 +142,7 @@ export function resolveDexKeymapCommandIntent(
     case "which_key.close":
       return closeSurface("which_key");
     case "session.new":
-      return unavailable(
-        viewModel,
-        commandId,
-        "当前 Session foundation 尚不能在 route 内创建新 Session；请使用 Session selector。",
-      );
+      return { status: "dispatch", intent: local({ type: "new_session" }) };
     case "session.list":
       return openSurface({ kind: "session_selector" });
     case "session.branch":
@@ -238,18 +240,74 @@ export function resolveDexKeymapCommandIntent(
     case "diff.help":
       return openSurface({ kind: "help" });
     case "diff.toggle_item":
+      return viewModel.ui.diffViewer?.selectedFilePath
+        ? {
+            status: "dispatch",
+            intent: local({
+              type: "set_diff_file_reviewed",
+              filePath: viewModel.ui.diffViewer.selectedFilePath,
+              reviewed: !viewModel.ui.diffViewer.reviewedFilePaths.has(
+                viewModel.ui.diffViewer.selectedFilePath,
+              ),
+            }),
+          }
+        : { status: "unhandled" };
     case "diff.expand":
-    case "diff.collapse":
+    case "diff.collapse": {
+      if (!viewModel.ui.diffViewer?.selectedFilePath) return { status: "unhandled" };
+      const directoryPath = viewModel.ui.diffViewer.selectedFilePath
+        .split("/")
+        .slice(0, -1)
+        .join("/");
+      if (!directoryPath) return { status: "unhandled" };
+      return {
+        status: "dispatch",
+        intent: local({
+          type: "set_diff_directory_expanded",
+          path: directoryPath,
+          expanded: commandId === "diff.expand",
+        }),
+      };
+    }
     case "diff.expand_all":
+      return viewModel.diffDocument && viewModel.ui.diffViewer
+        ? {
+            status: "dispatch",
+            intent: local({
+              type: "set_diff_all_directories_expanded",
+              paths: [...allDiffDirectoryPaths(viewModel.diffDocument.files)],
+              expanded: true,
+            }),
+          }
+        : { status: "unhandled" };
     case "diff.previous_hunk":
-    case "diff.next_hunk":
-    case "diff.previous_file":
-    case "diff.next_file":
-      return unavailable(
-        viewModel,
-        commandId,
-        "该 Diff command 需要 application-provided structured Diff document。",
+    case "diff.next_hunk": {
+      const document = viewModel.diffDocument;
+      const state = viewModel.ui.diffViewer;
+      if (!document || !state) return { status: "unhandled" };
+      const selection = moveDiffHunkSelection(
+        collectDiffViewerHunks(document.files),
+        state.selectedHunk,
+        commandId === "diff.previous_hunk" ? -1 : 1,
       );
+      return selection
+        ? { status: "dispatch", intent: local({ type: "set_diff_hunk", selection }) }
+        : { status: "unhandled" };
+    }
+    case "diff.previous_file":
+    case "diff.next_file": {
+      const document = viewModel.diffDocument;
+      const state = viewModel.ui.diffViewer;
+      if (!document || !state) return { status: "unhandled" };
+      const filePath = moveDiffFileSelection(
+        document.files,
+        state.selectedFilePath,
+        commandId === "diff.previous_file" ? -1 : 1,
+      );
+      return filePath
+        ? { status: "dispatch", intent: local({ type: "select_diff_file", filePath }) }
+        : { status: "unhandled" };
+    }
     case "approval.select_allow":
     case "approval.select_deny": {
       const approval = viewModel.ui.approvalPrompt;

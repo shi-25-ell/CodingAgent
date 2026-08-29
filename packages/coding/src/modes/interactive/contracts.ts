@@ -1,4 +1,4 @@
-import type { BranchId } from "@coding-agent/agent";
+import type { BranchId, SessionRef, WorkspaceBinding } from "@coding-agent/agent";
 import type { ModelRef } from "@coding-agent/model";
 import type {
   ApprovalPromptLocalState,
@@ -82,6 +82,11 @@ export type UiLocalIntent = UiIntentBase &
         readonly expanded: boolean;
       }
     | {
+        readonly type: "set_diff_all_directories_expanded";
+        readonly paths: readonly string[];
+        readonly expanded: boolean;
+      }
+    | {
         readonly type: "set_diff_file_reviewed";
         readonly filePath: string;
         readonly reviewed: boolean;
@@ -149,6 +154,9 @@ export type UiApplicationIntent = UiIntentBase &
         readonly fromBranchId: BranchId;
         readonly expectedRevision: number;
       }
+    | { readonly type: "new_session"; readonly workspace?: WorkspaceBinding }
+    | { readonly type: "open_session"; readonly ref: SessionRef }
+    | { readonly type: "refresh_catalog" }
     | { readonly type: "quit" }
   );
 
@@ -174,6 +182,8 @@ export interface InteractiveLocalState {
     readonly showGenericOutput: boolean;
   };
 }
+
+export type { CodingDiffDocument, CodingDiffFile } from "../../projection/contracts.js";
 
 export interface InteractiveLocalStateOptions {
   readonly width: number;

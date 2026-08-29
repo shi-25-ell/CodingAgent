@@ -61,6 +61,7 @@ export async function runInteractiveEntry(
     };
     controller = createInteractiveController({
       session,
+      agent: context.agent,
       width: renderer.width,
       height: renderer.height,
       onQuit: () => finish({ exitCode: 0, status: "quit" }),
