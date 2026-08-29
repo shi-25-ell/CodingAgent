@@ -51,7 +51,9 @@ describe("Bun runtime policy", () => {
     temporaryDirectories.push(root);
     const policy = await readFile(path.join(process.cwd(), "bunfig.toml"), "utf8");
     expect(policy).toContain("env = false");
-    await writeFile(path.join(root, "bunfig.toml"), policy, "utf8");
+    // Isolate the env policy under test. Copying the workspace preload entries
+    // would require this temporary directory to resolve production dependencies.
+    await writeFile(path.join(root, "bunfig.toml"), "env = false\n", "utf8");
     await writeFile(path.join(root, ".env"), "M51_ENV_CANARY=must-not-load\n", "utf8");
     await writeFile(
       path.join(root, "probe.ts"),
@@ -65,7 +67,10 @@ describe("Bun runtime policy", () => {
         Object.entries(process.env).filter(([name]) => name !== "M51_ENV_CANARY"),
       ),
     });
-    expect(result.status).toBe(0);
+    expect(
+      result.status,
+      `probe failed: ${JSON.stringify({ error: result.error, stdout: result.stdout, stderr: result.stderr })}`,
+    ).toBe(0);
     expect(result.stdout).toBe("<missing>");
     expect(result.stderr).toBe("");
   });
