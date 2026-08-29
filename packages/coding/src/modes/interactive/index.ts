@@ -25,6 +25,26 @@ export {
   type UiIntentResult,
 } from "./controller.js";
 export {
+  allDiffDirectoryPaths,
+  buildDiffViewerFileTree,
+  collectDiffViewerHunks,
+  createDiffViewerDocument,
+  createDiffViewerLocalState,
+  type DiffViewerDocument,
+  type DiffViewerFile,
+  type DiffViewerFileStatus,
+  type DiffViewerHunk,
+  type DiffViewerLayout,
+  type DiffViewerTreeRow,
+  diffViewerLayoutTokens,
+  moveDiffFileSelection,
+  moveDiffHunkSelection,
+  type ResolveDiffViewerLayoutOptions,
+  reconcileDiffViewerDocumentState,
+  resolveDiffViewerLayout,
+  visibleDiffViewerFiles,
+} from "./diff-viewer.js";
+export {
   type InteractiveLayout,
   interactiveLayoutBreakpoints,
   resolveInteractiveLayout,
@@ -42,7 +62,7 @@ export {
 export {
   OpenTuiApprovalPrompt,
   type OpenTuiApprovalPromptProps,
-} from "./opentui-approval-prompt.js";
+} from "./opentui-approval-prompt.jsx";
 export {
   bindOpenTuiComposer,
   createOpenTuiComposerOptions,
@@ -52,11 +72,17 @@ export {
 export {
   type CodeAdapterOptions,
   createOpenTuiCodeOptions,
+  createOpenTuiDiffViewerOptions,
   createOpenTuiInlineDiffOptions,
   createOpenTuiMarkdownOptions,
+  type DiffViewerAdapterOptions,
   type InlineDiffAdapterOptions,
   type MarkdownAdapterOptions,
 } from "./opentui-content-adapters.js";
+export {
+  OpenTuiDiffViewer,
+  type OpenTuiDiffViewerProps,
+} from "./opentui-diff-viewer.jsx";
 export {
   createProductionOpenTuiRenderer,
   type OpenTuiRendererOptions,

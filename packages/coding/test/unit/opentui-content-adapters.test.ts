@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   createOpenTuiCodeOptions,
+  createOpenTuiDiffViewerOptions,
   createOpenTuiInlineDiffOptions,
   createOpenTuiMarkdownOptions,
   createOpenTuiSyntaxStyle,
@@ -97,6 +98,46 @@ describe("OpenTUI content Adapters", () => {
           viewPreference: "stacked",
         }).view,
       ).toBe("unified");
+    } finally {
+      syntax.destroy();
+    }
+  });
+
+  it("dedicated Diff Adapter 使用 route layout、char wrap 与 reviewed semantic styling", () => {
+    const theme = resolveOpenTuiTheme(resolveInteractiveTheme({ mode: "dark" }));
+    const syntax = createOpenTuiSyntaxStyle(theme);
+    try {
+      const options = createOpenTuiDiffViewerOptions(
+        {
+          path: "src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          patch: evidence.text,
+          filetype: "typescript",
+        },
+        theme,
+        syntax,
+        {
+          layout: {
+            fileTreeColumns: 32,
+            patchColumns: 100,
+            splitAvailable: true,
+            view: "split",
+          },
+          reviewed: true,
+        },
+      );
+      expect(options).toMatchObject({
+        view: "split",
+        filetype: "typescript",
+        syntaxStyle: syntax,
+        showLineNumbers: true,
+        wrapMode: "char",
+      });
+      expect(options.addedBg).toBe(theme.colors.backgroundElement);
+      expect(options.removedBg).toBe(theme.colors.backgroundElement);
+      expect(options.addedSignColor).toBe(theme.colors.textMuted);
     } finally {
       syntax.destroy();
     }

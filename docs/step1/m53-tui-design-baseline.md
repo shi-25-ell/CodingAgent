@@ -1,6 +1,6 @@
 # Dex Code M5.3 TUI design baseline
 
-> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A、V2、V3-A、V4-A 与 V5-A 已确认，V6–V7 按依赖顺序补充。未经确认的结构性方案不得进入 dedicated diff route 或 global keymap behavior。
+> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A、V2、V3-A、V4-A、V5-A 与 V6-A 已确认，V7 按依赖顺序补充。未经确认的结构性方案不得进入 global keymap behavior。
 
 ## 1. N1：产品、CLI 与 namespace 命名
 
@@ -209,7 +209,36 @@ V5-A local interaction 固定为：
 
 approval response 必须经过 `respond_approval` UiIntent，携带 stable approval ID、decision 与 exact plan fingerprint。只有 application ack 为 `accepted` / `already_applied` 且后续 semantic event 收敛后 prompt 才消失；`stale` 显示 `APPROVAL_STALE`，其他拒绝显示 `APPROVAL_RESPONSE_REJECTED`，两者都保留 prompt。Escape 永远不映射 abort；abort 是独立 Run command，approval focus scope 也不允许按键泄漏到 Composer、background surface 或 global destructive command。
 
-## 7. Owner checkpoint 状态
+## 7. V6：Full-screen Diff Viewer
+
+确认日期：2026-08-29
+
+项目 owner 选择 V6-A。单次 `edit` / `apply_patch` 继续在 Transcript 中呈现 inline diff；session、working-tree 或 branch 的综合审阅进入 dedicated full-screen Diff route。Diff route 是按需 secondary UI，不改变 Session 的 Transcript-first 信息架构，也不在 Session 中建立第二个长期 workspace。
+
+Diff route 的 product-owned navigation state 全部属于 UI-local state：当前 source、file-tree visibility、file/patch selection、all/single patch mode、reviewed markers、expanded directories、hunk selection、scroll anchor、focus 和 split/unified override。diff content 来自 application query/projection 提供的 redacted structured model；renderer 不执行 Git、不读取 workspace 文件，也不拥有 evidence truth。
+
+V6-A 固定交互能力为：
+
+- source 支持 working tree、branch 和 last turn；source 切换通过按需 dialog 完成；
+- 左侧使用 32-column file tree，显示 created/modified/deleted、reviewed marker 与 additions/deletions；file tree 可以隐藏；
+- patch pane 默认连续显示全部 changed files，可切 single-patch mode；支持 previous/next file、previous/next hunk 和 mark reviewed；
+- patch 使用 syntax highlighting、line numbers、char wrap 与 add/remove semantic styling；缺失 patch 时显示 typed empty/unavailable state；
+- patch pane 可用宽度至少 100 columns 且未配置 `stacked` 时默认 split，否则 unified；显式 view override 仅在 split 可用时生效；
+- resize 重新计算 placement/view，不丢失 source、selection、reviewed state、hunk identity 或 scroll anchor；
+- 关闭 route 后恢复进入前的 Session focus、Transcript scroll 与 Composer draft；blocking approval 可以临时取得 route 上方 focus，解决后返回原 Diff focus；
+- V7 确认前只冻结 command semantics，不提前固化具体 key bindings。
+
+宽度矩阵：
+
+| 条件 | File tree | Patch view | 说明 |
+| --- | --- | --- | --- |
+| tree visible 且存在 files | 32 columns | 剩余宽度 | narrow 下不转为 Session side panel；用户可隐藏 tree 释放空间 |
+| patch columns `< 100` | 可见或隐藏 | unified | split override 暂时失效，但 preference 保留 |
+| patch columns `>= 100`、default | 可见或隐藏 | split | `stacked` preference 除外 |
+| patch columns `>= 100`、explicit override | 可见或隐藏 | split/unified | override 是 UI-local preference |
+| no files / loading / failure | 按 source state | typed state | 不伪造空 diff，也不自行读取 repository |
+
+## 8. Owner checkpoint 状态
 
 | ID | 状态 | 记录 |
 | --- | --- | --- |
@@ -219,7 +248,7 @@ approval response 必须经过 `respond_approval` UiIntent，携带 stable appro
 | V3 | 已确认 | V3-A：semantic inline tools；mutation diff 留在 Transcript |
 | V4 | 已确认 | V4-A：单一 run-aware Composer；active 默认 STEER，footer 可切 FOLLOW-UP |
 | V5 | 已确认 | V5-A：bottom blocking prompt；默认 Allow once；Escape Deny；可 full-screen |
-| V6 | 待确认 | diff 导航与 width matrix |
+| V6 | 已确认 | V6-A：full-screen route、32-column file tree、all/single patch、responsive split/unified |
 | V7 | 待确认 | executable keymap、可发现性与 conflict report |
 
-V4–V7 确认后，本文还必须包含完整 end-to-end flows、状态矩阵、keyboard/focus/overlay 规则，以及 `CodingEvent -> TuiViewModel -> visual region -> UiIntent` 的可追踪 mapping。
+V7 确认后，本文还必须包含完整 end-to-end flows、状态矩阵、keyboard/focus/overlay 规则，以及 `CodingEvent -> TuiViewModel -> visual region -> UiIntent` 的可追踪 mapping。

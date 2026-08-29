@@ -4,6 +4,7 @@ import type {
   MarkdownOptions,
   SyntaxStyle,
 } from "@opentui/core";
+import type { DiffViewerFile, DiffViewerLayout } from "./diff-viewer.js";
 import type { OpenTuiTheme } from "./opentui-theme-adapter.js";
 import type { ToolDiffEvidence } from "./tool-presentation.js";
 
@@ -24,6 +25,11 @@ export interface CodeAdapterOptions {
   readonly filetype?: string;
   readonly streaming?: boolean;
   readonly wrapMode?: "word" | "char" | "none";
+}
+
+export interface DiffViewerAdapterOptions {
+  readonly layout: DiffViewerLayout;
+  readonly reviewed?: boolean;
 }
 
 export function createOpenTuiMarkdownOptions(
@@ -101,5 +107,39 @@ export function createOpenTuiInlineDiffOptions(
     removedSignColor: theme.diff.removed,
     addedLineNumberBg: theme.diff.addedBackground,
     removedLineNumberBg: theme.diff.removedBackground,
+  });
+}
+
+/** Maps one application-provided file patch to the dedicated Diff route renderable. */
+export function createOpenTuiDiffViewerOptions(
+  file: DiffViewerFile,
+  theme: OpenTuiTheme,
+  syntaxStyle: SyntaxStyle,
+  options: DiffViewerAdapterOptions,
+): DiffRenderableOptions {
+  const reviewed = options.reviewed ?? false;
+  return Object.freeze({
+    diff: file.patch ?? "",
+    view: options.layout.view,
+    fg: reviewed ? theme.colors.textMuted : theme.colors.text,
+    ...(file.filetype ? { filetype: file.filetype } : {}),
+    syntaxStyle,
+    wrapMode: "char",
+    conceal: true,
+    showLineNumbers: true,
+    selectionFg: theme.colors.selectedText,
+    selectionBg: theme.colors.backgroundSelection,
+    lineNumberFg: theme.diff.lineNumber,
+    lineNumberBg: theme.diff.contextBackground,
+    addedBg: reviewed ? theme.colors.backgroundElement : theme.diff.addedBackground,
+    removedBg: reviewed ? theme.colors.backgroundElement : theme.diff.removedBackground,
+    contextBg: theme.diff.contextBackground,
+    addedContentBg: reviewed ? theme.colors.backgroundElement : theme.diff.addedBackground,
+    removedContentBg: reviewed ? theme.colors.backgroundElement : theme.diff.removedBackground,
+    contextContentBg: theme.diff.contextBackground,
+    addedSignColor: reviewed ? theme.colors.textMuted : theme.diff.added,
+    removedSignColor: reviewed ? theme.colors.textMuted : theme.diff.removed,
+    addedLineNumberBg: reviewed ? theme.colors.backgroundElement : theme.diff.addedBackground,
+    removedLineNumberBg: reviewed ? theme.colors.backgroundElement : theme.diff.removedBackground,
   });
 }

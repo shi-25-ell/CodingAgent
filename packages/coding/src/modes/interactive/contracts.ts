@@ -3,6 +3,12 @@ import type { ModelRef } from "@coding-agent/model";
 import type {
   ApprovalPromptLocalState,
   ComposerLocalState,
+  DiffViewerFocus,
+  DiffViewerHunkSelection,
+  DiffViewerLocalState,
+  DiffViewerPatchMode,
+  DiffViewerSource,
+  DiffViewerView,
   SidebarLocalState,
   SidebarPreference,
   TerminalDimensions,
@@ -16,6 +22,12 @@ import type {
 export type {
   ApprovalPromptLocalState,
   ComposerLocalState,
+  DiffViewerFocus,
+  DiffViewerHunkSelection,
+  DiffViewerLocalState,
+  DiffViewerPatchMode,
+  DiffViewerSource,
+  DiffViewerView,
   SidebarLocalState,
   SidebarPreference,
   TerminalDimensions,
@@ -49,6 +61,32 @@ export type UiLocalIntent = UiIntentBase &
         readonly approvalId: string;
         readonly fullscreen: boolean;
       }
+    | {
+        readonly type: "open_diff_viewer";
+        readonly source: DiffViewerSource;
+        readonly file?: string;
+      }
+    | { readonly type: "close_diff_viewer" }
+    | { readonly type: "set_diff_focus"; readonly focus: DiffViewerFocus }
+    | { readonly type: "set_diff_file_tree_visible"; readonly visible: boolean }
+    | { readonly type: "set_diff_patch_mode"; readonly mode: DiffViewerPatchMode }
+    | { readonly type: "set_diff_view"; readonly view?: DiffViewerView }
+    | { readonly type: "select_diff_file"; readonly filePath: string }
+    | {
+        readonly type: "set_diff_hunk";
+        readonly selection?: DiffViewerHunkSelection;
+      }
+    | {
+        readonly type: "set_diff_directory_expanded";
+        readonly path: string;
+        readonly expanded: boolean;
+      }
+    | {
+        readonly type: "set_diff_file_reviewed";
+        readonly filePath: string;
+        readonly reviewed: boolean;
+      }
+    | { readonly type: "set_diff_scroll"; readonly scrollTop: number }
     | {
         readonly type: "transcript_viewport_changed";
         readonly scrollTop: number;
@@ -121,6 +159,7 @@ export interface InteractiveLocalState {
   readonly expandedIds: ReadonlySet<string>;
   readonly composer: ComposerLocalState;
   readonly approvalPrompt?: ApprovalPromptLocalState;
+  readonly diffViewer?: DiffViewerLocalState;
   readonly transcriptViewport: TranscriptViewportState;
   readonly surfaceStack: readonly UiSurface[];
   readonly terminal: TerminalDimensions;

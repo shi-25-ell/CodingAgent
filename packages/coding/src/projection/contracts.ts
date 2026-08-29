@@ -125,10 +125,39 @@ export type UiFocusRegion =
   | "diff"
   | "status";
 
+export type DiffViewerSource = "working_tree" | "branch" | "last_turn";
+export type DiffViewerFocus = "files" | "patches";
+export type DiffViewerPatchMode = "all" | "single";
+export type DiffViewerView = "split" | "unified";
+
+export interface DiffViewerHunkSelection {
+  readonly filePath: string;
+  readonly hunkIndex: number;
+}
+
+export interface DiffViewerLocalState {
+  readonly source: DiffViewerSource;
+  readonly documentRevision?: string;
+  readonly focus: DiffViewerFocus;
+  readonly fileTreeVisible: boolean;
+  readonly patchMode: DiffViewerPatchMode;
+  readonly viewOverride?: DiffViewerView;
+  readonly selectedFilePath?: string;
+  readonly selectedHunk?: DiffViewerHunkSelection;
+  readonly reviewedFilePaths: ReadonlySet<string>;
+  readonly expandedDirectoryPaths: ReadonlySet<string>;
+  readonly scrollTop: number;
+  readonly returnFocus: UiFocusRegion;
+}
+
 export type UiSurface =
   | { readonly kind: "approval"; readonly id: string }
   | { readonly kind: "context" }
-  | { readonly kind: "diff"; readonly file?: string }
+  | {
+      readonly kind: "diff";
+      readonly source?: DiffViewerSource;
+      readonly file?: string;
+    }
   | { readonly kind: "queue" }
   | { readonly kind: "run_report"; readonly runId: RunId }
   | { readonly kind: "session_selector" }
@@ -185,6 +214,7 @@ export interface LocalUiState {
   readonly expandedIds?: ReadonlySet<string>;
   readonly composer?: ComposerLocalState;
   readonly approvalPrompt?: ApprovalPromptLocalState;
+  readonly diffViewer?: DiffViewerLocalState;
   readonly transcriptViewport?: TranscriptViewportState;
   readonly surfaceStack?: readonly UiSurface[];
   readonly terminal?: TerminalDimensions;
@@ -204,6 +234,7 @@ export interface TuiLocalViewModel {
   readonly expandedIds: ReadonlySet<string>;
   readonly composer: ComposerLocalState;
   readonly approvalPrompt?: ApprovalPromptLocalState;
+  readonly diffViewer?: DiffViewerLocalState;
   readonly transcriptViewport: TranscriptViewportState;
   readonly surfaceStack: readonly UiSurface[];
   readonly terminal: TerminalDimensions;

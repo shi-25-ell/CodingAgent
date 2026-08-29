@@ -144,9 +144,69 @@ describe("interactive local UI state", () => {
       intent({ type: "open_surface", surface: { kind: "context" } }),
     );
 
-    expect(state.surfaceStack).toEqual([{ kind: "diff", file: "src/a.ts" }, { kind: "context" }]);
+    expect(state.surfaceStack).toEqual([
+      { kind: "diff", source: "working_tree", file: "src/a.ts" },
+      { kind: "context" },
+    ]);
     state = reduceInteractiveLocalState(state, intent({ type: "close_surface" }));
-    expect(state.surfaceStack).toEqual([{ kind: "diff", file: "src/a.ts" }]);
+    expect(state.surfaceStack).toEqual([
+      { kind: "diff", source: "working_tree", file: "src/a.ts" },
+    ]);
+  });
+
+  it("V6-A Diff route 保留独立 UI-local navigation state，并在关闭后恢复 focus", () => {
+    let state = createInteractiveLocalState({ width: 140, height: 32 });
+    state = reduceInteractiveLocalState(
+      state,
+      intent({ type: "composer_changed", value: "保留 composer draft" }),
+    );
+    state = reduceInteractiveLocalState(
+      state,
+      intent({ type: "open_diff_viewer", source: "working_tree", file: "src/a.ts" }),
+    );
+    state = reduceInteractiveLocalState(state, intent({ type: "set_diff_focus", focus: "files" }));
+    state = reduceInteractiveLocalState(
+      state,
+      intent({ type: "set_diff_patch_mode", mode: "single" }),
+    );
+    state = reduceInteractiveLocalState(
+      state,
+      intent({ type: "set_diff_file_reviewed", filePath: "src/a.ts", reviewed: true }),
+    );
+    state = reduceInteractiveLocalState(
+      state,
+      intent({ type: "set_diff_directory_expanded", path: "src", expanded: true }),
+    );
+    state = reduceInteractiveLocalState(state, intent({ type: "set_diff_scroll", scrollTop: 9 }));
+
+    expect(state).toMatchObject({
+      focusedRegion: "diff",
+      composer: { value: "保留 composer draft" },
+      diffViewer: {
+        source: "working_tree",
+        focus: "files",
+        patchMode: "single",
+        selectedFilePath: "src/a.ts",
+        scrollTop: 9,
+        returnFocus: "composer",
+      },
+      surfaceStack: [{ kind: "diff", source: "working_tree", file: "src/a.ts" }],
+    });
+    expect(state.diffViewer?.reviewedFilePaths.has("src/a.ts")).toBe(true);
+    expect(state.diffViewer?.expandedDirectoryPaths.has("src")).toBe(true);
+    expect(() => (state.diffViewer?.reviewedFilePaths as Set<string>).add("leak")).toThrow();
+    expect(
+      reduceInteractiveLocalState(
+        state,
+        intent({ type: "composer_changed", value: "route focus leak" }),
+      ),
+    ).toBe(state);
+
+    state = reduceInteractiveLocalState(state, intent({ type: "close_diff_viewer" }));
+    expect(state.focusedRegion).toBe("composer");
+    expect(state.diffViewer).toBeUndefined();
+    expect(state.surfaceStack).toEqual([]);
+    expect(state.composer.value).toBe("保留 composer draft");
   });
 
   it("pending approval 临时取得 focus、保留 draft，并按 FIFO identity 恢复", () => {

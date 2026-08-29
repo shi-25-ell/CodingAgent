@@ -72,6 +72,24 @@ describe("InteractiveController contract", () => {
       toolDisplay: { showDetails: false, showGenericOutput: false },
     });
     expect(controller.current().ui.expandedIds.has("tool:1")).toBe(true);
+    await controller.dispatch({
+      version: 1,
+      type: "open_diff_viewer",
+      source: "working_tree",
+      file: "src/a.ts",
+    });
+    expect(controller.current().ui).toMatchObject({
+      focusedRegion: "diff",
+      composer: { value: "本地草稿", revision: 1 },
+      diffViewer: {
+        source: "working_tree",
+        selectedFilePath: "src/a.ts",
+        returnFocus: "transcript",
+      },
+      surfaceStack: [{ kind: "diff", source: "working_tree", file: "src/a.ts" }],
+    });
+    await controller.dispatch({ version: 1, type: "close_diff_viewer" });
+    expect(controller.current().ui.focusedRegion).toBe("transcript");
     expect(await session.snapshot()).toEqual(sessionBefore);
     expect(Object.isFrozen(controller.current())).toBe(true);
 

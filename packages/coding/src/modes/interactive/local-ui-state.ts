@@ -6,6 +6,7 @@ import type {
   UiLocalIntent,
   UiSurface,
 } from "./contracts.js";
+import { createDiffViewerLocalState } from "./diff-viewer.js";
 
 function positiveInteger(value: number, name: string): number {
   if (!Number.isInteger(value) || value < 1) throw new RangeError(`${name} 必须是正整数`);
@@ -15,6 +16,10 @@ function positiveInteger(value: number, name: string): number {
 function freezeState(state: InteractiveLocalState): InteractiveLocalState {
   Object.freeze(state.composer);
   if (state.approvalPrompt) Object.freeze(state.approvalPrompt);
+  if (state.diffViewer) {
+    if (state.diffViewer.selectedHunk) Object.freeze(state.diffViewer.selectedHunk);
+    Object.freeze(state.diffViewer);
+  }
   Object.freeze(state.transcriptViewport);
   Object.freeze(state.terminal);
   Object.freeze(state.sidebar);
@@ -31,7 +36,7 @@ function sameSurface(left: UiSurface, right: UiSurface): boolean {
     case "diagnostic":
       return right.kind === left.kind && right.id === left.id;
     case "diff":
-      return right.kind === "diff" && right.file === left.file;
+      return right.kind === "diff" && right.source === left.source && right.file === left.file;
     case "run_report":
       return right.kind === "run_report" && right.runId === left.runId;
     default:
@@ -74,6 +79,7 @@ export function reduceInteractiveLocalState(
   switch (intent.type) {
     case "focus_region":
       if (previous.approvalPrompt && intent.region !== "approval") return previous;
+      if (previous.diffViewer && intent.region !== "diff") return previous;
       return previous.focusedRegion === intent.region
         ? previous
         : freezeState({ ...previous, focusedRegion: intent.region });
@@ -86,7 +92,7 @@ export function reduceInteractiveLocalState(
       return freezeState({ ...previous, expandedIds });
     }
     case "composer_changed":
-      if (previous.approvalPrompt) return previous;
+      if (previous.approvalPrompt || previous.diffViewer) return previous;
       return previous.composer.value === intent.value
         ? previous
         : freezeState({
@@ -98,7 +104,7 @@ export function reduceInteractiveLocalState(
             },
           });
     case "set_composer_delivery":
-      if (previous.approvalPrompt) return previous;
+      if (previous.approvalPrompt || previous.diffViewer) return previous;
       return previous.composer.deliveryMode === intent.delivery
         ? previous
         : freezeState({
@@ -127,6 +133,153 @@ export function reduceInteractiveLocalState(
         ...previous,
         approvalPrompt: { ...previous.approvalPrompt, fullscreen: intent.fullscreen },
       });
+    case "open_diff_viewer": {
+      if (previous.approvalPrompt) return previous;
+      const returnFocus = previous.diffViewer?.returnFocus ?? previous.focusedRegion;
+      const diffViewer = createDiffViewerLocalState({
+        source: intent.source,
+        returnFocus,
+        ...(intent.file ? { file: intent.file } : {}),
+      });
+      return freezeState({
+        ...previous,
+        focusedRegion: "diff",
+        diffViewer,
+        surfaceStack: [
+          ...previous.surfaceStack.filter((surface) => surface.kind !== "diff"),
+          { kind: "diff", source: intent.source, ...(intent.file ? { file: intent.file } : {}) },
+        ],
+      });
+    }
+    case "close_diff_viewer": {
+      if (previous.approvalPrompt || !previous.diffViewer) return previous;
+      const { diffViewer, ...withoutDiffViewer } = previous;
+      return freezeState({
+        ...withoutDiffViewer,
+        focusedRegion: diffViewer.returnFocus,
+        surfaceStack: previous.surfaceStack.filter((surface) => surface.kind !== "diff"),
+      });
+    }
+    case "set_diff_focus": {
+      const current = previous.diffViewer;
+      if (!current || current.focus === intent.focus) return previous;
+      return freezeState({
+        ...previous,
+        focusedRegion: "diff",
+        diffViewer: { ...current, focus: intent.focus },
+      });
+    }
+    case "set_diff_file_tree_visible": {
+      const current = previous.diffViewer;
+      if (!current || current.fileTreeVisible === intent.visible) return previous;
+      return freezeState({
+        ...previous,
+        diffViewer: {
+          ...current,
+          fileTreeVisible: intent.visible,
+          focus: !intent.visible && current.focus === "files" ? "patches" : current.focus,
+        },
+      });
+    }
+    case "set_diff_patch_mode": {
+      const current = previous.diffViewer;
+      if (!current || current.patchMode === intent.mode) return previous;
+      const { selectedHunk: _selectedHunk, ...withoutSelectedHunk } = current;
+      return freezeState({
+        ...previous,
+        diffViewer: { ...withoutSelectedHunk, patchMode: intent.mode },
+      });
+    }
+    case "set_diff_view": {
+      const current = previous.diffViewer;
+      if (!current || current.viewOverride === intent.view) return previous;
+      const { viewOverride: _viewOverride, ...withoutViewOverride } = current;
+      return freezeState({
+        ...previous,
+        diffViewer:
+          intent.view === undefined
+            ? withoutViewOverride
+            : { ...withoutViewOverride, viewOverride: intent.view },
+      });
+    }
+    case "select_diff_file": {
+      const current = previous.diffViewer;
+      const filePath = intent.filePath.trim().replaceAll("\\", "/").replace(/^\.\//, "");
+      if (!current || filePath.length === 0 || current.selectedFilePath === filePath)
+        return previous;
+      const { selectedHunk: _selectedHunk, ...withoutSelectedHunk } = current;
+      return freezeState({
+        ...previous,
+        diffViewer: { ...withoutSelectedHunk, selectedFilePath: filePath },
+      });
+    }
+    case "set_diff_hunk": {
+      const current = previous.diffViewer;
+      if (!current) return previous;
+      const selected = current.selectedHunk;
+      if (
+        selected?.filePath === intent.selection?.filePath &&
+        selected?.hunkIndex === intent.selection?.hunkIndex
+      ) {
+        return previous;
+      }
+      if (
+        intent.selection &&
+        (!Number.isInteger(intent.selection.hunkIndex) || intent.selection.hunkIndex < 0)
+      ) {
+        throw new RangeError("diff hunkIndex 必须是非负整数");
+      }
+      const { selectedHunk: _selectedHunk, ...withoutSelectedHunk } = current;
+      return freezeState({
+        ...previous,
+        diffViewer:
+          intent.selection === undefined
+            ? withoutSelectedHunk
+            : { ...withoutSelectedHunk, selectedHunk: intent.selection },
+      });
+    }
+    case "set_diff_directory_expanded": {
+      const current = previous.diffViewer;
+      if (!current || current.expandedDirectoryPaths.has(intent.path) === intent.expanded) {
+        return previous;
+      }
+      const values = [...current.expandedDirectoryPaths];
+      return freezeState({
+        ...previous,
+        diffViewer: {
+          ...current,
+          expandedDirectoryPaths: intent.expanded
+            ? immutableReadonlySet([...values, intent.path])
+            : immutableReadonlySet(values.filter((path) => path !== intent.path)),
+        },
+      });
+    }
+    case "set_diff_file_reviewed": {
+      const current = previous.diffViewer;
+      if (!current || current.reviewedFilePaths.has(intent.filePath) === intent.reviewed) {
+        return previous;
+      }
+      const values = [...current.reviewedFilePaths];
+      return freezeState({
+        ...previous,
+        diffViewer: {
+          ...current,
+          reviewedFilePaths: intent.reviewed
+            ? immutableReadonlySet([...values, intent.filePath])
+            : immutableReadonlySet(values.filter((path) => path !== intent.filePath)),
+        },
+      });
+    }
+    case "set_diff_scroll": {
+      const current = previous.diffViewer;
+      if (!current) return previous;
+      if (!Number.isFinite(intent.scrollTop) || intent.scrollTop < 0) {
+        throw new RangeError("Diff scrollTop 必须是非负有限数");
+      }
+      return current.scrollTop === intent.scrollTop
+        ? previous
+        : freezeState({ ...previous, diffViewer: { ...current, scrollTop: intent.scrollTop } });
+    }
     case "transcript_viewport_changed": {
       if (!Number.isFinite(intent.scrollTop) || intent.scrollTop < 0) {
         throw new RangeError("Transcript scrollTop 必须是非负有限数");
@@ -150,6 +303,14 @@ export function reduceInteractiveLocalState(
     }
     case "open_surface": {
       if (previous.approvalPrompt && intent.surface.kind !== "approval") return previous;
+      if (intent.surface.kind === "diff") {
+        return reduceInteractiveLocalState(previous, {
+          version: 1,
+          type: "open_diff_viewer",
+          source: intent.surface.source ?? "working_tree",
+          ...(intent.surface.file ? { file: intent.surface.file } : {}),
+        });
+      }
       const existingIndex = previous.surfaceStack.findIndex((surface) =>
         sameSurface(surface, intent.surface),
       );
@@ -170,6 +331,10 @@ export function reduceInteractiveLocalState(
         ? previous.surfaceStack.findLastIndex((surface) => surface.kind === intent.kind)
         : previous.surfaceStack.length - 1;
       if (index < 0) return previous;
+      const closing = previous.surfaceStack[index];
+      if (closing?.kind === "diff" && previous.diffViewer) {
+        return reduceInteractiveLocalState(previous, { version: 1, type: "close_diff_viewer" });
+      }
       return freezeState({
         ...previous,
         surfaceStack: [
