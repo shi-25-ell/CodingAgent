@@ -21,8 +21,12 @@ export {
   reduceInteractiveLocalState,
 } from "./local-ui-state.js";
 export {
+  type CodeAdapterOptions,
+  createOpenTuiCodeOptions,
   createOpenTuiInlineDiffOptions,
+  createOpenTuiMarkdownOptions,
   type InlineDiffAdapterOptions,
+  type MarkdownAdapterOptions,
 } from "./opentui-content-adapters.js";
 export {
   createProductionOpenTuiRenderer,

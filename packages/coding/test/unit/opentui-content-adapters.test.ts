@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
+  createOpenTuiCodeOptions,
   createOpenTuiInlineDiffOptions,
+  createOpenTuiMarkdownOptions,
   createOpenTuiSyntaxStyle,
   resolveInteractiveTheme,
   resolveOpenTuiTheme,
@@ -14,6 +16,51 @@ const evidence = {
 };
 
 describe("OpenTUI content Adapters", () => {
+  it("Markdown Adapter 使用 top-level streaming blocks 与完整 theme seam", () => {
+    const theme = resolveOpenTuiTheme(resolveInteractiveTheme({ mode: "dark" }));
+    const syntax = createOpenTuiSyntaxStyle(theme);
+    try {
+      expect(
+        createOpenTuiMarkdownOptions(theme, syntax, {
+          content: "# 结果\n\n中文🙂 **完成**",
+          streaming: true,
+        }),
+      ).toMatchObject({
+        syntaxStyle: syntax,
+        streaming: true,
+        conceal: true,
+        concealCode: true,
+        internalBlockMode: "top-level",
+        tableOptions: { style: "grid" },
+      });
+    } finally {
+      syntax.destroy();
+    }
+  });
+
+  it("Code Adapter 保留 filetype、streaming 与 wrap policy", () => {
+    const theme = resolveOpenTuiTheme(resolveInteractiveTheme({ mode: "dark" }));
+    const syntax = createOpenTuiSyntaxStyle(theme);
+    try {
+      expect(
+        createOpenTuiCodeOptions(theme, syntax, {
+          content: "const value = '中文';",
+          filetype: "typescript",
+          streaming: false,
+          wrapMode: "none",
+        }),
+      ).toMatchObject({
+        syntaxStyle: syntax,
+        filetype: "typescript",
+        streaming: false,
+        wrapMode: "none",
+        drawUnstyledText: true,
+      });
+    } finally {
+      syntax.destroy();
+    }
+  });
+
   it("inline mutation diff 启用 syntax、line numbers 与 semantic add/remove styling", () => {
     const theme = resolveOpenTuiTheme(resolveInteractiveTheme({ mode: "dark" }));
     const syntax = createOpenTuiSyntaxStyle(theme);

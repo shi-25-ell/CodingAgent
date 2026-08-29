@@ -32,9 +32,19 @@ describe("OpenTUI theme Adapter", () => {
     const syntax = createOpenTuiSyntaxStyle(theme);
     try {
       expect(syntax.getRegisteredNames()).toEqual(
-        expect.arrayContaining(["comment", "keyword", "function", "string", "type"]),
+        expect.arrayContaining([
+          "comment",
+          "keyword",
+          "function",
+          "string",
+          "type",
+          "markup.heading",
+          "markup.link",
+          "diff.plus",
+        ]),
       );
       expect(syntax.getStyle("keyword")?.fg?.equals(theme.syntax.keyword)).toBe(true);
+      expect(syntax.getStyle("markup.heading")?.fg?.equals(theme.markdown.heading)).toBe(true);
     } finally {
       syntax.destroy();
     }

@@ -1,4 +1,9 @@
-import type { DiffRenderableOptions, SyntaxStyle } from "@opentui/core";
+import type {
+  CodeOptions,
+  DiffRenderableOptions,
+  MarkdownOptions,
+  SyntaxStyle,
+} from "@opentui/core";
 import type { OpenTuiTheme } from "./opentui-theme-adapter.js";
 import type { ToolDiffEvidence } from "./tool-presentation.js";
 
@@ -6,6 +11,57 @@ export interface InlineDiffAdapterOptions {
   readonly availableColumns: number;
   readonly wrapMode?: "word" | "char" | "none";
   readonly viewPreference?: "auto" | "stacked";
+}
+
+export interface MarkdownAdapterOptions {
+  readonly content: string;
+  readonly streaming: boolean;
+  readonly conceal?: boolean;
+}
+
+export interface CodeAdapterOptions {
+  readonly content: string;
+  readonly filetype?: string;
+  readonly streaming?: boolean;
+  readonly wrapMode?: "word" | "char" | "none";
+}
+
+export function createOpenTuiMarkdownOptions(
+  theme: OpenTuiTheme,
+  syntaxStyle: SyntaxStyle,
+  options: MarkdownAdapterOptions,
+): MarkdownOptions {
+  return Object.freeze({
+    content: options.content,
+    syntaxStyle,
+    fg: theme.markdown.text,
+    bg: theme.colors.background,
+    conceal: options.conceal ?? true,
+    concealCode: true,
+    streaming: options.streaming,
+    internalBlockMode: "top-level",
+    tableOptions: Object.freeze({ style: "grid" as const }),
+  });
+}
+
+export function createOpenTuiCodeOptions(
+  theme: OpenTuiTheme,
+  syntaxStyle: SyntaxStyle,
+  options: CodeAdapterOptions,
+): CodeOptions {
+  return Object.freeze({
+    content: options.content,
+    syntaxStyle,
+    fg: theme.colors.text,
+    bg: theme.colors.backgroundPanel,
+    selectionFg: theme.colors.selectedText,
+    selectionBg: theme.colors.backgroundSelection,
+    ...(options.filetype ? { filetype: options.filetype } : {}),
+    streaming: options.streaming ?? false,
+    wrapMode: options.wrapMode ?? "word",
+    conceal: true,
+    drawUnstyledText: true,
+  });
 }
 
 /**
