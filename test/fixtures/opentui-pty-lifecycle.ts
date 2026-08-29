@@ -26,15 +26,21 @@ const status = new TextRenderable(renderer, {
   content: `DEX_PTY_READY raw=${process.stdin.isRaw === true} size=${renderer.width}x${renderer.height}`,
 });
 renderer.root.add(status);
+let resolveResize!: () => void;
+const resized = new Promise<void>((resolve) => {
+  resolveResize = resolve;
+});
 renderer.on(CliRenderEvents.RESIZE, (width: number, height: number) => {
   status.content = `DEX_PTY_RESIZED raw=${process.stdin.isRaw === true} size=${width}x${height}`;
   renderer.requestRender();
+  resolveResize();
 });
 renderer.requestRender();
 await renderer.idle();
 
 if (mode === "normal") {
-  await Bun.sleep(500);
+  await resized;
+  await renderer.idle();
   processLifecycle.dispose();
   await lifecycle.stop("normal");
   process.exit(0);
