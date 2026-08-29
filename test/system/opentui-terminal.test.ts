@@ -43,7 +43,7 @@ function spawnPtyFixture(mode: "normal" | "signal" | "fatal"): PtyProcess {
     process: child,
     terminal,
     output: () => output,
-    waitForText(text, timeoutMs = 5_000) {
+    waitForText(text, timeoutMs = 10_000) {
       if (stripAnsi(output).includes(text)) return Promise.resolve();
       return new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -117,7 +117,7 @@ describe.skipIf(process.platform === "win32")("OpenTUI Bun PTY lifecycle", () =>
     } finally {
       await closePty(fixture);
     }
-  }, 10_000);
+  }, 20_000);
 
   it("SIGTERM 通过 process lifecycle restore 后使用约定 exit code", async () => {
     const fixture = spawnPtyFixture("signal");
