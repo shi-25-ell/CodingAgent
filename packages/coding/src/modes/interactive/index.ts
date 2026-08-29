@@ -21,6 +21,10 @@ export {
   reduceInteractiveLocalState,
 } from "./local-ui-state.js";
 export {
+  createOpenTuiInlineDiffOptions,
+  type InlineDiffAdapterOptions,
+} from "./opentui-content-adapters.js";
+export {
   createProductionOpenTuiRenderer,
   type OpenTuiRendererOptions,
 } from "./opentui-renderer.js";
@@ -69,6 +73,21 @@ export {
   type ThemeMode,
   themeContrastRatio,
 } from "./theme.js";
+export {
+  collapseToolOutput,
+  extractToolCodeEvidence,
+  extractToolDiffEvidence,
+  sanitizeToolOutput,
+  selectToolPresentation,
+  type ToolCodeEvidence,
+  type ToolDiffEvidence,
+  type ToolOutputPresentation,
+  type ToolPresentation,
+  type ToolPresentationKind,
+  type ToolPresentationOptions,
+  type ToolPresentationStatus,
+  type ToolPresentationTone,
+} from "./tool-presentation.js";
 export {
   captureTranscriptViewport,
   restoreTranscriptViewport,

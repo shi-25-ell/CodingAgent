@@ -184,6 +184,10 @@ export interface LocalUiState {
   readonly selectedModel?: ModelRef;
   readonly sidebar?: SidebarLocalState;
   readonly themeId?: UiThemeId;
+  readonly toolDisplay?: {
+    readonly showDetails: boolean;
+    readonly showGenericOutput: boolean;
+  };
 }
 
 export interface TuiLocalViewModel {
@@ -196,6 +200,10 @@ export interface TuiLocalViewModel {
   readonly selectedModel?: ModelRef;
   readonly sidebar: SidebarLocalState;
   readonly themeId: UiThemeId;
+  readonly toolDisplay: {
+    readonly showDetails: boolean;
+    readonly showGenericOutput: boolean;
+  };
 }
 
 export interface TuiViewModel {

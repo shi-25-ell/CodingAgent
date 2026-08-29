@@ -534,6 +534,7 @@ export function selectTuiViewModel(
       ...(local.selectedModel ? { selectedModel: local.selectedModel } : {}),
       sidebar: local.sidebar ?? { preference: "auto", open: false },
       themeId: local.themeId ?? "dex",
+      toolDisplay: local.toolDisplay ?? { showDetails: true, showGenericOutput: false },
     },
   });
 }

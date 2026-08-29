@@ -16,6 +16,7 @@ function freezeState(state: InteractiveLocalState): InteractiveLocalState {
   Object.freeze(state.transcriptViewport);
   Object.freeze(state.terminal);
   Object.freeze(state.sidebar);
+  Object.freeze(state.toolDisplay);
   Object.freeze(state.diagnostics);
   Object.freeze(state.surfaceStack);
   return Object.freeze(state);
@@ -57,6 +58,10 @@ export function createInteractiveLocalState(
       open: options.sidebarOpen ?? false,
     },
     themeId: options.themeId ?? "dex",
+    toolDisplay: {
+      showDetails: options.showToolDetails ?? true,
+      showGenericOutput: options.showGenericToolOutput ?? false,
+    },
   });
 }
 
@@ -173,6 +178,20 @@ export function reduceInteractiveLocalState(
       return previous.themeId === intent.themeId
         ? previous
         : freezeState({ ...previous, themeId: intent.themeId });
+    case "set_tool_details_visible":
+      return previous.toolDisplay.showDetails === intent.visible
+        ? previous
+        : freezeState({
+            ...previous,
+            toolDisplay: { ...previous.toolDisplay, showDetails: intent.visible },
+          });
+    case "set_generic_tool_output_visible":
+      return previous.toolDisplay.showGenericOutput === intent.visible
+        ? previous
+        : freezeState({
+            ...previous,
+            toolDisplay: { ...previous.toolDisplay, showGenericOutput: intent.visible },
+          });
   }
 }
 

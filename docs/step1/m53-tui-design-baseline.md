@@ -1,6 +1,6 @@
 # Dex Code M5.3 TUI design baseline
 
-> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A 与 V2 已确认，V3–V7 按依赖顺序补充。未经确认的结构性方案不得进入 production component behavior 或 keymap。
+> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A、V2 与 V3-A 已确认，V4–V7 按依赖顺序补充。未经确认的结构性方案不得进入 production composer、approval、dedicated diff route 或 keymap behavior。
 
 ## 1. N1：产品、CLI 与 namespace 命名
 
@@ -137,17 +137,37 @@ Narrow / regular（sidebar explicitly opened）
 
 theme resolver 只输出 presentation token，不进入 `CodingEvent`、projection durable state 或 `CodingSession`。当前 theme selection 属于 UI-local preference；renderer 把 token 转为 OpenTUI color/style。Markdown、syntax 与 diff Adapter 消费同一 resolved theme，component 不内嵌 hex。
 
-## 4. Owner checkpoint 状态
+## 4. V3：Semantic inline tools
+
+确认日期：2026-08-29
+
+所有 tool activity 都属于 Transcript，不创建 Activity workspace。presentation Adapter 按 tool semantics 在 compact row、output block、inline diff 与 code/diagnostic block 之间选择；不把所有 tool 统一成相同 card，也不把 output 一律移入 detail route。
+
+| Tool family | 默认呈现 |
+| --- | --- |
+| read / grep / glob / search | compact semantic inline row |
+| shell / command | inline output block；默认约 10 行，超出后 expand/collapse |
+| generic tool | compact summary；raw output 默认隐藏，可单独全局开启；开启后默认约 3 行 preview |
+| edit / apply_patch | 有 structured diff metadata 时直接在 Transcript 渲染 inline diff |
+| write | 根据 metadata 使用 compact row 或 syntax-aware code/diagnostic block |
+
+inline edit diff 使用 syntax highlighting、line numbers、add/remove semantic color 与 selection token。它和 dedicated Diff route 是两个不同层级：单次 mutation evidence 留在 Transcript；session/working-tree 综合审阅进入 full-screen route。inline region `width <= 120` 默认 unified，`width > 120` 可使用 split；用户选择 stacked 时始终 unified。V6 继续负责 dedicated Diff route 的多文件导航和完整 width matrix，不能反向取消这里的 inline mutation evidence。
+
+tool details 默认显示。全局 Hide tool details 只隐藏 `succeeded` completed history；planned、running、failed、denied、cancelled、conflict 与 permission-related activity 始终可见。failure summary 永不折叠；error detail 可以通过 stable `tool:<callId>:error` identity 展开。output expansion 使用 `tool:<callId>:output`，属于 UI-local state。
+
+tool output 在进入 renderable 前移除 ANSI escape/control injection，并按 Unicode code point 截断；preview 不能拆分 surrogate pair。颜色只按 pending/running/success/warning/error semantic tone 分配，不为每种 tool 发明独立高饱和颜色。
+
+## 5. Owner checkpoint 状态
 
 | ID | 状态 | 记录 |
 | --- | --- | --- |
 | N1 | 已确认 | 本文第 1 节 |
 | V1 | 已确认 | V1-A：stretch root、wide auto dock、narrow/regular explicit overlay |
 | V2 | 已确认 | 默认 `dex` dark/light palette；可选 terminal-adaptive `system` |
-| V3 | 待确认 | tool activity 呈现与展开规则 |
+| V3 | 已确认 | V3-A：semantic inline tools；mutation diff 留在 Transcript |
 | V4 | 待确认 | composer、queue 与 steering flow |
 | V5 | 待确认 | approval 与危险操作 flow |
 | V6 | 待确认 | diff 导航与 width matrix |
 | V7 | 待确认 | executable keymap、可发现性与 conflict report |
 
-V3–V7 确认后，本文还必须包含完整 end-to-end flows、状态矩阵、keyboard/focus/overlay 规则，以及 `CodingEvent -> TuiViewModel -> visual region -> UiIntent` 的可追踪 mapping。
+V4–V7 确认后，本文还必须包含完整 end-to-end flows、状态矩阵、keyboard/focus/overlay 规则，以及 `CodingEvent -> TuiViewModel -> visual region -> UiIntent` 的可追踪 mapping。

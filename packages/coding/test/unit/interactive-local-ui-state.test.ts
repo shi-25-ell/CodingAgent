@@ -22,6 +22,7 @@ describe("interactive local UI state", () => {
       terminal: { width: 80, height: 24 },
       sidebar: { preference: "auto", open: false },
       themeId: "dex",
+      toolDisplay: { showDetails: true, showGenericOutput: false },
     });
     expect(state.surfaceStack).toEqual([]);
     expect(state.expandedIds.size).toBe(0);
@@ -56,6 +57,21 @@ describe("interactive local UI state", () => {
     expect(
       reduceInteractiveLocalState(system, intent({ type: "select_theme", themeId: "system" })),
     ).toBe(system);
+  });
+
+  it("tool detail 与 generic output visibility 是 UI-local preference", () => {
+    const initial = createInteractiveLocalState({ width: 80, height: 24 });
+    const hidden = reduceInteractiveLocalState(
+      initial,
+      intent({ type: "set_tool_details_visible", visible: false }),
+    );
+    const generic = reduceInteractiveLocalState(
+      hidden,
+      intent({ type: "set_generic_tool_output_visible", visible: true }),
+    );
+
+    expect(generic.toolDisplay).toEqual({ showDetails: false, showGenericOutput: true });
+    expect(Object.isFrozen(generic.toolDisplay)).toBe(true);
   });
 
   it("composer/focus/expanded update 不写入 durable projection", () => {

@@ -63,6 +63,8 @@ const localIntentTypes: ReadonlySet<UiLocalIntent["type"]> = new Set([
   "set_sidebar_preference",
   "set_sidebar_open",
   "select_theme",
+  "set_tool_details_visible",
+  "set_generic_tool_output_visible",
 ]);
 
 function isLocalIntent(intent: UiIntent): intent is UiLocalIntent {

@@ -48,6 +48,8 @@ export type UiLocalIntent = UiIntentBase &
     | { readonly type: "set_sidebar_preference"; readonly preference: SidebarPreference }
     | { readonly type: "set_sidebar_open"; readonly open: boolean }
     | { readonly type: "select_theme"; readonly themeId: UiThemeId }
+    | { readonly type: "set_tool_details_visible"; readonly visible: boolean }
+    | { readonly type: "set_generic_tool_output_visible"; readonly visible: boolean }
   );
 
 export type UiApplicationIntent = UiIntentBase &
@@ -105,6 +107,10 @@ export interface InteractiveLocalState {
   readonly selectedModel?: ModelRef;
   readonly sidebar: SidebarLocalState;
   readonly themeId: UiThemeId;
+  readonly toolDisplay: {
+    readonly showDetails: boolean;
+    readonly showGenericOutput: boolean;
+  };
 }
 
 export interface InteractiveLocalStateOptions {
@@ -114,4 +120,6 @@ export interface InteractiveLocalStateOptions {
   readonly sidebarPreference?: SidebarPreference;
   readonly sidebarOpen?: boolean;
   readonly themeId?: UiThemeId;
+  readonly showToolDetails?: boolean;
+  readonly showGenericToolOutput?: boolean;
 }

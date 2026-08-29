@@ -47,6 +47,7 @@ describe("InteractiveController contract", () => {
         terminal: { width: 100, height: 28 },
         sidebar: { preference: "auto", open: false },
         themeId: "dex",
+        toolDisplay: { showDetails: true, showGenericOutput: false },
       },
     });
     const sessionBefore = await session.snapshot();
@@ -55,6 +56,7 @@ describe("InteractiveController contract", () => {
     await controller.dispatch({ version: 1, type: "set_sidebar_preference", preference: "hide" });
     await controller.dispatch({ version: 1, type: "set_sidebar_open", open: true });
     await controller.dispatch({ version: 1, type: "select_theme", themeId: "system" });
+    await controller.dispatch({ version: 1, type: "set_tool_details_visible", visible: false });
     await controller.dispatch({
       version: 1,
       type: "set_expanded",
@@ -67,6 +69,7 @@ describe("InteractiveController contract", () => {
       composer: { value: "本地草稿", revision: 1 },
       sidebar: { preference: "hide", open: true },
       themeId: "system",
+      toolDisplay: { showDetails: false, showGenericOutput: false },
     });
     expect(controller.current().ui.expandedIds.has("tool:1")).toBe(true);
     expect(await session.snapshot()).toEqual(sessionBefore);
