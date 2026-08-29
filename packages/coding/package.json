@@ -3,10 +3,11 @@
   "version": "0.0.0",
   "type": "module",
   "files": [
+    "bin",
     "dist"
   ],
   "bin": {
-    "coding-agent": "./dist/cli/entry.js"
+    "coding-agent": "./bin/coding-agent.js"
   },
   "exports": {
     ".": {
