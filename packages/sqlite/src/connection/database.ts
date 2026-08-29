@@ -133,11 +133,11 @@ export function translateSqliteError(error: unknown, operation: string): never {
 }
 
 async function assertLocalFilesystem(databasePath: string): Promise<void> {
-  if (!path.isAbsolute(databasePath)) {
-    throw new SqliteStorageError("SQLITE_CONFIGURATION", "databasePath 必须是 absolute path");
-  }
   if (databasePath.startsWith("\\\\") || databasePath.startsWith("//")) {
     throw new SqliteStorageError("NETWORK_FILESYSTEM", "不支持 network filesystem 上的 SQLite");
+  }
+  if (!path.isAbsolute(databasePath)) {
+    throw new SqliteStorageError("SQLITE_CONFIGURATION", "databasePath 必须是 absolute path");
   }
   const parent = path.dirname(databasePath);
   await mkdir(parent, { recursive: true });
