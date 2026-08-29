@@ -22,12 +22,7 @@ const source = run(process.execPath, [
   "packages/coding/src/cli/entry.ts",
   "--runtime-diagnostic",
 ]);
-const packageBin = run(process.execPath, [
-  "--no-env-file",
-  "run",
-  "dex",
-  "--runtime-diagnostic",
-]);
+const packageBin = run(process.execPath, ["--no-env-file", "run", "dex", "--runtime-diagnostic"]);
 const bundle = run(process.execPath, [
   "--no-env-file",
   path.join(outputDirectory, "m51-cli-bundle.js"),
