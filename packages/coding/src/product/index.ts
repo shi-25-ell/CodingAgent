@@ -3,4 +3,5 @@ export {
   type ProductMigrationOptions,
   productEnvironment,
   productIdentity,
+  productVersion,
 } from "./identity.js";

@@ -13,6 +13,7 @@ export interface PrintEntryDependencies {
   readonly agent: CodingAgent;
   readonly workspace: WorkspaceBinding;
   readonly io: PrintIo;
+  readonly structuredOutput?: boolean;
 }
 
 export type PrintEntryResult =
@@ -54,7 +55,11 @@ export async function runPrintEntry(
     const report = await handle.finished;
     await consumeEvents;
     const terminal = projection.runs[report.runId]?.report ?? report;
-    if (terminal.finalAnswer) dependencies.io.stdout(`${terminal.finalAnswer}\n`);
+    if (dependencies.structuredOutput) {
+      dependencies.io.stdout(
+        `${JSON.stringify({ version: 1, type: "run_result", report: terminal })}\n`,
+      );
+    } else if (terminal.finalAnswer) dependencies.io.stdout(`${terminal.finalAnswer}\n`);
     if (terminal.status === "completed") {
       return { exitCode: 0, status: "completed", report: terminal };
     }
@@ -80,6 +85,9 @@ export function createPrintInteractionMode(): InteractionMode {
         agent: context.agent,
         workspace: context.workspace,
         io: context.io,
+        ...(context.structuredOutput !== undefined
+          ? { structuredOutput: context.structuredOutput }
+          : {}),
       });
     },
   };

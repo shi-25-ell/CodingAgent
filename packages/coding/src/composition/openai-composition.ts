@@ -54,6 +54,7 @@ import { createSqlitePersistence } from "@coding-agent/sqlite";
 import { createBunLocalExecutionPorts } from "../adapters/bun-local-execution-adapters.js";
 import { type CodingAgent, createCodingAgent } from "../app/coding-agent.js";
 import { createProjectInstructionsSnapshot } from "../context/project-instructions.js";
+import { createExtensionHost, type ExtensionSource } from "../extensions/index.js";
 import { type ApprovalBridge, createApprovalBridge } from "../permissions/approval-bridge.js";
 import {
   detectLegacyProductConfiguration,
@@ -68,7 +69,7 @@ import {
   type StaticSkillDefinition,
 } from "../skills/index.js";
 import type { PermissionMode } from "../tools/coding-tool-host.js";
-import { createCodingToolHost } from "../tools/coding-tool-host.js";
+import { builtInCodingToolNames, createCodingToolHost } from "../tools/coding-tool-host.js";
 import {
   createBraveWebSearchProvider,
   createSafeWebFetchPort,
@@ -93,6 +94,9 @@ interface CommonProviderCodingAgentOptions {
   readonly retainedTailTokens?: number;
   readonly summaryOutputTokens?: number;
   readonly selectedSkillIds?: readonly string[];
+  readonly enabledTools?: readonly string[];
+  readonly enabledExtensionIds?: readonly string[];
+  readonly extensionSources?: readonly ExtensionSource[];
   readonly builtInSkills?: readonly StaticSkillDefinition[];
   readonly userSkillDirectory?: string;
   readonly projectSkillDirectory?: string;
@@ -108,6 +112,10 @@ interface CommonProviderCodingAgentOptions {
     readonly sessions: SessionRepository;
     readonly artifacts: ArtifactStore;
   };
+  readonly maxModelTurns?: number;
+  readonly maxModelAttempts?: number;
+  readonly maxRetries?: number;
+  readonly credentialRequirement?: "required" | "diagnostic";
 }
 
 export interface OpenAiCodingAgentOptions extends CommonProviderCodingAgentOptions {
@@ -356,11 +364,32 @@ async function createCompatibleCodingAgent(
     throw new CodingCompositionError("PRODUCT_MIGRATION_REQUIRED", migrationIssue);
   }
   const workspaceRoot = await canonicalCompositionRoot(options.workspaceRoot);
+  const dataDirectory = options.dataDirectory ?? defaultDataDirectory();
+  const enabledExtensions = options.enabledExtensionIds ?? [];
+  const extensionHost = await createExtensionHost({
+    sources: [
+      { kind: "user", path: path.join(dataDirectory, "extensions") },
+      {
+        kind: "project",
+        path: path.join(workspaceRoot, productIdentity.projectDirectoryName, "extensions"),
+      },
+      ...(options.extensionSources ?? []),
+      ...enabledExtensions.map((value): ExtensionSource => ({ kind: "explicit", path: value })),
+    ],
+    enabled: enabledExtensions,
+    reservedRegistrations: [
+      ...builtInCodingToolNames.map((name) => `tool:${name}`),
+      "mode:interactive",
+      "mode:print",
+    ],
+  });
+  const extensionSnapshot = extensionHost.snapshot();
   const resolvedSecrets = new Set<string>();
-  const baseCredentials = createCredentialResolver(
-    options.credentialSources ??
-      defaultSources(workspaceRoot, definition, options.localCredentialPath),
-  );
+  const baseCredentials = createCredentialResolver([
+    ...(options.credentialSources ??
+      defaultSources(workspaceRoot, definition, options.localCredentialPath)),
+    ...extensionSnapshot.credentialSources,
+  ]);
   const credentials: CredentialResolver = {
     async resolve(request, resolveOptions) {
       const resolution = await baseCredentials.resolve(request, resolveOptions);
@@ -371,13 +400,15 @@ async function createCompatibleCodingAgent(
     },
   };
   const preflight = await credentials.resolve(definition.profile.auth);
-  if (preflight.status === "missing") {
+  if (preflight.status === "missing" && options.credentialRequirement !== "diagnostic") {
+    await extensionHost[Symbol.asyncDispose]();
     throw new CodingCompositionError(
       "CREDENTIAL_UNAVAILABLE",
       `${definition.profile.displayName} credential 未配置`,
     );
   }
-  if (preflight.status === "failed") {
+  if (preflight.status === "failed" && options.credentialRequirement !== "diagnostic") {
+    await extensionHost[Symbol.asyncDispose]();
     throw new CodingCompositionError(
       "CREDENTIAL_RESOLUTION_FAILED",
       `${definition.profile.displayName} credential 无法解析`,
@@ -400,6 +431,7 @@ async function createCompatibleCodingAgent(
           ...(options.openAiTransport ? { transport: options.openAiTransport } : {}),
         }),
   );
+  for (const provider of extensionSnapshot.modelProviders) registry.registerProvider(provider);
   const selectedModelId = modelId(options.modelId ?? definition.defaultModelId);
   const model = await registry.resolve({
     providerId: definition.profile.id,
@@ -416,7 +448,6 @@ async function createCompatibleCodingAgent(
   const approvals = options.approvalBridge ?? createApprovalBridge();
   const redact = (value: string): string =>
     [...resolvedSecrets].reduce((text, secret) => text.split(secret).join("[REDACTED]"), value);
-  const dataDirectory = options.dataDirectory ?? defaultDataDirectory();
   const modelContextWindow = options.modelContextWindow ?? model.capabilities.contextWindow;
   if (!modelContextWindow) {
     throw new CodingCompositionError(
@@ -447,6 +478,7 @@ async function createCompatibleCodingAgent(
         options.projectSkillDirectory ??
           path.join(workspaceRoot, productIdentity.projectDirectoryName, "skills"),
       ),
+      ...extensionSnapshot.skillSources,
     ],
     { workspaceRoot },
   );
@@ -517,6 +549,7 @@ async function createCompatibleCodingAgent(
         createRunBoundaryContextSource(),
         createCheckpointContextSource(persistence.artifacts),
         createArtifactPreviewContextSource(persistence.artifacts),
+        ...extensionSnapshot.contextSources,
       ],
       compaction: createSummaryCompactionStrategy({
         model,
@@ -532,6 +565,7 @@ async function createCompatibleCodingAgent(
       retainedTailTokens: options.retainedTailTokens ?? 8_192,
     });
   } catch (error) {
+    await extensionHost[Symbol.asyncDispose]();
     await sqlite?.[Symbol.asyncDispose]();
     throw error;
   }
@@ -553,6 +587,8 @@ async function createCompatibleCodingAgent(
         redact,
         registeredSecrets: () => [...resolvedSecrets],
         artifactStore: persistence.artifacts,
+        ...(options.enabledTools ? { enabledTools: options.enabledTools } : {}),
+        extensionTools: extensionSnapshot.tools,
         ...(webSearchProvider ? { webSearchProvider } : {}),
         webFetch: options.webFetch ?? createSafeWebFetchPort(),
         ...(options.webTimeoutMs !== undefined ? { webTimeoutMs: options.webTimeoutMs } : {}),
@@ -560,6 +596,7 @@ async function createCompatibleCodingAgent(
       createBunLocalExecutionPorts(),
     );
   } catch (error) {
+    await extensionHost[Symbol.asyncDispose]();
     await sqlite?.[Symbol.asyncDispose]();
     throw error;
   }
@@ -569,12 +606,17 @@ async function createCompatibleCodingAgent(
     model,
     tools,
     context,
-    policies: createFixedRunPolicies({ maxModelTurns: 16, maxModelAttempts: 20, maxRetries: 2 }),
+    policies: createFixedRunPolicies({
+      maxModelTurns: options.maxModelTurns ?? 16,
+      maxModelAttempts: options.maxModelAttempts ?? 20,
+      maxRetries: options.maxRetries ?? 2,
+    }),
     configurationRevision: contextRevision,
     runConfiguration: {
       permissionMode: options.permissionMode ?? "autonomous",
       searchProfile: options.webSearchProvider?.id ?? options.webSearchProfile ?? "brave",
       skills: selectedSkills.map((skill) => skill.id),
+      extensions: options.enabledExtensionIds ?? [],
       policyVersions: {
         context: contextRevision,
         tools: "m2-tool-policy-1",
@@ -582,12 +624,25 @@ async function createCompatibleCodingAgent(
     },
     approvals,
     workspace: createGitWorkspaceService(),
+    modes: extensionSnapshot.modes,
+    skills: skillRegistry.list(),
+    skillDiagnostics: skillRegistry.diagnostics(),
+    extensions: extensionSnapshot.extensions,
+    extensionDiagnostics: extensionHost.diagnostics(),
+    observe: (event) => extensionHost.observe(event),
+    credentialDiagnostic:
+      preflight.status === "found"
+        ? { status: "present", sourceId: preflight.sourceId }
+        : preflight.status === "missing"
+          ? { status: "missing" }
+          : { status: "failed" },
   });
   return {
     agent,
     model: model.descriptor,
     async dispose() {
       await tools[Symbol.asyncDispose]();
+      await extensionHost[Symbol.asyncDispose]();
       await sqlite?.[Symbol.asyncDispose]();
     },
   };

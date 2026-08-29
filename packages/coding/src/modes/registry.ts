@@ -1,5 +1,5 @@
 import type { WorkspaceBinding } from "@coding-agent/agent";
-import type { CodingAgent } from "../app/coding-agent.js";
+import type { CodingAgent, CodingSession } from "../app/coding-agent.js";
 
 export interface ModeDescriptor {
   readonly id: string;
@@ -14,8 +14,11 @@ export interface ModeIo {
 
 export interface ModeContext {
   readonly agent: CodingAgent;
+  /** Optional CLI-selected Session. Modes must still use the CodingSession public seam. */
+  readonly session?: CodingSession;
   readonly workspace: WorkspaceBinding;
   readonly argv: readonly string[];
+  readonly structuredOutput?: boolean;
   readonly io: ModeIo;
   readonly signal: AbortSignal;
 }

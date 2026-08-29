@@ -28,6 +28,81 @@ async function outcome(
 }
 
 describe("CodingToolHost ToolExecutor contract", () => {
+  it("extension tool 进入相同 schema、plan、approval、settlement 与 evidence pipeline", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "dex-extension-tool-"));
+    temporaryDirectories.push(root);
+    const requests: ApprovalRequest[] = [];
+    let executions = 0;
+    const host = createCodingToolHost({
+      workspaceRoot: root,
+      permissionMode: "safe",
+      approvalPort: {
+        async request(request) {
+          requests.push(request);
+          return { decision: "allow_once", planFingerprint: request.plan.fingerprint };
+        },
+      },
+      extensionTools: [
+        {
+          definition: {
+            name: "extension_write",
+            description: "test extension mutation",
+            inputSchema: {
+              type: "object",
+              properties: { path: { type: "string" }, text: { type: "string" } },
+              required: ["path", "text"],
+              additionalProperties: false,
+            },
+          },
+          plan(arguments_) {
+            return {
+              resources: [{ kind: "path", value: String(arguments_.path) }],
+              effects: ["workspace_mutation"],
+              risks: ["extension mutation"],
+            };
+          },
+          async execute({ arguments: arguments_ }) {
+            executions += 1;
+            return {
+              modelContent: String(arguments_.text),
+              effectState: "committed",
+              evidence: { extension: "test" },
+            };
+          },
+        },
+      ],
+    });
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "invalid",
+        name: "extension_write",
+        arguments: { path: "a.txt", text: "ok", extra: true },
+      }),
+    ).resolves.toMatchObject({ status: "rejected", effectState: "none" });
+    expect(executions).toBe(0);
+    await expect(
+      outcome(host, {
+        type: "tool_call",
+        callId: "safe",
+        name: "extension_write",
+        arguments: { path: "a.txt", text: "ok" },
+      }),
+    ).resolves.toMatchObject({
+      status: "succeeded",
+      effectState: "committed",
+      evidence: {
+        extensionTool: true,
+        permissionRequested: true,
+        permissionDecision: "allowed",
+      },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.plan.effects).toEqual(["workspace_mutation"]);
+    expect(executions).toBe(1);
+    await host[Symbol.asyncDispose]();
+  });
+
   it("registry 暴露 M5 的本地与 web coding tools", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-tools-registry-"));
     temporaryDirectories.push(root);

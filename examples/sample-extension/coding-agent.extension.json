@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "namespace": "coding-agent",
+  "id": "dex.sample",
+  "version": "1.0.0",
+  "apiVersion": "1.0.0",
+  "entry": "index.js",
+  "displayName": "Dex Sample Extension",
+  "capabilities": ["tool", "skill_source"]
+}

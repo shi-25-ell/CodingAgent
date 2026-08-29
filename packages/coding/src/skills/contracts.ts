@@ -1,6 +1,6 @@
 import type { ContextSource } from "@coding-agent/agent";
 
-export type SkillSourceKind = "built_in" | "user" | "project";
+export type SkillSourceKind = "built_in" | "extension" | "user" | "project";
 
 export interface SkillDiscoveryContext {
   readonly workspaceRoot: string;

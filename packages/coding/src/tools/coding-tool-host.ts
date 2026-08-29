@@ -10,6 +10,7 @@ import type {
   ToolUpdate,
 } from "@coding-agent/agent";
 import type { JsonObject, JsonValue, ToolCall } from "@coding-agent/model";
+import type { CodingToolContribution } from "../extensions/contracts.js";
 import { createEphemeralArtifactStore } from "./ephemeral-artifact-store.js";
 import type { LocalExecutionPorts, LocalFilesystemPort } from "./local-execution-ports.js";
 import { ToolRegistry, type ToolRegistrySnapshot } from "./tool-registry.js";
@@ -74,6 +75,9 @@ export interface CodingToolHostOptions {
   readonly approvalPort?: ApprovalPort;
   readonly policyVersion?: string;
   readonly artifactStore?: ArtifactStore;
+  /** Explicit immutable allow-list applied before the registry snapshot is frozen. */
+  readonly enabledTools?: readonly string[];
+  readonly extensionTools?: readonly CodingToolContribution[];
 }
 
 export interface CodingToolHost extends ToolExecutor, AsyncDisposable {
@@ -252,6 +256,10 @@ const definitions: readonly ToolDefinition[] = [
   },
 ];
 
+export const builtInCodingToolNames: readonly string[] = Object.freeze(
+  definitions.map((definition) => definition.name),
+);
+
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) deepFreeze(child);
@@ -285,9 +293,31 @@ function contentHash(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function createRegistry(): ToolRegistrySnapshot {
+function createRegistry(
+  enabledTools?: readonly string[],
+  extensionTools: readonly CodingToolContribution[] = [],
+): ToolRegistrySnapshot {
   const registry = new ToolRegistry();
-  for (const definition of definitions) registry.register({ definition });
+  const enabled = enabledTools ? new Set(enabledTools) : undefined;
+  if (enabled && enabled.size !== enabledTools?.length) {
+    throw new TypeError("enabledTools 不能包含重复 tool name");
+  }
+  if (enabled) {
+    const known = new Set([
+      ...definitions.map((definition) => definition.name),
+      ...extensionTools.map((tool) => tool.definition.name),
+    ]);
+    for (const name of enabled) {
+      if (!known.has(name)) throw new TypeError(`未知 enabled tool: ${name}`);
+    }
+  }
+  for (const definition of definitions) {
+    if (!enabled || enabled.has(definition.name)) registry.register({ definition });
+  }
+  for (const tool of extensionTools) {
+    if (!enabled || enabled.has(tool.definition.name))
+      registry.register({ definition: tool.definition });
+  }
   return registry.snapshot();
 }
 
@@ -429,119 +459,144 @@ async function createPlan(
   args: Record<string, JsonValue>,
   policyVersion: string,
   filesystem: LocalFilesystemPort,
+  extensionTool?: CodingToolContribution,
 ): Promise<ToolPlan> {
   const resources: ToolResource[] = [];
   const effects: ToolEffect[] = [];
   const risks: string[] = [];
   const preconditions: ToolPrecondition[] = [];
-  switch (call.name) {
-    case "list_files": {
-      const relative = args.path === undefined ? "." : stringArgument(args, "path");
-      lexicalPath(root, relative);
-      resources.push({ kind: "path", value: relative });
-      effects.push("workspace_read");
-      break;
+  if (extensionTool) {
+    const contributed = extensionTool.plan(deepFreeze(structuredClone(args) as JsonObject));
+    const allowedEffects = new Set<ToolEffect>([
+      "workspace_read",
+      "workspace_mutation",
+      "process",
+      "git_evidence",
+      "network",
+    ]);
+    if (contributed.effects.some((effect) => !allowedEffects.has(effect))) {
+      throw new ToolFailure("rejected", "extension tool 声明了未知 effect");
     }
-    case "read_file": {
-      const relative = stringArgument(args, "path");
-      lexicalPath(root, relative);
-      resources.push({ kind: "path", value: relative });
-      effects.push("workspace_read");
-      break;
-    }
-    case "search_text": {
-      const relative = args.path === undefined ? "." : stringArgument(args, "path");
-      lexicalPath(root, relative);
-      resources.push({ kind: "path", value: relative });
-      effects.push("workspace_read");
-      break;
-    }
-    case "create_file": {
-      const relative = stringArgument(args, "path");
-      await mutationTarget(root, relative, filesystem);
-      resources.push({ kind: "path", value: relative });
-      effects.push("workspace_mutation");
-      risks.push("创建 workspace 文件");
-      preconditions.push({ kind: "path_absent", resource: relative });
-      break;
-    }
-    case "apply_patch": {
-      const relative = stringArgument(args, "path");
-      const target = await mutationTarget(root, relative, filesystem);
-      let bytes: Uint8Array;
-      try {
-        bytes = await filesystem.read(target);
-      } catch (_error) {
-        throw new ToolFailure("failed", "patch 目标文件不存在或不可访问");
+    for (const resource of contributed.resources) {
+      if (resource.kind === "path") {
+        lexicalPath(root, resource.value);
+        if (contributed.effects.includes("workspace_mutation")) {
+          await mutationTarget(root, resource.value, filesystem);
+        }
       }
-      resources.push({ kind: "path", value: relative });
-      effects.push("workspace_mutation");
-      risks.push("修改 workspace 文件");
-      preconditions.push({ kind: "content_hash", resource: relative, value: contentHash(bytes) });
-      if (args.expectedHash !== undefined && args.expectedHash !== contentHash(bytes)) {
-        throw new ToolFailure("conflict", "expectedHash 与当前内容不一致");
+    }
+    resources.push(...contributed.resources.map((resource) => ({ ...resource })));
+    effects.push(...contributed.effects);
+    risks.push(...contributed.risks);
+  } else
+    switch (call.name) {
+      case "list_files": {
+        const relative = args.path === undefined ? "." : stringArgument(args, "path");
+        lexicalPath(root, relative);
+        resources.push({ kind: "path", value: relative });
+        effects.push("workspace_read");
+        break;
       }
-      break;
-    }
-    case "replace_file":
-    case "delete_file": {
-      const relative = stringArgument(args, "path");
-      const expectedHash = stringArgument(args, "expectedHash");
-      const target = await mutationTarget(root, relative, filesystem);
-      let bytes: Uint8Array;
-      try {
-        bytes = await filesystem.read(target);
-      } catch (_error) {
-        throw new ToolFailure("failed", "目标文件不存在或不可访问");
+      case "read_file": {
+        const relative = stringArgument(args, "path");
+        lexicalPath(root, relative);
+        resources.push({ kind: "path", value: relative });
+        effects.push("workspace_read");
+        break;
       }
-      decodeUtf8(bytes);
-      const actualHash = contentHash(bytes);
-      if (expectedHash !== actualHash) {
-        throw new ToolFailure("conflict", "expectedHash 与当前内容不一致");
+      case "search_text": {
+        const relative = args.path === undefined ? "." : stringArgument(args, "path");
+        lexicalPath(root, relative);
+        resources.push({ kind: "path", value: relative });
+        effects.push("workspace_read");
+        break;
       }
-      resources.push({ kind: "path", value: relative });
-      effects.push("workspace_mutation");
-      risks.push(call.name === "replace_file" ? "替换 workspace 文件" : "删除 workspace 文件");
-      preconditions.push({ kind: "content_hash", resource: relative, value: actualHash });
-      break;
+      case "create_file": {
+        const relative = stringArgument(args, "path");
+        await mutationTarget(root, relative, filesystem);
+        resources.push({ kind: "path", value: relative });
+        effects.push("workspace_mutation");
+        risks.push("创建 workspace 文件");
+        preconditions.push({ kind: "path_absent", resource: relative });
+        break;
+      }
+      case "apply_patch": {
+        const relative = stringArgument(args, "path");
+        const target = await mutationTarget(root, relative, filesystem);
+        let bytes: Uint8Array;
+        try {
+          bytes = await filesystem.read(target);
+        } catch (_error) {
+          throw new ToolFailure("failed", "patch 目标文件不存在或不可访问");
+        }
+        resources.push({ kind: "path", value: relative });
+        effects.push("workspace_mutation");
+        risks.push("修改 workspace 文件");
+        preconditions.push({ kind: "content_hash", resource: relative, value: contentHash(bytes) });
+        if (args.expectedHash !== undefined && args.expectedHash !== contentHash(bytes)) {
+          throw new ToolFailure("conflict", "expectedHash 与当前内容不一致");
+        }
+        break;
+      }
+      case "replace_file":
+      case "delete_file": {
+        const relative = stringArgument(args, "path");
+        const expectedHash = stringArgument(args, "expectedHash");
+        const target = await mutationTarget(root, relative, filesystem);
+        let bytes: Uint8Array;
+        try {
+          bytes = await filesystem.read(target);
+        } catch (_error) {
+          throw new ToolFailure("failed", "目标文件不存在或不可访问");
+        }
+        decodeUtf8(bytes);
+        const actualHash = contentHash(bytes);
+        if (expectedHash !== actualHash) {
+          throw new ToolFailure("conflict", "expectedHash 与当前内容不一致");
+        }
+        resources.push({ kind: "path", value: relative });
+        effects.push("workspace_mutation");
+        risks.push(call.name === "replace_file" ? "替换 workspace 文件" : "删除 workspace 文件");
+        preconditions.push({ kind: "content_hash", resource: relative, value: actualHash });
+        break;
+      }
+      case "run_command": {
+        const command = stringArgument(args, "command");
+        const relative = args.cwd === undefined ? "." : stringArgument(args, "cwd");
+        lexicalPath(root, relative);
+        resources.push({ kind: "command", value: command }, { kind: "path", value: relative });
+        effects.push("process");
+        risks.push("启动 workspace-scoped foreground process");
+        break;
+      }
+      case "git_status":
+        resources.push({ kind: "path", value: ".git" });
+        effects.push("git_evidence");
+        break;
+      case "git_diff": {
+        const relative = args.path === undefined ? "." : stringArgument(args, "path");
+        lexicalPath(root, relative);
+        resources.push({ kind: "path", value: relative });
+        effects.push("git_evidence");
+        break;
+      }
+      case "web_search": {
+        const query = stringArgument(args, "query");
+        resources.push({ kind: "query", value: query });
+        effects.push("network");
+        risks.push("向固定 search provider 发送 query");
+        break;
+      }
+      case "web_fetch": {
+        const url = stringArgument(args, "url");
+        resources.push({ kind: "url", value: url });
+        effects.push("network");
+        risks.push("向经安全校验的 public URL 发起 GET");
+        break;
+      }
+      default:
+        throw new ToolFailure("rejected", `未知 tool: ${call.name}`);
     }
-    case "run_command": {
-      const command = stringArgument(args, "command");
-      const relative = args.cwd === undefined ? "." : stringArgument(args, "cwd");
-      lexicalPath(root, relative);
-      resources.push({ kind: "command", value: command }, { kind: "path", value: relative });
-      effects.push("process");
-      risks.push("启动 workspace-scoped foreground process");
-      break;
-    }
-    case "git_status":
-      resources.push({ kind: "path", value: ".git" });
-      effects.push("git_evidence");
-      break;
-    case "git_diff": {
-      const relative = args.path === undefined ? "." : stringArgument(args, "path");
-      lexicalPath(root, relative);
-      resources.push({ kind: "path", value: relative });
-      effects.push("git_evidence");
-      break;
-    }
-    case "web_search": {
-      const query = stringArgument(args, "query");
-      resources.push({ kind: "query", value: query });
-      effects.push("network");
-      risks.push("向固定 search provider 发送 query");
-      break;
-    }
-    case "web_fetch": {
-      const url = stringArgument(args, "url");
-      resources.push({ kind: "url", value: url });
-      effects.push("network");
-      risks.push("向经安全校验的 public URL 发起 GET");
-      break;
-    }
-    default:
-      throw new ToolFailure("rejected", `未知 tool: ${call.name}`);
-  }
   const draft = {
     callId: call.callId,
     toolName: call.name,
@@ -575,8 +630,20 @@ async function enforceHardGuard(
   root: string,
   plan: ToolPlan,
   filesystem: LocalFilesystemPort,
+  extensionTool?: CodingToolContribution,
 ): Promise<void> {
   const args = ensureObject(plan.normalizedArguments);
+  if (extensionTool) {
+    for (const resource of plan.resources) {
+      if (resource.kind !== "path") continue;
+      if (plan.effects.includes("workspace_mutation")) {
+        await mutationTarget(root, resource.value, filesystem);
+      } else {
+        await readTarget(root, resource.value, filesystem);
+      }
+    }
+    return;
+  }
   switch (plan.toolName) {
     case "list_files":
       await readTarget(
@@ -1179,6 +1246,48 @@ async function webFetchTool(
   return JSON.stringify(outcome);
 }
 
+async function executeExtensionTool(
+  tool: CodingToolContribution,
+  args: Record<string, JsonValue>,
+  signal: AbortSignal,
+  timeoutMs: number,
+  hasEffects: boolean,
+) {
+  checkAbort(signal);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      tool.execute({
+        arguments: deepFreeze(structuredClone(args) as JsonObject),
+        signal,
+      }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new ToolFailure("timed_out", "extension tool 执行超时", {
+                effectState: hasEffects ? "unknown" : "none",
+              }),
+            ),
+          timeoutMs,
+        );
+        abortListener = () =>
+          reject(
+            new ToolFailure("cancelled", "extension tool 已取消", {
+              effectState: hasEffects ? "unknown" : "none",
+              abortObserved: true,
+            }),
+          );
+        signal.addEventListener("abort", abortListener, { once: true });
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (abortListener) signal.removeEventListener("abort", abortListener);
+  }
+}
+
 function outcomeFromFailure(
   callId: string,
   failure: ToolFailure,
@@ -1204,7 +1313,13 @@ export function createCodingToolHost(
   ports: LocalExecutionPorts,
 ): CodingToolHost {
   const root = ports.filesystem.captureWorkspaceRoot(options.workspaceRoot);
-  const registry = createRegistry();
+  const extensionTools = new Map(
+    (options.extensionTools ?? []).map((tool) => [tool.definition.name, tool] as const),
+  );
+  if (extensionTools.size !== (options.extensionTools?.length ?? 0)) {
+    throw new TypeError("extensionTools 不能包含重复 tool name");
+  }
+  const registry = createRegistry(options.enabledTools, options.extensionTools);
   const maximum = options.maxOutputBytes ?? 128 * 1024;
   const timeoutMs = options.commandTimeoutMs ?? 30_000;
   const webTimeoutMs = options.webTimeoutMs ?? 15_000;
@@ -1265,11 +1380,21 @@ export function createCodingToolHost(
           if (!validation.valid) {
             throw new ToolFailure("rejected", "Tool arguments 不符合 strict JSON schema");
           }
-          const args = normalizeArguments(root, call.name, ensureObject(validation.value));
-          let plan = await createPlan(root, call, args, policyVersion, ports.filesystem);
+          const extensionTool = extensionTools.get(call.name);
+          const args = extensionTool
+            ? ensureObject(validation.value)
+            : normalizeArguments(root, call.name, ensureObject(validation.value));
+          let plan = await createPlan(
+            root,
+            call,
+            args,
+            policyVersion,
+            ports.filesystem,
+            extensionTool,
+          );
           activePlan = redactPlan(plan, redact);
           let preconditionsValidated = false;
-          await enforceHardGuard(root, plan, ports.filesystem);
+          await enforceHardGuard(root, plan, ports.filesystem, extensionTool);
           if (
             permissionMode === "safe" &&
             plan.effects.some(
@@ -1308,8 +1433,9 @@ export function createCodingToolHost(
                 args,
                 policyVersion,
                 ports.filesystem,
+                extensionTool,
               );
-              await enforceHardGuard(root, refreshedPlan, ports.filesystem);
+              await enforceHardGuard(root, refreshedPlan, ports.filesystem, extensionTool);
               if (refreshedPlan.fingerprint !== plan.fingerprint) {
                 options.approvalPort.invalidate?.(approvalId);
                 plan = refreshedPlan;
@@ -1327,8 +1453,9 @@ export function createCodingToolHost(
                   args,
                   policyVersion,
                   ports.filesystem,
+                  extensionTool,
                 );
-                await enforceHardGuard(root, changedPlan, ports.filesystem);
+                await enforceHardGuard(root, changedPlan, ports.filesystem, extensionTool);
                 if (changedPlan.fingerprint === plan.fingerprint) throw error;
                 options.approvalPort.invalidate?.(approvalId);
                 plan = changedPlan;
@@ -1345,6 +1472,28 @@ export function createCodingToolHost(
           checkAbort(context.signal);
           let modelContent: string;
           let effectState: ToolOutcome["effectState"] = "none";
+          if (extensionTool) {
+            const result = await executeExtensionTool(
+              extensionTool,
+              args,
+              context.signal,
+              timeoutMs,
+              plan.effects.length > 0,
+            );
+            checkAbort(context.signal);
+            modelContent = result.modelContent;
+            effectState = result.effectState ?? (plan.effects.length > 0 ? "unknown" : "none");
+            return {
+              callId: call.callId,
+              status: "succeeded",
+              isError: false,
+              modelContent: redact(modelContent),
+              effectState,
+              abortObserved: false,
+              artifacts: [],
+              evidence: evidence({ extensionTool: true, ...(result.evidence ?? {}) }),
+            };
+          }
           switch (call.name) {
             case "list_files":
               modelContent = await listFilesTool(

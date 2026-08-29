@@ -46,6 +46,7 @@ export {
   type ProviderCodingAgentOptions,
 } from "./composition/openai-composition.js";
 export * from "./context/index.js";
+export * from "./extensions/index.js";
 export * from "./modes/interactive/index.js";
 export * from "./modes/registry.js";
 export {
@@ -70,6 +71,7 @@ export type {
   ToolPrecondition,
   ToolResource,
 } from "./tools/coding-tool-host.js";
+export { builtInCodingToolNames } from "./tools/coding-tool-host.js";
 export { createEphemeralArtifactStore } from "./tools/ephemeral-artifact-store.js";
 export {
   type RegisteredTool,

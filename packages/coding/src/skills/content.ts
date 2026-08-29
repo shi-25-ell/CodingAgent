@@ -127,6 +127,7 @@ export function skillContentDigest(input: {
 
 export const skillSourcePrecedence: Readonly<Record<SkillSourceKind, number>> = {
   built_in: 100,
+  extension: 150,
   user: 200,
   project: 300,
 };

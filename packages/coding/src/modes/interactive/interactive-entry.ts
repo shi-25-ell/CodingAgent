@@ -46,7 +46,8 @@ export async function runInteractiveEntry(
   let abortListener: (() => void) | undefined;
 
   try {
-    const session = await context.agent.createSession({ workspace: context.workspace });
+    const session =
+      context.session ?? (await context.agent.createSession({ workspace: context.workspace }));
     const renderer = await lifecycle.start();
     let settle!: (result: InteractiveEntryResult) => void;
     const finished = new Promise<InteractiveEntryResult>((resolve) => {

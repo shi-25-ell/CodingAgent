@@ -23,6 +23,7 @@ import type {
 } from "@coding-agent/agent";
 import { SessionError } from "@coding-agent/agent";
 import type { Model, ModelDescriptor, ModelRef } from "@coding-agent/model";
+import type { ExtensionDiagnostic, LoadedExtension } from "../extensions/contracts.js";
 import { createInteractiveInteractionMode } from "../modes/interactive/interactive-entry.js";
 import { createPrintInteractionMode } from "../modes/print/print-entry.js";
 import {
@@ -34,6 +35,7 @@ import {
 import type { ApprovalBridge, ApprovalLifecycleEvent } from "../permissions/approval-bridge.js";
 import type { CodingRunProjection, CodingSessionSnapshot } from "../projection/contracts.js";
 import { reduceProjection } from "../projection/projection.js";
+import type { SkillDescriptor, SkillRegistryDiagnostic } from "../skills/contracts.js";
 import type { ApprovalRequest } from "../tools/coding-tool-host.js";
 import {
   sameWorkspaceRoot,
@@ -148,6 +150,14 @@ export interface CodingDiagnostics {
   readonly model: ModelDescriptor;
   readonly models: readonly ModelDescriptor[];
   readonly modes: readonly ModeDescriptor[];
+  readonly skills: readonly SkillDescriptor[];
+  readonly skillDiagnostics: readonly SkillRegistryDiagnostic[];
+  readonly extensions: readonly LoadedExtension[];
+  readonly extensionDiagnostics: readonly ExtensionDiagnostic[];
+  readonly credential: {
+    readonly status: "present" | "missing" | "failed";
+    readonly sourceId?: string;
+  };
 }
 
 export interface CodingAgent {
@@ -179,6 +189,12 @@ export interface CodingAgentOptions {
   readonly modes?: readonly InteractionMode[];
   readonly approvals?: ApprovalBridge;
   readonly workspace: WorkspaceService;
+  readonly skills?: readonly SkillDescriptor[];
+  readonly skillDiagnostics?: readonly SkillRegistryDiagnostic[];
+  readonly extensions?: readonly LoadedExtension[];
+  readonly extensionDiagnostics?: readonly ExtensionDiagnostic[];
+  readonly observe?: (event: Readonly<unknown>) => void | Promise<void>;
+  readonly credentialDiagnostic?: CodingDiagnostics["credential"];
 }
 
 export type CodingStartErrorCode =
@@ -632,9 +648,11 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
       const pendingApprovals: ApprovalLifecycleEvent[] = [];
       const publishSemantic = (payload: CodingSemanticPayload): void => {
         channel.publishSemantic(payload);
+        void options.observe?.(payload);
       };
       const publishProgress = (payload: CodingProgressPayload): void => {
         channel.publishProgress(payload);
+        void options.observe?.(payload);
       };
       const publishApproval = (event: ApprovalLifecycleEvent): void => {
         if (event.request.runId !== handle.runId) return;
@@ -895,6 +913,11 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
         model: options.model.descriptor,
         models: models.map((model) => model.descriptor),
         modes: modeRegistry.list(),
+        skills: Object.freeze([...(options.skills ?? [])]),
+        skillDiagnostics: Object.freeze([...(options.skillDiagnostics ?? [])]),
+        extensions: Object.freeze([...(options.extensions ?? [])]),
+        extensionDiagnostics: Object.freeze([...(options.extensionDiagnostics ?? [])]),
+        credential: options.credentialDiagnostic ?? { status: "present" },
       };
     },
   };

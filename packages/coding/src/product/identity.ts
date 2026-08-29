@@ -12,6 +12,8 @@ export const productIdentity = Object.freeze({
   extensionNamespace: "coding-agent",
 } as const);
 
+export const productVersion = "0.0.0";
+
 export const productEnvironment = Object.freeze({
   modelProvider: "DEX_MODEL_PROVIDER",
   dataHome: "DEX_DATA_HOME",
