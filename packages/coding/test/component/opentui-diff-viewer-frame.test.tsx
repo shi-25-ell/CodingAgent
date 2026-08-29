@@ -4,11 +4,11 @@ import {
   createDiffViewerDocument,
   createDiffViewerLocalState,
   createOpenTuiSyntaxStyle,
-  OpenTuiDiffViewer,
   reconcileDiffViewerDocumentState,
   resolveInteractiveTheme,
   resolveOpenTuiTheme,
 } from "../../src/modes/interactive/index.js";
+import { OpenTuiDiffViewer } from "../../src/modes/interactive/opentui-diff-viewer.jsx";
 
 const document = createDiffViewerDocument({
   version: 1,

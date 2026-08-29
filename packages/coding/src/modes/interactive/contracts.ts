@@ -97,6 +97,7 @@ export type UiLocalIntent = UiIntentBase &
     | { readonly type: "open_surface"; readonly surface: UiSurface }
     | { readonly type: "close_surface"; readonly kind?: UiSurface["kind"] }
     | { readonly type: "terminal_resized"; readonly width: number; readonly height: number }
+    | { readonly type: "report_diagnostic"; readonly diagnostic: TuiDiagnostic }
     | { readonly type: "dismiss_diagnostic"; readonly id: string }
     | { readonly type: "select_model"; readonly model: ModelRef }
     | { readonly type: "set_sidebar_preference"; readonly preference: SidebarPreference }

@@ -23,6 +23,7 @@ import type {
 } from "@coding-agent/agent";
 import { SessionError } from "@coding-agent/agent";
 import type { Model, ModelDescriptor, ModelRef } from "@coding-agent/model";
+import { createInteractiveInteractionMode } from "../modes/interactive/interactive-entry.js";
 import { createPrintInteractionMode } from "../modes/print/print-entry.js";
 import {
   type InteractionMode,
@@ -298,6 +299,9 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
   );
   const configuredModes = options.modes ?? [];
   const modeRegistry: ModeRegistry = new InteractionModeRegistry([
+    ...(configuredModes.some((mode) => mode.descriptor.id === "interactive")
+      ? []
+      : [createInteractiveInteractionMode()]),
     ...(configuredModes.some((mode) => mode.descriptor.id === "print")
       ? []
       : [createPrintInteractionMode()]),

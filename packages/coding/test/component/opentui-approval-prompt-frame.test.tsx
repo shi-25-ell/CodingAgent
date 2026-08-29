@@ -2,10 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { testRender } from "@opentui/solid";
 import {
   type ApprovalPromptPresentation,
-  OpenTuiApprovalPrompt,
   resolveInteractiveTheme,
   resolveOpenTuiTheme,
 } from "../../src/modes/interactive/index.js";
+import { OpenTuiApprovalPrompt } from "../../src/modes/interactive/opentui-approval-prompt.jsx";
 
 const prompt: ApprovalPromptPresentation = {
   approvalId: "approval-frame",

@@ -23,7 +23,10 @@ describe("CodingAgent facade contract", () => {
       expect.objectContaining({ type: "terminal", status: "completed" }),
     ]);
     expect(await application.agent.listModels()).toEqual([model.descriptor]);
-    expect(application.agent.listModes()).toEqual([{ id: "print", displayName: "Print" }]);
+    expect(application.agent.listModes()).toEqual([
+      { id: "interactive", displayName: "Interactive", interactive: true },
+      { id: "print", displayName: "Print" },
+    ]);
     model.assertConsumed();
     await application.dispose();
   });

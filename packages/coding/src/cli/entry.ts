@@ -4,7 +4,6 @@ import {
   createProviderCodingAgent,
   type ProductionProviderId,
 } from "../composition/openai-composition.js";
-import { runPrintEntry } from "../modes/print/print-entry.js";
 import { productEnvironment } from "../product/index.js";
 import {
   detectBunRuntime,
@@ -63,13 +62,17 @@ async function main(): Promise<number> {
       provider,
       ...(selectedModel ? { modelId: selectedModel } : {}),
     });
-    const result = await runPrintEntry(process.argv.slice(2), {
+    const argv = process.argv.slice(2);
+    const mode = application.agent.resolveMode(argv[0] === "--print" ? "print" : "interactive");
+    const result = await mode.run({
       agent: application.agent,
       workspace,
+      argv,
       io: {
         stdout: (text) => process.stdout.write(text),
         stderr: (text) => process.stderr.write(text),
       },
+      signal: new AbortController().signal,
     });
     return result.exitCode;
   } catch (error) {

@@ -73,6 +73,7 @@ const localIntentTypes: ReadonlySet<UiLocalIntent["type"]> = new Set([
   "open_surface",
   "close_surface",
   "terminal_resized",
+  "report_diagnostic",
   "dismiss_diagnostic",
   "select_model",
   "set_sidebar_preference",

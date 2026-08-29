@@ -632,6 +632,20 @@ export class DexKeymapModeStack {
     this.#emit();
   }
 
+  replaceModes(modes: readonly DexKeymapMode[]): void {
+    if (new Set(modes).size !== modes.length) {
+      throw new TypeError("keymap mode stack 不接受 duplicate mode");
+    }
+    if (
+      modes.length === this.#stack.length &&
+      modes.every((mode, index) => this.#stack[index]?.mode === mode)
+    ) {
+      return;
+    }
+    this.#stack.splice(0, this.#stack.length, ...modes.map((mode) => ({ id: Symbol(mode), mode })));
+    this.#emit();
+  }
+
   push(mode: DexKeymapMode): () => void {
     const entry = { id: Symbol(mode), mode };
     this.#stack.push(entry);
@@ -672,10 +686,22 @@ export function selectDexCommandPaletteEntries(
   keymap: ResolvedDexKeymap,
   context: DexKeymapModeStackSnapshot,
 ): readonly DexCommandPaletteEntry[] {
+  const top = context.modes.at(-1);
+  const projectedScopes =
+    top === "command_palette" || top === "which_key"
+      ? resolveDexKeymapScopes(
+          {
+            route: context.route,
+            focus: context.focus,
+            activeRun: context.activeRun,
+          },
+          context.modes.slice(0, -1),
+        )
+      : context.scopes;
   return Object.freeze(
     keymap.commands.flatMap((command) =>
       command.disabled ||
-      !context.scopes.has(command.scope) ||
+      !projectedScopes.has(command.scope) ||
       (command.requiresActiveRun && !context.activeRun)
         ? []
         : [

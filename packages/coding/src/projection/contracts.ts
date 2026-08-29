@@ -162,7 +162,11 @@ export type UiSurface =
   | { readonly kind: "run_report"; readonly runId: RunId }
   | { readonly kind: "session_selector" }
   | { readonly kind: "model_selector" }
+  | { readonly kind: "branch_selector" }
+  | { readonly kind: "theme_selector" }
+  | { readonly kind: "diff_source_selector" }
   | { readonly kind: "command_palette" }
+  | { readonly kind: "which_key" }
   | { readonly kind: "help" }
   | { readonly kind: "diagnostic"; readonly id: string };
 

@@ -350,6 +350,8 @@ export function reduceInteractiveLocalState(
         ? previous
         : freezeState({ ...previous, terminal: { width, height } });
     }
+    case "report_diagnostic":
+      return appendInteractiveDiagnostic(previous, intent.diagnostic);
     case "dismiss_diagnostic": {
       if (previous.dismissedDiagnosticIds.has(intent.id)) return previous;
       return freezeState({

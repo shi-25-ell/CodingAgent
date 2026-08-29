@@ -291,4 +291,67 @@ scope precedence 使用固定 numeric policy，仅用于 deterministic dispatch�
 | V6  | 已确认 | V6-A：full-screen route、32-column file tree、all/single patch、responsive split/unified     |
 | V7  | 已确认 | V7-A+：Ctrl+X leader、Ctrl+P/leader-p palette、scoped direct bindings、typed conflict report |
 
-N1 与 V1–V7 已全部确认。本文还需在 M5.3 收敛前补齐完整 end-to-end flows、状态矩阵、keyboard/focus/overlay 规则，以及 `CodingEvent -> TuiViewModel -> visual region -> UiIntent` 的可追踪 mapping。
+N1 与 V1–V7 已全部确认。以下 flow、状态矩阵和 mapping 冻结 M5.3 的结构性设计；后续未决项只允许是 token 级 polish。
+
+## 10. End-to-end flows
+
+### 10.1 Session 与 Run
+
+1. `dex` 在当前 workspace 创建 Session，projection 先产生 idle `TuiViewModel`；root 以 stretch layout 渲染 Transcript 与唯一 Composer。
+2. idle Composer submit 发出 `submit_composer`，controller 依据 projection 状态执行 `submit_task` 语义并绑定新 Run；用户消息立即进入 Transcript。
+3. Run 的 reasoning、assistant stream、tool lifecycle 与结果经 `CodingEvent` reducer 增量进入同一 Transcript；用户向上滚动后保持 anchor，并显示 unseen count，不强制跳到尾部。
+4. active Run 中 Composer footer 默认显示 `STEER`；提交先取得 durable queue admission ack，再清空同一 draft。safe point application ack 到达后，queued row 转为 applied/rejected；`FOLLOW-UP` 只改变 delivery，不创建第二 Composer。
+5. completed/failed/aborted Run 产生 terminal report；Composer 回到 task submit 语义，Transcript 与 scroll position 保留。
+
+### 10.2 Tool、Approval 与 Diff
+
+1. read/search 类 tool 投影为 compact semantic row；shell 是有限高度 inline output；带 metadata 的 edit/apply patch 直接显示结构化 inline diff。
+2. permission request 出现时，bottom blocking Approval 获得 input；默认 `Allow once`，`Esc` 为 `Deny`，可切换 full-screen。响应 ack 后恢复此前 focus。
+3. 单次 edit diff 始终属于 Transcript；综合审阅通过 `open_diff_viewer` 进入 full-screen Diff route。Diff 内维护 file/tree/hunk/view/scroll UI-local state，关闭后回到 Session。
+4. queue CAS conflict、tool failure、renderer/keymap conflict 均保留原始信息并产生 typed diagnostic；failure summary 不因隐藏 completed tool details 而消失。
+
+### 10.3 Terminal lifecycle
+
+1. interactive entry 先验证 TTY，再进入 alternate screen；renderer、controller 和 Solid composition 只有一个 lifecycle owner。
+2. resize 只发出 `terminal_resized`，由 layout policy 决定 sidebar dock/overlay/hidden 与 low-height chrome；不改变 durable Session。
+3. normal quit、external abort、signal、startup failure 与 fatal error 都汇合到幂等 renderer stop；restore 失败输出 typed diagnostic，不静默退出。
+
+## 11. UI 状态矩阵
+
+| Durable / local 状态 | 主视觉 | Composer | input owner | 退出/恢复 |
+| --- | --- | --- | --- | --- |
+| idle Session | Transcript + Composer | `TASK` | Composer | submit 启动 Run |
+| active Run | Transcript inline stream/tools | `STEER` 或 `FOLLOW-UP` | Composer | `<leader>i` abort |
+| queued message | Transcript queued row | admission ack 后清空 | Composer | application ack 更新 row；CAS failure 保留文本 |
+| pending Approval | bottom blocking prompt | 可见但不可输入 | Approval | decision ack 后恢复 return focus |
+| Diff route | full-screen multi-file Diff | 不显示 | Diff | `q`/`Esc` 返回 Session |
+| docked sidebar | Session + lightweight sidebar | 正常 | 当前 Session focus | toggle/hide，不挤压为第二 workspace |
+| sidebar overlay | 覆盖 Session 右侧 | 背景不可输入 | overlay | `Esc` 关闭并恢复 focus |
+| palette/dialog/which-key | temporary secondary surface | 背景不可输入 | top surface | `Esc` 关闭 top surface |
+| recoverable diagnostic | inline/banner diagnostic | 正常 | 原 scope | dismiss 后保持 route |
+| fatal diagnostic | blocking fatal surface | disabled | fatal dialog | quit 并 restore terminal |
+
+状态 ownership 固定为：Session/Run/queue/approval/report 是 durable application truth；focus、surface stack、Composer draft、expanded rows、viewport、Diff navigation、sidebar 与 theme 是 interactive local state。renderer 不持有第二份业务状态。
+
+## 12. Focus、overlay 与 keyboard precedence
+
+surface priority 固定为 `fatal error > command palette/which-key > dialog > Approval > overlay > Diff > Session`。每次 projection/local state 更新后，同一 `surface-policy` 同时计算 render layer、focus target 与 keymap modes；不得依赖 component registration order。
+
+`Esc` 按 `pending leader sequence -> top overlay/dialog -> Approval -> Diff -> Composer local state` 消费。active Run 的 canonical abort 是 `<leader>i`；兼容 `Esc Esc` 仅在更高 scope 均未消费时成立。managed Textarea scope 优先处理 cursor、selection、newline、visual-row history 与 paste；route/global binding 不得抢占这些键。
+
+## 13. Semantic mapping
+
+| `CodingEvent` / truth | `TuiViewModel` | visual region | emitted `UiIntent` |
+| --- | --- | --- | --- |
+| Session snapshot / branch change | `session`、`transcript` | compact status、Transcript | `select_branch`、`fork_branch` |
+| Run started / phase / stream delta | `activeRun`、assistant stream | status、streaming Markdown | `abort_run`、`send_run_message` |
+| user/assistant/terminal timeline | `transcript` | Transcript blocks | viewport/expand local intents |
+| tool requested/running/completed/failed | `tools` | semantic inline row/block/diff | expand/tool visibility local intents |
+| approval requested/resolved | `approvals` + `ui.approvalPrompt` | blocking Approval | `respond_approval`、approval local intents |
+| queue admitted/applied/rejected | `queues` + Transcript row | queued status、typed diagnostic | `update_queue`（revision-aware CAS） |
+| context manifest/derivation | `context` | lightweight sidebar/overlay | sidebar/surface local intents |
+| Run terminal report | `terminalReport` | Transcript terminal summary/report overlay | surface local intents |
+| renderer/keymap/controller failure | `diagnostics` | diagnostic/fatal surface | `report_diagnostic`、`dismiss_diagnostic` |
+| terminal resize/focus | `ui.terminal`、`ui.focusedRegion` | responsive root/surface | `terminal_resized`、`focus_region` |
+
+实现 seam 固定为 `CodingEvent -> framework-independent projection -> TuiViewModel -> OpenTUI presentation -> UiIntent -> InteractiveController`。OpenTUI types 不得越过 presentation Module；Solid component 只接收 `TuiViewModel` 并只发出 `UiIntent`。

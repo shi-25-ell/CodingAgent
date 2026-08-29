@@ -120,14 +120,13 @@ describe("Dex scoped keymap policy", () => {
     });
     const closePalette = stack.push("command_palette");
 
-    expect(selectDexCommandPaletteEntries(keymap, stack.snapshot())).toEqual([
-      {
-        id: "command.palette.close",
-        title: "Close command palette",
-        category: "Application",
-        bindings: ["escape"],
-      },
-    ]);
+    const paletteCommandIds = selectDexCommandPaletteEntries(keymap, stack.snapshot()).map(
+      (entry) => entry.id,
+    );
+    expect(paletteCommandIds).toContain("command.palette.open");
+    expect(paletteCommandIds).toContain("transcript.page_up");
+    expect(paletteCommandIds).not.toContain("command.palette.close");
+    expect(paletteCommandIds).not.toContain("run.abort");
     closePalette();
 
     const commandIds = selectDexCommandPaletteEntries(keymap, stack.snapshot()).map(

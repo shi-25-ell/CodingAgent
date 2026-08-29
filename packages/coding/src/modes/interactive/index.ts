@@ -45,6 +45,16 @@ export {
   visibleDiffViewerFiles,
 } from "./diff-viewer.js";
 export {
+  createInteractiveInteractionMode,
+  type InteractiveEntryDependencies,
+  type InteractiveEntryResult,
+  runInteractiveEntry,
+} from "./interactive-entry.js";
+export {
+  type DexCommandIntentResolution,
+  resolveDexKeymapCommandIntent,
+} from "./keymap-intents.js";
+export {
   canonicalizeDexKeyBinding,
   type DexCommandPaletteEntry,
   type DexKeymapBaseContext,
@@ -84,10 +94,6 @@ export {
   reduceInteractiveLocalState,
 } from "./local-ui-state.js";
 export {
-  OpenTuiApprovalPrompt,
-  type OpenTuiApprovalPromptProps,
-} from "./opentui-approval-prompt.jsx";
-export {
   bindOpenTuiComposer,
   createOpenTuiComposerOptions,
   type OpenTuiComposerBindingOptions,
@@ -103,10 +109,6 @@ export {
   type InlineDiffAdapterOptions,
   type MarkdownAdapterOptions,
 } from "./opentui-content-adapters.js";
-export {
-  OpenTuiDiffViewer,
-  type OpenTuiDiffViewerProps,
-} from "./opentui-diff-viewer.jsx";
 export {
   createOpenTuiKeymapAdapter,
   type DexKeymapCommandHandler,
@@ -144,6 +146,12 @@ export {
   type RendererResource,
   type RendererStopReason,
 } from "./renderer-lifecycle.js";
+export {
+  type InteractiveSurfaceLayer,
+  type InteractiveSurfacePolicy,
+  interactiveSurfacePriority,
+  resolveInteractiveSurfacePolicy,
+} from "./surface-policy.js";
 export {
   asciiPresentationGlyphs,
   type InteractiveTerminalDiagnosticCode,
