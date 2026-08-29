@@ -89,7 +89,7 @@ function defaultTransport(): PinnedHttpTransport {
           headers: {
             accept: "text/plain, text/html, application/json",
             "accept-encoding": "identity",
-            "user-agent": "Fast/1 web_fetch",
+            "user-agent": "Dex-Code/1 web_fetch",
           },
           lookup: (_hostname, _options, callback) => {
             callback(null, input.address.address, input.address.family);

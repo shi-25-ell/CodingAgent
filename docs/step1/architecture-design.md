@@ -16,7 +16,7 @@ packages/
 └── sqlite/
 ```
 
-项目尚未确定正式产品名。文档中的 “Fast”/“Coding Agent”、`coding-agent`、`@coding-agent/*` 和 `FAST_*` 都是工作标识；首次固化 CLI identity、config/env namespace 或 visual wordmark 前，必须按补充计划的 N1 决策提醒项目 owner，不能由实现者自行把工作标识转为品牌。
+项目 owner 已在 M5.3 的 N1 决策中确认品牌名为 “Dex Code”、CLI executable 为 `dex`。用户可见 config/env/data identity 使用 `DEX_*`、`.dex`、`dex` 与 Windows `Dex Code` 目录；`@coding-agent/*`、`CodingAgent` 等继续作为技术 namespace，不要求随品牌改名。完整记录见 [m53-tui-design-baseline.md](./m53-tui-design-baseline.md)。
 
 三层主干为：
 

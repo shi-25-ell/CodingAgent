@@ -31,7 +31,7 @@
 @coding-agent/sqlite
 ```
 
-以上 package 名、`coding-agent` CLI、现有 `FAST_*` config prefix 和文档中的 “Fast” 都是工作标识，不代表产品已经命名。最终 package scope、CLI executable、display name、config/env namespace、application data directory 和 extension namespace 需要在补充计划的命名决策点由项目 owner 确认；folder ownership 和职责不因此改变。workspace root 为 private package，不 export runtime API。
+以上 package 名继续作为技术 namespace。产品品牌为 “Dex Code”，CLI executable 为 `dex`；用户 config/env/data identity 使用 `DEX_*`、`.dex`、`dex` 与 Windows `Dex Code` 目录，extension contract namespace 保持 `coding-agent`。该品牌边界不改变 folder ownership 和职责；workspace root 为 private package，不 export runtime API。完整决定见 [m53-tui-design-baseline.md](./m53-tui-design-baseline.md)。
 
 ### 1.3 通用约定
 
@@ -766,21 +766,21 @@ CLI executable 只做：
 4. 映射 typed result 到 stdout/stderr/exit code；
 5. 在退出前等待 cleanup。
 
-第一版 commands（以下使用尚未确认的工作命令名）：
+第一版 commands：
 
 ```text
-coding-agent                         # 当前目录启动 interactive mode
-coding-agent --print "task"         # non-interactive print mode
-coding-agent session list
-coding-agent session open <id>
-coding-agent session fork <id>
-coding-agent models list
-coding-agent extensions list
-coding-agent skills list
-coding-agent doctor
+dex                         # 当前目录启动 interactive mode
+dex --print "task"         # non-interactive print mode
+dex session list
+dex session open <id>
+dex session fork <id>
+dex models list
+dex extensions list
+dex skills list
+dex doctor
 ```
 
-命令名必须在正式品牌/CLI 命名决策后统一调整，行为契约不依赖 bin 名。任何实现者准备固化 help header、binary、shell completion、config path、environment prefix、extension manifest namespace 或视觉 wordmark 前，必须提醒项目 owner 完成命名决策，不能自行把工作标识当成正式名称。
+命令行为契约不依赖 bin 名。N1 已确认 `dex` 为正式 executable；help header、shell completion、config path、environment prefix、extension manifest namespace 与视觉 wordmark 必须遵守集中式 product identity，不能在各 Adapter 中重复硬编码。
 
 Exit code 建议：
 

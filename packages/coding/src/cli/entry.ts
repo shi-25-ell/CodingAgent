@@ -5,6 +5,7 @@ import {
   type ProductionProviderId,
 } from "../composition/openai-composition.js";
 import { runPrintEntry } from "../modes/print/print-entry.js";
+import { productEnvironment } from "../product/index.js";
 import {
   detectBunRuntime,
   formatBunRuntimeDiagnostic,
@@ -23,11 +24,11 @@ const supportedProviders = new Set<ProductionProviderId>([
 
 function configuredModel(provider: ProductionProviderId): string | undefined {
   const variables: Record<ProductionProviderId, string> = {
-    openai: "FAST_OPENAI_MODEL",
-    openrouter: "FAST_OPENROUTER_MODEL",
-    deepseek: "FAST_DEEPSEEK_MODEL",
-    glm: "FAST_GLM_MODEL",
-    anthropic: "FAST_ANTHROPIC_MODEL",
+    openai: productEnvironment.openAiModel,
+    openrouter: productEnvironment.openRouterModel,
+    deepseek: productEnvironment.deepSeekModel,
+    glm: productEnvironment.glmModel,
+    anthropic: productEnvironment.anthropicModel,
   };
   return process.env[variables[provider]];
 }
@@ -48,7 +49,7 @@ async function main(): Promise<number> {
   let application: Awaited<ReturnType<typeof createProviderCodingAgent>> | undefined;
   try {
     const workspace = (await createGitWorkspaceService().inspect(root)).binding;
-    const configuredProvider = process.env.FAST_MODEL_PROVIDER ?? "openai";
+    const configuredProvider = process.env[productEnvironment.modelProvider] ?? "openai";
     if (!supportedProviders.has(configuredProvider as ProductionProviderId)) {
       throw new CodingCompositionError(
         "UNSUPPORTED_PROVIDER",

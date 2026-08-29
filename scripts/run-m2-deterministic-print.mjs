@@ -94,8 +94,8 @@ const application = await createOpenAiCodingAgent({
   credentialSources: [
     createEnvironmentCredentialSource({
       id: "m2-deterministic-environment",
-      values: { FAST_OPENAI_API_KEY: `credential-${randomUUID()}` },
-      variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+      values: { DEX_OPENAI_API_KEY: `credential-${randomUUID()}` },
+      variables: { "openai.default": "DEX_OPENAI_API_KEY" },
     }),
   ],
   transport,

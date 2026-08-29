@@ -55,6 +55,7 @@ export {
   createApprovalBridge,
 } from "./permissions/approval-bridge.js";
 export * from "./projection/index.js";
+export * from "./product/index.js";
 export * from "./skills/index.js";
 export type {
   ApprovalPort,

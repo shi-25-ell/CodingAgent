@@ -7,7 +7,7 @@
     "dist"
   ],
   "bin": {
-    "coding-agent": "./bin/coding-agent.js"
+    "dex": "./bin/dex.js"
   },
   "exports": {
     ".": {

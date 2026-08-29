@@ -17,7 +17,7 @@ describe("M4 production Context sources", () => {
   it("project instructions 与显式 selected skill 进入真实请求及 durable manifest", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-m4-production-context-"));
     const workspace = path.join(root, "workspace");
-    const skill = path.join(workspace, ".fast", "skills", "review");
+    const skill = path.join(workspace, ".dex", "skills", "review");
     const data = path.join(root, "data");
     await mkdir(skill, { recursive: true });
     await writeFile(path.join(workspace, "AGENTS.md"), "PROJECT-CONTEXT-MARKER", "utf8");
@@ -83,8 +83,8 @@ describe("M4 production Context sources", () => {
       credentialSources: [
         createEnvironmentCredentialSource({
           id: "m4-context",
-          values: { FAST_OPENAI_API_KEY: "fixture" },
-          variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+          values: { DEX_OPENAI_API_KEY: "fixture" },
+          variables: { "openai.default": "DEX_OPENAI_API_KEY" },
         }),
       ],
       transport,

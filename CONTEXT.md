@@ -4,8 +4,8 @@
 
 ## Language
 
-**Fast**:
-本项目的本地 coding agent 产品；Fast v1 是范围收敛但工程完整的第一版产品，不表示临时演示路径或单次模型调用。
+**Dex Code**:
+本项目的本地 coding agent 品牌；Dex Code v1 是范围收敛但工程完整的第一版产品，不表示临时演示路径或单次模型调用。
 _Avoid_: 第一阶段控制路径、快速模型调用、toy version
 
 **Coding Task**:
@@ -85,7 +85,7 @@ _Avoid_: ToolResult 文本、异常字符串、RunReport
 _Avoid_: approval rule、Sandbox
 
 **Permission Mode**:
-决定工具副作用何时需要用户批准的 Run 配置；Fast v1 提供 Safe Mode 与 Autonomous Mode，二者都受 Hard Guard 约束。
+决定工具副作用何时需要用户批准的 Run 配置；Dex Code v1 提供 Safe Mode 与 Autonomous Mode，二者都受 Hard Guard 约束。
 _Avoid_: Sandbox、安全边界
 
 **Safe Mode**:
@@ -105,11 +105,11 @@ _Avoid_: 成功证明、模型最终文本
 _Avoid_: RunReport、assistant error message
 
 **Interaction Mode**:
-用户或脚本使用 Fast 的交互形态；Fast v1 提供 interactive TUI 和 print mode。
+用户或脚本使用 Dex Code 的交互形态；Dex Code v1 提供 interactive TUI 和 print mode。
 _Avoid_: 独立 Agent loop、TUI-only runtime
 
 **Extension**:
-用户显式启用、向 Fast 提供额外能力的 trusted local executable code bundle。
+用户显式启用、向 Dex Code 提供额外能力的 trusted local executable code bundle。
 _Avoid_: Skill、sandboxed plugin
 
 **Skill**:

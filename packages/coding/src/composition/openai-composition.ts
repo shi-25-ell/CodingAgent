@@ -56,6 +56,11 @@ import { type CodingAgent, createCodingAgent } from "../app/coding-agent.js";
 import { createProjectInstructionsSnapshot } from "../context/project-instructions.js";
 import { type ApprovalBridge, createApprovalBridge } from "../permissions/approval-bridge.js";
 import {
+  detectLegacyProductConfiguration,
+  productEnvironment,
+  productIdentity,
+} from "../product/index.js";
+import {
   createBuiltInSkillSource,
   createProjectSkillSource,
   createSkillRegistry,
@@ -143,6 +148,7 @@ export class CodingCompositionError extends Error {
     | "CREDENTIAL_UNAVAILABLE"
     | "CREDENTIAL_RESOLUTION_FAILED"
     | "UNSUPPORTED_PROVIDER"
+    | "PRODUCT_MIGRATION_REQUIRED"
     | "CONTEXT_CAPABILITY_UNAVAILABLE"
     | "CONTEXT_CONFIGURATION_INVALID";
 
@@ -278,7 +284,7 @@ function defaultSources(
     ),
     createEnvironmentCredentialSource({
       id: "project-brave-search-environment",
-      variables: { "web.brave": "FAST_BRAVE_SEARCH_API_KEY" },
+      variables: { "web.brave": productEnvironment.braveSearchApiKey },
     }),
     createEnvironmentCredentialSource({
       id: "brave-search-environment",
@@ -286,22 +292,24 @@ function defaultSources(
     }),
     createLocalConfigCredentialSource({
       id: "project-local-config",
-      path: localCredentialPath ?? path.join(workspaceRoot, ".fast", "credentials.json"),
+      path:
+        localCredentialPath ??
+        path.join(workspaceRoot, productIdentity.projectDirectoryName, "credentials.json"),
     }),
   ];
 }
 
 function defaultDataDirectory(): string {
-  const configured = process.env.FAST_DATA_HOME?.trim();
+  const configured = process.env[productEnvironment.dataHome]?.trim();
   if (configured) return path.resolve(configured);
   if (process.platform === "win32") {
     const localAppData = process.env.LOCALAPPDATA?.trim();
-    if (localAppData) return path.join(localAppData, "Fast");
+    if (localAppData) return path.join(localAppData, productIdentity.windowsDataDirectoryName);
   }
   const xdgDataHome = process.env.XDG_DATA_HOME?.trim();
   return xdgDataHome
-    ? path.join(xdgDataHome, "fast")
-    : path.join(os.homedir(), ".local", "share", "fast");
+    ? path.join(xdgDataHome, productIdentity.unixDataDirectoryName)
+    : path.join(os.homedir(), ".local", "share", productIdentity.unixDataDirectoryName);
 }
 
 function canonical(value: unknown): string {
@@ -340,6 +348,13 @@ async function createCompatibleCodingAgent(
   },
   definition: CompositionDefinition,
 ): Promise<OpenAiCodingAgent> {
+  const migrationIssue = detectLegacyProductConfiguration(options.workspaceRoot, {
+    inspectProjectDirectory:
+      options.localCredentialPath === undefined && options.projectSkillDirectory === undefined,
+  });
+  if (migrationIssue) {
+    throw new CodingCompositionError("PRODUCT_MIGRATION_REQUIRED", migrationIssue);
+  }
   const workspaceRoot = await canonicalCompositionRoot(options.workspaceRoot);
   const resolvedSecrets = new Set<string>();
   const baseCredentials = createCredentialResolver(
@@ -429,7 +444,8 @@ async function createCompatibleCodingAgent(
       createBuiltInSkillSource(options.builtInSkills ?? []),
       createUserSkillSource(options.userSkillDirectory ?? path.join(dataDirectory, "skills")),
       createProjectSkillSource(
-        options.projectSkillDirectory ?? path.join(workspaceRoot, ".fast", "skills"),
+        options.projectSkillDirectory ??
+          path.join(workspaceRoot, productIdentity.projectDirectoryName, "skills"),
       ),
     ],
     { workspaceRoot },
@@ -448,7 +464,10 @@ async function createCompatibleCodingAgent(
     permissionMode: options.permissionMode ?? "autonomous",
     webSearchProfile: options.webSearchProvider?.id ?? options.webSearchProfile ?? "brave",
     instructions: options.instructions ?? [
-      { type: "text", text: "你是 Fast coding agent。使用工具核验事实并完成 Coding Task。" },
+      {
+        type: "text",
+        text: `你是 ${productIdentity.displayName} coding agent。使用工具核验事实并完成 Coding Task。`,
+      },
     ],
     budget: {
       modelContextWindow,
@@ -484,7 +503,10 @@ async function createCompatibleCodingAgent(
       sources: [
         createSystemToolContextSource(
           options.instructions ?? [
-            { type: "text", text: "你是 Fast coding agent。使用工具核验事实并完成 Coding Task。" },
+            {
+              type: "text",
+              text: `你是 ${productIdentity.displayName} coding agent。使用工具核验事实并完成 Coding Task。`,
+            },
           ],
         ),
         projectInstructions.source,
@@ -585,7 +607,7 @@ export async function createOpenAiCodingAgent(
       catalog: openAiProductionCatalog,
       defaultModelId: "gpt-5",
       environmentVariables: [
-        { sourceId: "project-environment", variable: "FAST_OPENAI_API_KEY" },
+        { sourceId: "project-environment", variable: productEnvironment.openAiApiKey },
         { sourceId: "openai-environment", variable: "OPENAI_API_KEY" },
       ],
       configurationRevision: "m1-openai-1",
@@ -607,7 +629,10 @@ export async function createOpenRouterCodingAgent(
       catalog: openRouterProductionCatalog,
       defaultModelId: "openrouter/free",
       environmentVariables: [
-        { sourceId: "project-openrouter-environment", variable: "FAST_OPENROUTER_API_KEY" },
+        {
+          sourceId: "project-openrouter-environment",
+          variable: productEnvironment.openRouterApiKey,
+        },
         { sourceId: "openrouter-environment", variable: "OPENROUTER_API_KEY" },
       ],
       configurationRevision: "m1-openrouter-1",
@@ -629,7 +654,10 @@ export async function createDeepSeekCodingAgent(
       catalog: deepSeekProductionCatalog,
       defaultModelId: "deepseek-v4-pro",
       environmentVariables: [
-        { sourceId: "project-deepseek-environment", variable: "FAST_DEEPSEEK_API_KEY" },
+        {
+          sourceId: "project-deepseek-environment",
+          variable: productEnvironment.deepSeekApiKey,
+        },
         { sourceId: "deepseek-environment", variable: "DEEPSEEK_API_KEY" },
       ],
       configurationRevision: "m5-deepseek-1",
@@ -651,7 +679,7 @@ export async function createGlmCodingAgent(
       catalog: glmProductionCatalog,
       defaultModelId: "glm-5.2",
       environmentVariables: [
-        { sourceId: "project-glm-environment", variable: "FAST_GLM_API_KEY" },
+        { sourceId: "project-glm-environment", variable: productEnvironment.glmApiKey },
         { sourceId: "glm-environment", variable: "ZAI_API_KEY" },
       ],
       configurationRevision: "m5-glm-1",
@@ -673,7 +701,10 @@ export async function createAnthropicCodingAgent(
       catalog: anthropicProductionCatalog,
       defaultModelId: "claude-sonnet-4-5-20250929",
       environmentVariables: [
-        { sourceId: "project-anthropic-environment", variable: "FAST_ANTHROPIC_API_KEY" },
+        {
+          sourceId: "project-anthropic-environment",
+          variable: productEnvironment.anthropicApiKey,
+        },
         { sourceId: "anthropic-environment", variable: "ANTHROPIC_API_KEY" },
       ],
       configurationRevision: "m5-anthropic-1",

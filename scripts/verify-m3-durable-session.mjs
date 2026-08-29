@@ -37,8 +37,8 @@ const application = await createOpenAiCodingAgent({
   credentialSources: [
     createEnvironmentCredentialSource({
       id: "m3-reopen-verifier",
-      values: { FAST_OPENAI_API_KEY: "reopen-verifier-not-sent" },
-      variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+      values: { DEX_OPENAI_API_KEY: "reopen-verifier-not-sent" },
+      variables: { "openai.default": "DEX_OPENAI_API_KEY" },
     }),
   ],
   transport: {

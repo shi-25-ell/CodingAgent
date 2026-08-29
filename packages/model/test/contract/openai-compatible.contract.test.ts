@@ -56,8 +56,8 @@ async function createTestModel(
     credentials: createCredentialResolver([
       createEnvironmentCredentialSource({
         id: "environment",
-        values: { FAST_OPENAI_API_KEY: `credential-${randomUUID()}` },
-        variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+        values: { DEX_OPENAI_API_KEY: `credential-${randomUUID()}` },
+        variables: { "openai.default": "DEX_OPENAI_API_KEY" },
       }),
     ]),
     transport,
@@ -319,8 +319,8 @@ describe("OpenAI-compatible Model contract", () => {
       credentials: createCredentialResolver([
         createEnvironmentCredentialSource({
           id: "environment",
-          values: { FAST_OPENAI_API_KEY: credential },
-          variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+          values: { DEX_OPENAI_API_KEY: credential },
+          variables: { "openai.default": "DEX_OPENAI_API_KEY" },
         }),
       ]),
       transport,
@@ -736,8 +736,8 @@ describe("OpenAI-compatible Model contract", () => {
     const credentials = createCredentialResolver([
       createEnvironmentCredentialSource({
         id: "environment",
-        values: { FAST_OPENAI_API_KEY: "test-secret" },
-        variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+        values: { DEX_OPENAI_API_KEY: "test-secret" },
+        variables: { "openai.default": "DEX_OPENAI_API_KEY" },
       }),
     ]);
     const replayDescriptor = {

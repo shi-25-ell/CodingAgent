@@ -113,8 +113,8 @@ describe("M3 production Artifact spill", () => {
       credentialSources: [
         createEnvironmentCredentialSource({
           id: "m3-artifact",
-          values: { FAST_OPENAI_API_KEY: "artifact-fixture-credential" },
-          variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+          values: { DEX_OPENAI_API_KEY: "artifact-fixture-credential" },
+          variables: { "openai.default": "DEX_OPENAI_API_KEY" },
         }),
       ],
       transport,

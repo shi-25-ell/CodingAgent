@@ -37,8 +37,8 @@ function initializeGit(root: string): void {
 function credentialSource() {
   return createEnvironmentCredentialSource({
     id: "context-continuity",
-    values: { FAST_OPENAI_API_KEY: "fixture" },
-    variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+    values: { DEX_OPENAI_API_KEY: "fixture" },
+    variables: { "openai.default": "DEX_OPENAI_API_KEY" },
   });
 }
 
@@ -47,7 +47,7 @@ describe("production Context continuity", () => {
     const temporary = await mkdtemp(path.join(tmpdir(), "fast-context-continuity-"));
     const workspace = path.join(temporary, "workspace");
     const subdirectory = path.join(workspace, "packages", "demo");
-    const skillDirectory = path.join(workspace, ".fast", "skills", "review");
+    const skillDirectory = path.join(workspace, ".dex", "skills", "review");
     const dataDirectory = path.join(temporary, "data");
     await mkdir(subdirectory, { recursive: true });
     await mkdir(skillDirectory, { recursive: true });

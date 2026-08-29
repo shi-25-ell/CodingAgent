@@ -35,7 +35,7 @@ describe("print entry", () => {
 
     expect(missingResult).toEqual({ exitCode: 2, status: "usage_error" });
     expect(unknownResult).toEqual({ exitCode: 2, status: "usage_error" });
-    expect(missing.stderr[0]).toMatch(/--print/);
+    expect(missing.stderr[0]).toContain('用法: dex --print "Coding Task"');
     expect(unknown.stderr[0]).toMatch(/未知参数/);
     await application.dispose();
   });

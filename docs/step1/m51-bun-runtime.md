@@ -16,7 +16,7 @@ test runner 和 release build host。版本同时记录在 `.bun-version`、`pac
 fallback。CLI 可用以下命令输出机器可读的 runtime、version、revision、platform 和 architecture：
 
 ```bash
-bun run coding-agent --runtime-diagnostic
+bun packages/coding/bin/dex.js --runtime-diagnostic
 ```
 
 `.env` policy 分三层落实：
@@ -111,6 +111,6 @@ artifact 与 recovery 路径均由明确行为测试覆盖。
 OpenAI-compatible 的 deterministic production composition fixtures 均已通过。需要人工 live smoke 时，
 应在显式 opt-in 环境使用已配置的 direct provider 和低成本模型，且不得输出 credential。
 
-本阶段只保留已有 `coding-agent`、`@coding-agent/*` 和 `FAST_*` 工作标识，没有新增正式产品命名，
-因此未触发 N1。正式固化 CLI、package scope、config prefix、data directory、extension namespace 或
-release artifact name 前仍必须完成 N1。
+M5.1 完成时尚未触发 N1；项目 owner 后续在 M5.3 确认品牌为 “Dex Code”、CLI 为 `dex`。现有
+`@coding-agent/*` 保持技术 namespace，用户可见 config/env/data identity 已迁移到 `DEX_*`、`.dex`
+与 Dex Code 对应目录。完整记录见 [m53-tui-design-baseline.md](./m53-tui-design-baseline.md)。

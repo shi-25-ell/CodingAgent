@@ -63,7 +63,7 @@ describe.skipIf(process.platform !== "win32")("M2 real Git repository acceptance
         env: {
           ...process.env,
           FAST_M2_REPORT_PATH: reportPath,
-          FAST_DATA_HOME: dataRoot,
+          DEX_DATA_HOME: dataRoot,
         },
       },
     );

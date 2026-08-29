@@ -70,7 +70,7 @@ describe("CredentialResolver", () => {
     const source = createEnvironmentCredentialSource({
       id: "environment",
       values,
-      variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+      variables: { "openai.default": "DEX_OPENAI_API_KEY" },
     });
     const resolver = createCredentialResolver([source]);
     const request = {
@@ -80,7 +80,7 @@ describe("CredentialResolver", () => {
 
     await expect(resolver.resolve(request)).resolves.toEqual({ status: "missing" });
 
-    values.FAST_OPENAI_API_KEY = "first-secret";
+    values.DEX_OPENAI_API_KEY = "first-secret";
     const first = await resolver.resolve(request);
     expect(first).toMatchObject({ status: "found", sourceId: "environment" });
     if (first.status !== "found") throw new Error("credential 未解析");
@@ -88,7 +88,7 @@ describe("CredentialResolver", () => {
     expect(String(first.credential.value)).toBe("[REDACTED]");
     expect(JSON.stringify(first)).not.toContain("first-secret");
 
-    values.FAST_OPENAI_API_KEY = "rotated-secret";
+    values.DEX_OPENAI_API_KEY = "rotated-secret";
     const rotated = await resolver.resolve(request);
     if (rotated.status !== "found") throw new Error("rotated credential 未解析");
     expect(rotated.credential.value.reveal()).toBe("rotated-secret");
@@ -104,7 +104,7 @@ describe("CredentialResolver", () => {
       createEnvironmentCredentialSource({
         id: "environment",
         values,
-        variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+        variables: { "openai.default": "DEX_OPENAI_API_KEY" },
       }),
       createLocalConfigCredentialSource({ id: "local-config", path: configPath }),
     ]);
@@ -113,11 +113,11 @@ describe("CredentialResolver", () => {
     const fromConfig = await resolver.resolve(request);
     expect(fromConfig).toMatchObject({ status: "found", sourceId: "local-config" });
 
-    values.FAST_OPENAI_API_KEY = "environment-secret";
+    values.DEX_OPENAI_API_KEY = "environment-secret";
     const fromEnvironment = await resolver.resolve(request);
     expect(fromEnvironment).toMatchObject({ status: "found", sourceId: "environment" });
 
-    values.FAST_OPENAI_API_KEY = undefined;
+    values.DEX_OPENAI_API_KEY = undefined;
     await writeFile(configPath, "[]", "utf8");
     await expect(resolver.resolve(request)).resolves.toEqual({
       status: "failed",

@@ -180,7 +180,7 @@ Vibe coding 过程中，涉及产品信息层级、主要操作路径或大面�
 
 ### 3.7 产品命名是独立的人工决策点
 
-项目目前没有正式产品名。文档中的 “Fast”/“Coding Agent”、CLI 的 `coding-agent`、package scope `@coding-agent/*` 和 `FAST_*` environment prefix 都只是工作标识。它们不能在视觉或 command implementation 中被默认为最终品牌。
+N1 已由项目 owner 确认：正式品牌为 “Dex Code”，CLI executable 为 `dex`。用户可见 config/env/data identity 使用 `DEX_*`、`.dex`、`dex` 与 Windows `Dex Code` 目录；package scope `@coding-agent/*`、代码中的 `CodingAgent` 等以及 extension contract namespace `coding-agent` 保持技术命名。完整选择、边界与迁移规则记录在 [m53-tui-design-baseline.md](./m53-tui-design-baseline.md)。
 
 当实现第一次需要以下任一内容时，vibe coding agent 必须主动提醒项目 owner，并触发 N1 命名决策：
 
@@ -190,7 +190,7 @@ Vibe coding 过程中，涉及产品信息层级、主要操作路径或大面�
 - environment variable prefix、extension manifest namespace、diagnostic/log prefix；
 - release artifact name、README 标题或对外截图。
 
-N1 至少确认 display name 和 CLI executable，并明确 package/config/env/extension namespace 是同步采用产品名、保持技术标识，还是分阶段迁移。命名确定前可以继续实现与名称无关的 projection、layout、components 和 tests；必须使用集中式 working-name token/fixture，不能把工作标识散落到 renderer 和 command handlers。命名确认后进行一次可审查的原子替换，并为已有 config/data path 定义兼容或迁移策略。
+N1 的实现必须从集中式 product identity 读取名称，不能把品牌散落到 renderer 和 command handlers。旧工作标识尚未发布，因此不建立长期双读 fallback；检测到旧 `FAST_*` 或 `.fast` 时给出显式迁移诊断。
 
 ## 4. 依赖与执行顺序
 

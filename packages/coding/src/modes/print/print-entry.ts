@@ -1,5 +1,6 @@
 import type { RunReport, WorkspaceBinding } from "@coding-agent/agent";
 import type { CodingAgent } from "../../app/coding-agent.js";
+import { productIdentity } from "../../product/index.js";
 import { reduceProjection } from "../../projection/projection.js";
 import type { InteractionMode } from "../registry.js";
 
@@ -24,7 +25,7 @@ export type PrintEntryResult =
   | { readonly exitCode: 1; readonly status: "start_error" };
 
 function usageError(message: string, io: PrintIo): PrintEntryResult {
-  io.stderr(`${message}\n用法: coding-agent --print "Coding Task"\n`);
+  io.stderr(`${message}\n用法: ${productIdentity.executable} --print "Coding Task"\n`);
   return { exitCode: 2, status: "usage_error" };
 }
 

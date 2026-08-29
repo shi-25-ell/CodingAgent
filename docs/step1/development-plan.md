@@ -1,11 +1,11 @@
-# Fast v1 开发计划
+# Dex Code v1 开发计划
 
 > 依据：[architecture-design.md](./architecture-design.md)、[detailed-design.md](./detailed-design.md) 与项目交付约束
-> Runtime/TUI 更新：[opentui-bun-development-plan.md](./opentui-bun-development-plan.md) 已确定 Bun + OpenTUI，并以 M5.1–M5.5 完成原 M6。本文中的 “Fast”、`coding-agent` 和 `@coding-agent/*` 都是工作标识，产品名仍待项目 owner 决定。
+> Runtime/TUI 更新：[opentui-bun-development-plan.md](./opentui-bun-development-plan.md) 已确定 Bun + OpenTUI，并以 M5.1–M5.5 完成原 M6。N1 已确认品牌为 “Dex Code”、CLI 为 `dex`；`coding-agent` 和 `@coding-agent/*` 保持技术命名。
 
 ## 1. 计划结论
 
-Fast v1 按新的四包架构重新建设：
+Dex Code v1 按新的四包架构重新建设：
 
 ```text
 packages/
@@ -31,7 +31,7 @@ packages/
 
 ### 2.1 不可削减的核心能力
 
-以下能力共同构成 Fast v1，不能用占位实现代替：
+以下能力共同构成 Dex Code v1，不能用占位实现代替：
 
 | 领域 | 首版必须完成 |
 | --- | --- |
@@ -447,7 +447,7 @@ M7 还需要对 M6A 的设计基线执行人工 visual QA。自动测试负责 e
 
 ## 10. 首版完成判定
 
-Fast v1 只有在以下事实同时成立时才可称为完成：
+Dex Code v1 只有在以下事实同时成立时才可称为完成：
 
 - 四个 package 均形成有深度的 Module，而不是目录占位；
 - coding task 通过 `CodingAgent` 进入统一 Agent/Harness/Session/ToolHost 路径；
@@ -463,7 +463,7 @@ Fast v1 只有在以下事实同时成立时才可称为完成：
 
 ## 11. 首版后的深化路线
 
-这些阶段不属于 Fast v1 release gate，但属于明确保留的产品演进计划。它们不能通过提前放置空 manager/interface 来宣称完成。
+这些阶段不属于 Dex Code v1 release gate，但属于明确保留的产品演进计划。它们不能通过提前放置空 manager/interface 来宣称完成。
 
 ### E1：多级 compaction 与长期 memory
 

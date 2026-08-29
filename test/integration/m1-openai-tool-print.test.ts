@@ -206,10 +206,10 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     );
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      FAST_OPENAI_API_KEY: "",
+      DEX_OPENAI_API_KEY: "",
       OPENAI_API_KEY: "",
     };
-    delete env.FAST_OPENAI_MODEL;
+    delete env.DEX_OPENAI_MODEL;
 
     const result = spawnSync(process.execPath, [entry, "--print", "status"], {
       cwd: repositoryRoot,
@@ -248,8 +248,8 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     );
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      FAST_MODEL_PROVIDER: "openrouter",
-      FAST_OPENROUTER_API_KEY: "",
+      DEX_MODEL_PROVIDER: "openrouter",
+      DEX_OPENROUTER_API_KEY: "",
       OPENROUTER_API_KEY: "",
     };
 
@@ -291,12 +291,51 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     const result = spawnSync(process.execPath, [entry, "--print", "status"], {
       cwd: repositoryRoot,
       encoding: "utf8",
-      env: { ...process.env, FAST_MODEL_PROVIDER: "typo-provider" },
+      env: { ...process.env, DEX_MODEL_PROVIDER: "typo-provider" },
     });
 
     expect(result.status).toBe(2);
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe("不支持的 model provider: typo-provider\n");
+  });
+
+  it("production CLI 对旧 product namespace 给出迁移诊断", async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), "dex-m1-legacy-cli-"));
+    temporaryDirectories.push(repositoryRoot);
+    expect(spawnSync("git", ["init", "-q"], { cwd: repositoryRoot }).status).toBe(0);
+    expect(
+      spawnSync(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.invalid",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "fixture",
+          "-q",
+        ],
+        { cwd: repositoryRoot },
+      ).status,
+    ).toBe(0);
+    const entry = fileURLToPath(
+      new URL("../../packages/coding/dist/cli/entry.js", import.meta.url),
+    );
+    const environment = { ...process.env, FAST_MODEL_PROVIDER: "openai" };
+    delete environment.DEX_MODEL_PROVIDER;
+    const result = spawnSync(process.execPath, [entry, "--print", "status"], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: environment,
+    });
+
+    expect(result.status).toBe(3);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe(
+      "检测到旧工作标识 FAST_MODEL_PROVIDER；请改用 DEX_MODEL_PROVIDER。Dex Code 不会静默读取旧环境变量。\n",
+    );
   });
 
   it("composition 对 missing/failed credential 给出稳定错误码", async () => {
@@ -362,7 +401,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
       encoding: "utf8",
       env: {
         ...process.env,
-        FAST_DATA_HOME: await temporaryDataDirectory("fast-m1-process-data-"),
+        DEX_DATA_HOME: await temporaryDataDirectory("fast-m1-process-data-"),
       },
     });
 
@@ -377,7 +416,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     const initialCredential = `credential-initial-${randomUUID()}`;
     const runtimeCredential = `credential-rotated-${randomUUID()}`;
     const credentialValues: Record<string, string | undefined> = {
-      FAST_OPENAI_API_KEY: initialCredential,
+      DEX_OPENAI_API_KEY: initialCredential,
     };
     await writeFile(path.join(root, "answer.txt"), `vertical slice ${runtimeCredential}`, "utf8");
     initializeGit(root);
@@ -422,7 +461,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
         createEnvironmentCredentialSource({
           id: "test-environment",
           values: credentialValues,
-          variables: { "openai.default": "FAST_OPENAI_API_KEY" },
+          variables: { "openai.default": "DEX_OPENAI_API_KEY" },
         }),
       ],
       clock: new ManualClock(1_000),
@@ -445,7 +484,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
       ],
       maxOutputTokens: 128,
     });
-    credentialValues.FAST_OPENAI_API_KEY = runtimeCredential;
+    credentialValues.DEX_OPENAI_API_KEY = runtimeCredential;
     const stdout: string[] = [];
     const stderr: string[] = [];
 

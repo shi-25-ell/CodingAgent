@@ -25,7 +25,7 @@ const source = run(process.execPath, [
 const packageBin = run(process.execPath, [
   "--no-env-file",
   "run",
-  "coding-agent",
+  "dex",
   "--runtime-diagnostic",
 ]);
 const bundle = run(process.execPath, [
@@ -66,7 +66,7 @@ for (const diagnostic of diagnostics) {
 }
 
 const invalidProviderEnvironment = {
-  FAST_MODEL_PROVIDER: "m51-invalid-provider",
+  DEX_MODEL_PROVIDER: "m51-invalid-provider",
 };
 const sourceFailure = run(
   process.execPath,
