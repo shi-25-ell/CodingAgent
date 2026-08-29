@@ -26,6 +26,7 @@ import { bindOpenTuiComposer, createOpenTuiComposerOptions } from "./opentui-com
 import {
   createOpenTuiCodeOptions,
   createOpenTuiInlineDiffOptions,
+  createOpenTuiMarkdownOptions,
 } from "./opentui-content-adapters.js";
 import { OpenTuiDiffViewer } from "./opentui-diff-viewer.jsx";
 import type { OpenTuiTheme } from "./opentui-theme-adapter.js";
@@ -122,6 +123,7 @@ function TranscriptBlock(props: {
       <box
         id={`transcript:${props.block.id}`}
         flexDirection="column"
+        flexShrink={0}
         paddingLeft={1}
         paddingRight={1}
         marginBottom={1}
@@ -136,7 +138,13 @@ function TranscriptBlock(props: {
           {blockLabel(props.block)}
         </text>
         <Show when={props.block.kind === "assistant" && text().length > 0}>
-          <text fg={props.theme.colors.text}>{text()}</text>
+          <markdown
+            {...createOpenTuiMarkdownOptions(props.theme, props.syntaxStyle, {
+              content: text().trim(),
+              streaming: false,
+            })}
+            width="100%"
+          />
         </Show>
         <Show when={props.block.kind !== "assistant"}>
           <text
@@ -304,15 +312,31 @@ function Transcript(props: OpenTuiSessionAppProps & { readonly availableColumns:
         )}
       </For>
       <Show when={Boolean(props.viewModel().activeRun?.assistantStream?.text)}>
-        <box id="assistant-stream" flexDirection="column" paddingLeft={1} paddingRight={1}>
+        <box
+          id="assistant-stream"
+          flexDirection="column"
+          flexShrink={0}
+          paddingLeft={1}
+          paddingRight={1}
+        >
           <text fg={props.theme().colors.streaming}>Dex · streaming</text>
-          <text fg={props.theme().colors.text}>
-            {props.viewModel().activeRun?.assistantStream?.text}
-          </text>
+          <markdown
+            {...createOpenTuiMarkdownOptions(props.theme(), props.syntaxStyle(), {
+              content: props.viewModel().activeRun?.assistantStream?.text.trim() ?? "",
+              streaming: true,
+            })}
+            width="100%"
+          />
         </box>
       </Show>
       <Show when={Boolean(props.viewModel().activeRun?.assistantStream?.reasoning)}>
-        <box id="assistant-reasoning" flexDirection="column" paddingLeft={1} paddingRight={1}>
+        <box
+          id="assistant-reasoning"
+          flexDirection="column"
+          flexShrink={0}
+          paddingLeft={1}
+          paddingRight={1}
+        >
           <text fg={props.theme().colors.accent}>Reasoning · streaming</text>
           <text fg={props.theme().colors.textMuted}>
             {props.viewModel().activeRun?.assistantStream?.reasoning}
