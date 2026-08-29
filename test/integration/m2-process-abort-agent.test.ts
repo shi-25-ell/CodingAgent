@@ -21,6 +21,22 @@ import { ScriptedModel } from "@coding-agent/model/testing";
 
 const temporaryDirectories: string[] = [];
 
+async function removeTemporaryDirectory(directory: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      await rm(directory, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = error && typeof error === "object" ? Reflect.get(error, "code") : undefined;
+      if (code !== "EBUSY" && code !== "EPERM") throw error;
+      await Bun.sleep(50);
+    }
+  }
+  throw lastError;
+}
+
 function workspace(root: string): WorkspaceService {
   return {
     async inspect() {
@@ -37,11 +53,7 @@ function workspace(root: string): WorkspaceService {
 
 afterEach(async () => {
   await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((directory) =>
-        rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
-      ),
+    temporaryDirectories.splice(0).map((directory) => removeTemporaryDirectory(directory)),
   );
 });
 

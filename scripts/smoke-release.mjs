@@ -22,6 +22,12 @@ const source = run(process.execPath, [
   "packages/coding/src/cli/entry.ts",
   "--runtime-diagnostic",
 ]);
+const packageBin = run(process.execPath, [
+  "--no-env-file",
+  "run",
+  "coding-agent",
+  "--runtime-diagnostic",
+]);
 const bundle = run(process.execPath, [
   "--no-env-file",
   path.join(outputDirectory, "m51-cli-bundle.js"),
@@ -35,6 +41,7 @@ const executable = run(path.join(root, executableArtifact.file), ["--runtime-dia
 
 for (const [name, result] of [
   ["source", source],
+  ["package-bin", packageBin],
   ["bundle", bundle],
   ["executable", executable],
 ]) {
@@ -43,7 +50,9 @@ for (const [name, result] of [
   }
 }
 
-const diagnostics = [source, bundle, executable].map((result) => JSON.parse(result.stdout));
+const diagnostics = [source, packageBin, bundle, executable].map((result) =>
+  JSON.parse(result.stdout),
+);
 for (const diagnostic of diagnostics) {
   if (
     diagnostic.runtime !== "bun" ||
@@ -81,5 +90,5 @@ for (const result of [sourceFailure, bundleFailure, executableFailure]) {
 }
 
 process.stdout.write(
-  `Release smoke passed: source, bundle and executable on ${manifest.runtime.platform}/${manifest.runtime.architecture}.\n`,
+  `Release smoke passed: source, package bin, bundle and executable on ${manifest.runtime.platform}/${manifest.runtime.architecture}.\n`,
 );
