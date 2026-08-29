@@ -219,6 +219,20 @@ const glmProductionCatalog: readonly ModelDescriptor[] = [
     },
     source: { kind: "built_in", id: "glm", revision: "2026-08-29" },
   },
+  {
+    providerId: providerId("glm"),
+    modelId: modelId("glm-4.5-air"),
+    displayName: "GLM-4.5-Air",
+    capabilities: {
+      toolCalls: "multiple",
+      toolChoice: ["auto"],
+      reasoning: true,
+      reasoningReplay: true,
+      contextWindow: 128_000,
+      maxOutputTokens: 98_304,
+    },
+    source: { kind: "built_in", id: "glm", revision: "2026-08-29" },
+  },
 ];
 
 const anthropicProductionCatalog: readonly ModelDescriptor[] = [

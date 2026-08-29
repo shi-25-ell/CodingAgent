@@ -195,6 +195,7 @@ describe("M5 production provider composition", () => {
   it.each([
     ["deepseek", "deepseek-v4-pro", 128_000],
     ["glm", "glm-5.2", 1_000_000],
+    ["glm", "glm-4.5-air", 128_000],
     ["anthropic", "claude-sonnet-4-5-20250929", 200_000],
   ] as const)(
     "selects %s explicitly with catalog diagnostics",
@@ -203,6 +204,7 @@ describe("M5 production provider composition", () => {
       const application = await createProviderCodingAgent({
         provider: provider as ProductionProviderId,
         workspaceRoot: root,
+        modelId: model,
         dataDirectory: await temporaryDirectory(`fast-m5-${provider}-selection-data-`),
         credentialSources: fixtureCredentials("selection-secret"),
         webSearchProfile: "disabled",
