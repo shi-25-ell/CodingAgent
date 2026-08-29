@@ -46,6 +46,7 @@ export {
   type ProviderCodingAgentOptions,
 } from "./composition/openai-composition.js";
 export * from "./context/index.js";
+export * from "./modes/interactive/index.js";
 export * from "./modes/registry.js";
 export {
   type ApprovalBridge,

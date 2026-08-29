@@ -397,4 +397,30 @@ describe("pure Coding projection", () => {
     expect(projection.runs[run]?.compactions).toHaveLength(1);
     expect(projection.runs[run]).toMatchObject({ terminal: true, status: "recovering" });
   });
+
+  it("TuiViewModel 将 durable projection 与 local snapshot 分区", () => {
+    const projection = reduceProjection(undefined, snapshot);
+    const viewModel = selectTuiViewModel(projection, {
+      focusedRegion: "context",
+      composer: { value: "draft", revision: 2 },
+      transcriptViewport: {
+        scrollTop: 3,
+        followTail: false,
+        anchorBlockId: "ledger:2",
+        unseenBlockCount: 1,
+      },
+      terminal: { width: 120, height: 32 },
+      surfaceStack: [{ kind: "context" }],
+    });
+
+    expect(viewModel.ui).toMatchObject({
+      focusedRegion: "context",
+      composer: { value: "draft", revision: 2 },
+      transcriptViewport: { followTail: false, unseenBlockCount: 1 },
+      terminal: { width: 120, height: 32 },
+      surfaceStack: [{ kind: "context" }],
+    });
+    expect("composer" in viewModel.session).toBe(false);
+    expect(Object.isFrozen(viewModel.ui)).toBe(true);
+  });
 });

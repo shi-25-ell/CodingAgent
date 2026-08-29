@@ -27,5 +27,5 @@
       "@coding-agent/coding/testing": ["packages/coding/src/testing/index.ts"]
     }
   },
-  "include": ["packages/**/*.ts", "test/**/*.ts"]
+  "include": ["packages/**/*.ts", "packages/**/*.tsx", "test/**/*.ts", "test/**/*.tsx"]
 }

@@ -1,11 +1,13 @@
 # Bun is the only supported JavaScript runtime. Product credentials are resolved
 # by explicit credential sources; workspace .env files must never be imported.
 env = false
+preload = ["@opentui/solid/preload"]
 
 [install]
 exact = true
 
 [test]
+preload = ["@opentui/solid/preload"]
 coverageSkipTestFiles = true
 coveragePathIgnorePatterns = [
   "**/dist/**",

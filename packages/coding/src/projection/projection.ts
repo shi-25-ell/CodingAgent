@@ -478,6 +478,20 @@ export function selectTuiViewModel(
         return approval ? [approval] : [];
       })
     : [];
+  const dismissedDiagnosticIds = local.dismissedDiagnosticIds ?? new Set<string>();
+  const projectionDiagnostics: TuiViewModel["diagnostics"] = projection.diagnostics
+    .filter((diagnostic) => diagnostic.code === "SEMANTIC_SEQUENCE_GAP")
+    .map((diagnostic) => ({
+      id: `projection:${diagnostic.code}:${diagnostic.runId}:${diagnostic.message}`,
+      source: "projection",
+      severity: "error",
+      code: diagnostic.code,
+      message: diagnostic.message,
+      recoverable: true,
+    }));
+  const diagnostics = [...projectionDiagnostics, ...(local.diagnostics ?? [])].filter(
+    (diagnostic) => !dismissedDiagnosticIds.has(diagnostic.id),
+  );
   return freeze({
     version: 1,
     session: {
@@ -504,10 +518,20 @@ export function selectTuiViewModel(
     queues: projection.queues,
     ...(active?.context ? { context: active.context } : {}),
     ...(active?.report ? { terminalReport: active.report } : {}),
-    diagnostics: projection.diagnostics.filter(
-      (diagnostic) => diagnostic.code === "SEMANTIC_SEQUENCE_GAP",
-    ),
-    ...(local.focusedRegion ? { focusedRegion: local.focusedRegion } : {}),
-    expandedIds: local.expandedIds ?? new Set<string>(),
+    diagnostics,
+    ui: {
+      focusedRegion: local.focusedRegion ?? "composer",
+      expandedIds: local.expandedIds ?? new Set<string>(),
+      composer: local.composer ?? { value: "", revision: 0 },
+      transcriptViewport: local.transcriptViewport ?? {
+        scrollTop: 0,
+        followTail: true,
+        unseenBlockCount: 0,
+      },
+      surfaceStack: local.surfaceStack ?? [],
+      terminal: local.terminal ?? { width: 80, height: 24 },
+      ...(local.selectedModel ? { selectedModel: local.selectedModel } : {}),
+      sidebar: local.sidebar ?? { preference: "auto", open: false },
+    },
   });
 }

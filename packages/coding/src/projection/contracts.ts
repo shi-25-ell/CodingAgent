@@ -14,7 +14,7 @@ import type {
   ToolOutcome,
   WorkspaceBinding,
 } from "@coding-agent/agent";
-import type { AssistantMessage, ModelFailure } from "@coding-agent/model";
+import type { AssistantMessage, ModelFailure, ModelRef } from "@coding-agent/model";
 import type {
   CodingApprovalSummary,
   CodingRecoveryDiagnostic,
@@ -115,9 +115,83 @@ export interface CodingProjection extends CodingSessionSnapshot {
   readonly requiresSnapshot: boolean;
 }
 
+export type UiFocusRegion =
+  | "transcript"
+  | "composer"
+  | "tools"
+  | "approval"
+  | "queue"
+  | "context"
+  | "diff"
+  | "status";
+
+export type UiSurface =
+  | { readonly kind: "approval"; readonly id: string }
+  | { readonly kind: "context" }
+  | { readonly kind: "diff"; readonly file?: string }
+  | { readonly kind: "queue" }
+  | { readonly kind: "run_report"; readonly runId: RunId }
+  | { readonly kind: "session_selector" }
+  | { readonly kind: "model_selector" }
+  | { readonly kind: "command_palette" }
+  | { readonly kind: "help" }
+  | { readonly kind: "diagnostic"; readonly id: string };
+
+export interface ComposerLocalState {
+  readonly value: string;
+  readonly revision: number;
+}
+
+export interface TranscriptViewportState {
+  readonly scrollTop: number;
+  readonly followTail: boolean;
+  readonly anchorBlockId?: string;
+  readonly unseenBlockCount: number;
+}
+
+export interface TerminalDimensions {
+  readonly width: number;
+  readonly height: number;
+}
+
+export type SidebarPreference = "auto" | "hide";
+
+export interface SidebarLocalState {
+  readonly preference: SidebarPreference;
+  readonly open: boolean;
+}
+
+export interface TuiDiagnostic {
+  readonly id: string;
+  readonly source: "projection" | "controller" | "renderer";
+  readonly severity: "info" | "warning" | "error";
+  readonly code: string;
+  readonly message: string;
+  readonly recoverable: boolean;
+}
+
 export interface LocalUiState {
-  readonly focusedRegion?: "transcript" | "tools" | "approval" | "queue" | "context";
+  readonly focusedRegion?: UiFocusRegion;
   readonly expandedIds?: ReadonlySet<string>;
+  readonly composer?: ComposerLocalState;
+  readonly transcriptViewport?: TranscriptViewportState;
+  readonly surfaceStack?: readonly UiSurface[];
+  readonly terminal?: TerminalDimensions;
+  readonly diagnostics?: readonly TuiDiagnostic[];
+  readonly dismissedDiagnosticIds?: ReadonlySet<string>;
+  readonly selectedModel?: ModelRef;
+  readonly sidebar?: SidebarLocalState;
+}
+
+export interface TuiLocalViewModel {
+  readonly focusedRegion: UiFocusRegion;
+  readonly expandedIds: ReadonlySet<string>;
+  readonly composer: ComposerLocalState;
+  readonly transcriptViewport: TranscriptViewportState;
+  readonly surfaceStack: readonly UiSurface[];
+  readonly terminal: TerminalDimensions;
+  readonly selectedModel?: ModelRef;
+  readonly sidebar: SidebarLocalState;
 }
 
 export interface TuiViewModel {
@@ -142,7 +216,6 @@ export interface TuiViewModel {
   readonly queues: readonly QueueItem[];
   readonly context?: CodingContextProjection;
   readonly terminalReport?: RunReport;
-  readonly diagnostics: readonly CodingProjectionDiagnostic[];
-  readonly focusedRegion?: LocalUiState["focusedRegion"];
-  readonly expandedIds: ReadonlySet<string>;
+  readonly diagnostics: readonly TuiDiagnostic[];
+  readonly ui: TuiLocalViewModel;
 }
