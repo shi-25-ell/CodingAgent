@@ -143,6 +143,13 @@ export interface ComposerLocalState {
   readonly deliveryMode: "steering" | "follow_up";
 }
 
+export interface ApprovalPromptLocalState {
+  readonly approvalId: string;
+  readonly selectedDecision: "allow_once" | "deny";
+  readonly fullscreen: boolean;
+  readonly returnFocus: UiFocusRegion;
+}
+
 export interface TranscriptViewportState {
   readonly scrollTop: number;
   readonly followTail: boolean;
@@ -177,6 +184,7 @@ export interface LocalUiState {
   readonly focusedRegion?: UiFocusRegion;
   readonly expandedIds?: ReadonlySet<string>;
   readonly composer?: ComposerLocalState;
+  readonly approvalPrompt?: ApprovalPromptLocalState;
   readonly transcriptViewport?: TranscriptViewportState;
   readonly surfaceStack?: readonly UiSurface[];
   readonly terminal?: TerminalDimensions;
@@ -195,6 +203,7 @@ export interface TuiLocalViewModel {
   readonly focusedRegion: UiFocusRegion;
   readonly expandedIds: ReadonlySet<string>;
   readonly composer: ComposerLocalState;
+  readonly approvalPrompt?: ApprovalPromptLocalState;
   readonly transcriptViewport: TranscriptViewportState;
   readonly surfaceStack: readonly UiSurface[];
   readonly terminal: TerminalDimensions;

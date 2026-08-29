@@ -2,11 +2,18 @@ import { describe, expect, it } from "bun:test";
 import {
   createInteractiveLocalState,
   observeTranscriptGrowth,
+  reconcilePendingApproval,
   reduceInteractiveLocalState,
   type UiLocalIntent,
 } from "../../src/modes/interactive/index.js";
 
-function intent(value: Omit<UiLocalIntent, "version">): UiLocalIntent {
+type IntentWithoutVersion = UiLocalIntent extends infer T
+  ? T extends UiLocalIntent
+    ? Omit<T, "version">
+    : never
+  : never;
+
+function intent(value: IntentWithoutVersion): UiLocalIntent {
   return { version: 1, ...value } as UiLocalIntent;
 }
 
@@ -140,6 +147,70 @@ describe("interactive local UI state", () => {
     expect(state.surfaceStack).toEqual([{ kind: "diff", file: "src/a.ts" }, { kind: "context" }]);
     state = reduceInteractiveLocalState(state, intent({ type: "close_surface" }));
     expect(state.surfaceStack).toEqual([{ kind: "diff", file: "src/a.ts" }]);
+  });
+
+  it("pending approval 临时取得 focus、保留 draft，并按 FIFO identity 恢复", () => {
+    let state = createInteractiveLocalState({ width: 80, height: 24 });
+    state = reduceInteractiveLocalState(
+      state,
+      intent({ type: "composer_changed", value: "不要丢失" }),
+    );
+    const pending = (approvalId: string) => ({
+      approvalId,
+      callId: `call-${approvalId}`,
+      decisions: ["allow_once", "deny"] as const,
+      status: "pending" as const,
+      plan: {
+        callId: `call-${approvalId}`,
+        toolName: "shell",
+        resources: [],
+        effects: ["process"] as const,
+        risks: ["process"],
+        fingerprint: `fingerprint-${approvalId}`,
+      },
+    });
+
+    state = reconcilePendingApproval(state, [pending("one"), pending("two")]);
+    expect(state).toMatchObject({
+      focusedRegion: "approval",
+      composer: { value: "不要丢失", revision: 1 },
+      approvalPrompt: {
+        approvalId: "one",
+        selectedDecision: "allow_once",
+        fullscreen: false,
+        returnFocus: "composer",
+      },
+      surfaceStack: [{ kind: "approval", id: "one" }],
+    });
+    expect(
+      reduceInteractiveLocalState(state, intent({ type: "composer_changed", value: "leak" })),
+    ).toBe(state);
+    expect(
+      reduceInteractiveLocalState(state, intent({ type: "focus_region", region: "composer" })),
+    ).toBe(state);
+
+    state = reduceInteractiveLocalState(
+      state,
+      intent({ type: "set_approval_selection", approvalId: "one", decision: "deny" }),
+    );
+    state = reduceInteractiveLocalState(
+      state,
+      intent({ type: "set_approval_fullscreen", approvalId: "one", fullscreen: true }),
+    );
+    expect(state.approvalPrompt).toMatchObject({ selectedDecision: "deny", fullscreen: true });
+
+    state = reconcilePendingApproval(state, [pending("two")]);
+    expect(state.approvalPrompt).toMatchObject({
+      approvalId: "two",
+      selectedDecision: "allow_once",
+      fullscreen: false,
+      returnFocus: "composer",
+    });
+    state = reconcilePendingApproval(state, []);
+    expect(state.focusedRegion).toBe("composer");
+    expect(state.approvalPrompt).toBeUndefined();
+    expect(state.composer.value).toBe("不要丢失");
+    expect(state.surfaceStack).toEqual([]);
   });
 
   it("用户离开 tail 后累计新 block，重新 follow tail 时清零", () => {

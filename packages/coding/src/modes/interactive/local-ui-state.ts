@@ -1,3 +1,4 @@
+import type { CodingApprovalSummary } from "../../app/coding-events.js";
 import { immutableReadonlySet } from "../../projection/immutable-readonly-set.js";
 import type {
   InteractiveLocalState,
@@ -13,6 +14,7 @@ function positiveInteger(value: number, name: string): number {
 
 function freezeState(state: InteractiveLocalState): InteractiveLocalState {
   Object.freeze(state.composer);
+  if (state.approvalPrompt) Object.freeze(state.approvalPrompt);
   Object.freeze(state.transcriptViewport);
   Object.freeze(state.terminal);
   Object.freeze(state.sidebar);
@@ -71,6 +73,7 @@ export function reduceInteractiveLocalState(
 ): InteractiveLocalState {
   switch (intent.type) {
     case "focus_region":
+      if (previous.approvalPrompt && intent.region !== "approval") return previous;
       return previous.focusedRegion === intent.region
         ? previous
         : freezeState({ ...previous, focusedRegion: intent.region });
@@ -83,6 +86,7 @@ export function reduceInteractiveLocalState(
       return freezeState({ ...previous, expandedIds });
     }
     case "composer_changed":
+      if (previous.approvalPrompt) return previous;
       return previous.composer.value === intent.value
         ? previous
         : freezeState({
@@ -94,12 +98,35 @@ export function reduceInteractiveLocalState(
             },
           });
     case "set_composer_delivery":
+      if (previous.approvalPrompt) return previous;
       return previous.composer.deliveryMode === intent.delivery
         ? previous
         : freezeState({
             ...previous,
             composer: { ...previous.composer, deliveryMode: intent.delivery },
           });
+    case "set_approval_selection":
+      if (
+        previous.approvalPrompt?.approvalId !== intent.approvalId ||
+        previous.approvalPrompt.selectedDecision === intent.decision
+      ) {
+        return previous;
+      }
+      return freezeState({
+        ...previous,
+        approvalPrompt: { ...previous.approvalPrompt, selectedDecision: intent.decision },
+      });
+    case "set_approval_fullscreen":
+      if (
+        previous.approvalPrompt?.approvalId !== intent.approvalId ||
+        previous.approvalPrompt.fullscreen === intent.fullscreen
+      ) {
+        return previous;
+      }
+      return freezeState({
+        ...previous,
+        approvalPrompt: { ...previous.approvalPrompt, fullscreen: intent.fullscreen },
+      });
     case "transcript_viewport_changed": {
       if (!Number.isFinite(intent.scrollTop) || intent.scrollTop < 0) {
         throw new RangeError("Transcript scrollTop 必须是非负有限数");
@@ -122,6 +149,7 @@ export function reduceInteractiveLocalState(
       return freezeState({ ...previous, transcriptViewport: viewport });
     }
     case "open_surface": {
+      if (previous.approvalPrompt && intent.surface.kind !== "approval") return previous;
       const existingIndex = previous.surfaceStack.findIndex((surface) =>
         sameSurface(surface, intent.surface),
       );
@@ -136,6 +164,7 @@ export function reduceInteractiveLocalState(
       return freezeState({ ...previous, surfaceStack });
     }
     case "close_surface": {
+      if (previous.approvalPrompt) return previous;
       if (previous.surfaceStack.length === 0) return previous;
       const index = intent.kind
         ? previous.surfaceStack.findLastIndex((surface) => surface.kind === intent.kind)
@@ -204,6 +233,38 @@ export function reduceInteractiveLocalState(
             toolDisplay: { ...previous.toolDisplay, showGenericOutput: intent.visible },
           });
   }
+}
+
+export function reconcilePendingApproval(
+  previous: InteractiveLocalState,
+  approvals: readonly CodingApprovalSummary[],
+): InteractiveLocalState {
+  const pending = approvals.find((approval) => approval.status === "pending");
+  if (!pending) {
+    if (!previous.approvalPrompt) return previous;
+    const { approvalPrompt, ...withoutApprovalPrompt } = previous;
+    return freezeState({
+      ...withoutApprovalPrompt,
+      focusedRegion: approvalPrompt.returnFocus,
+      surfaceStack: previous.surfaceStack.filter((surface) => surface.kind !== "approval"),
+    });
+  }
+  if (previous.approvalPrompt?.approvalId === pending.approvalId) return previous;
+  const returnFocus = previous.approvalPrompt?.returnFocus ?? previous.focusedRegion;
+  return freezeState({
+    ...previous,
+    focusedRegion: "approval",
+    approvalPrompt: {
+      approvalId: pending.approvalId,
+      selectedDecision: "allow_once",
+      fullscreen: false,
+      returnFocus,
+    },
+    surfaceStack: [
+      ...previous.surfaceStack.filter((surface) => surface.kind !== "approval"),
+      { kind: "approval", id: pending.approvalId },
+    ],
+  });
 }
 
 export function observeTranscriptGrowth(

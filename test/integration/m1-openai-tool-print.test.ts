@@ -323,7 +323,7 @@ describe("M1 OpenAI-compatible coding vertical slice", () => {
     const entry = fileURLToPath(
       new URL("../../packages/coding/dist/cli/entry.js", import.meta.url),
     );
-    const environment = { ...process.env, FAST_MODEL_PROVIDER: "openai" };
+    const environment: NodeJS.ProcessEnv = { ...process.env, FAST_MODEL_PROVIDER: "openai" };
     delete environment.DEX_MODEL_PROVIDER;
     const result = spawnSync(process.execPath, [entry, "--print", "status"], {
       cwd: repositoryRoot,

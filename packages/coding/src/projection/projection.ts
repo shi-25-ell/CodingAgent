@@ -524,6 +524,7 @@ export function selectTuiViewModel(
       focusedRegion: local.focusedRegion ?? "composer",
       expandedIds: immutableReadonlySet(local.expandedIds),
       composer: local.composer ?? { value: "", revision: 0, deliveryMode: "steering" },
+      ...(local.approvalPrompt ? { approvalPrompt: local.approvalPrompt } : {}),
       transcriptViewport: local.transcriptViewport ?? {
         scrollTop: 0,
         followTail: true,

@@ -1,6 +1,6 @@
 # Dex Code M5.3 TUI design baseline
 
-> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A、V2、V3-A 与 V4-A 已确认，V5–V7 按依赖顺序补充。未经确认的结构性方案不得进入 approval、dedicated diff route 或 keymap behavior。
+> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A、V2、V3-A、V4-A 与 V5-A 已确认，V6–V7 按依赖顺序补充。未经确认的结构性方案不得进入 dedicated diff route 或 global keymap behavior。
 
 ## 1. N1：产品、CLI 与 namespace 命名
 
@@ -188,7 +188,28 @@ Composer editor policy：
 - `height < 12` 时沿用 V1 low-height policy：Composer editor 最少 1 行、最多 3 行，footer 保留 1 行，secondary status/hints 让位于 Transcript；
 - Composer 的 durable command 只能经过 `UiIntent -> InteractiveController -> CodingSession/CodingRunHandle`，Textarea Adapter 不直接持有 Session 或 Run。
 
-## 6. Owner checkpoint 状态
+## 6. V5：Bottom blocking approval prompt
+
+确认日期：2026-08-29
+
+项目 owner 选择 V5-A。pending approval 不进入 sidebar 或独立 workspace，而是在 Session 底部临时替换 Composer。Transcript 保持可见和原 scroll anchor；Composer draft/value/revision 保留但不再接收 input。prompt 是 blocking surface，取得 keyboard focus，直到 application event 把 approval 标记为 resolved、stale 或 withdrawn。
+
+默认 collapsed prompt 最多 15 行，展示 tool action、redacted resource scope、effects、risks、pending count 与 plan fingerprint prefix；用户可切 full-screen 查看完整 fingerprint 和长 plan。多个 pending approval 按 projection 的 stable approval order FIFO 显示；当前项解决后下一项重置为默认状态，全部解决后恢复进入 approval 前的 focus 和原 Composer draft。
+
+V5-A local interaction 固定为：
+
+| Input | 行为 |
+| --- | --- |
+| default focus | `Allow once` |
+| Left / `h` | 选择 `Allow once` |
+| Right / `l` | 选择 `Deny` |
+| Enter | 发送当前选择 |
+| Escape | 直接发送 `Deny` |
+| Ctrl+F | collapsed/full-screen 切换 |
+
+approval response 必须经过 `respond_approval` UiIntent，携带 stable approval ID、decision 与 exact plan fingerprint。只有 application ack 为 `accepted` / `already_applied` 且后续 semantic event 收敛后 prompt 才消失；`stale` 显示 `APPROVAL_STALE`，其他拒绝显示 `APPROVAL_RESPONSE_REJECTED`，两者都保留 prompt。Escape 永远不映射 abort；abort 是独立 Run command，approval focus scope 也不允许按键泄漏到 Composer、background surface 或 global destructive command。
+
+## 7. Owner checkpoint 状态
 
 | ID | 状态 | 记录 |
 | --- | --- | --- |
@@ -197,7 +218,7 @@ Composer editor policy：
 | V2 | 已确认 | 默认 `dex` dark/light palette；可选 terminal-adaptive `system` |
 | V3 | 已确认 | V3-A：semantic inline tools；mutation diff 留在 Transcript |
 | V4 | 已确认 | V4-A：单一 run-aware Composer；active 默认 STEER，footer 可切 FOLLOW-UP |
-| V5 | 待确认 | approval 与危险操作 flow |
+| V5 | 已确认 | V5-A：bottom blocking prompt；默认 Allow once；Escape Deny；可 full-screen |
 | V6 | 待确认 | diff 导航与 width matrix |
 | V7 | 待确认 | executable keymap、可发现性与 conflict report |
 

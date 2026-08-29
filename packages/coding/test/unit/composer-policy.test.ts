@@ -41,7 +41,9 @@ describe("run-aware Composer policy", () => {
     expect(
       gate.trigger(
         () => text,
-        async (value) => submitted.push(value),
+        async (value) => {
+          submitted.push(value);
+        },
       ),
     ).toBe(true);
     expect(

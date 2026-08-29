@@ -1,4 +1,11 @@
 export {
+  type ApprovalPromptKeyAction,
+  type ApprovalPromptPresentation,
+  createApprovalResponseIntent,
+  resolveApprovalPromptKey,
+  selectApprovalPromptPresentation,
+} from "./approval-prompt.js";
+export {
   type ComposerDeliveryMode,
   ComposerHistory,
   type ComposerHistoryDirection,
@@ -29,8 +36,13 @@ export {
   appendInteractiveDiagnostic,
   createInteractiveLocalState,
   observeTranscriptGrowth,
+  reconcilePendingApproval,
   reduceInteractiveLocalState,
 } from "./local-ui-state.js";
+export {
+  OpenTuiApprovalPrompt,
+  type OpenTuiApprovalPromptProps,
+} from "./opentui-approval-prompt.js";
 export {
   bindOpenTuiComposer,
   createOpenTuiComposerOptions,

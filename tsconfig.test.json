@@ -5,6 +5,8 @@
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
     "types": ["bun", "node"],
     "baseUrl": ".",
     "paths": {

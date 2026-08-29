@@ -1,6 +1,7 @@
 import type { BranchId } from "@coding-agent/agent";
 import type { ModelRef } from "@coding-agent/model";
 import type {
+  ApprovalPromptLocalState,
   ComposerLocalState,
   SidebarLocalState,
   SidebarPreference,
@@ -13,6 +14,7 @@ import type {
 } from "../../projection/contracts.js";
 
 export type {
+  ApprovalPromptLocalState,
   ComposerLocalState,
   SidebarLocalState,
   SidebarPreference,
@@ -36,6 +38,16 @@ export type UiLocalIntent = UiIntentBase &
     | {
         readonly type: "set_composer_delivery";
         readonly delivery: "steering" | "follow_up";
+      }
+    | {
+        readonly type: "set_approval_selection";
+        readonly approvalId: string;
+        readonly decision: "allow_once" | "deny";
+      }
+    | {
+        readonly type: "set_approval_fullscreen";
+        readonly approvalId: string;
+        readonly fullscreen: boolean;
       }
     | {
         readonly type: "transcript_viewport_changed";
@@ -108,6 +120,7 @@ export interface InteractiveLocalState {
   readonly focusedRegion: UiFocusRegion;
   readonly expandedIds: ReadonlySet<string>;
   readonly composer: ComposerLocalState;
+  readonly approvalPrompt?: ApprovalPromptLocalState;
   readonly transcriptViewport: TranscriptViewportState;
   readonly surfaceStack: readonly UiSurface[];
   readonly terminal: TerminalDimensions;

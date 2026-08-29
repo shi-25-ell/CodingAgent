@@ -18,6 +18,7 @@ import {
   appendInteractiveDiagnostic,
   createInteractiveLocalState,
   observeTranscriptGrowth,
+  reconcilePendingApproval,
   reduceInteractiveLocalState,
 } from "./local-ui-state.js";
 
@@ -55,6 +56,8 @@ const localIntentTypes: ReadonlySet<UiLocalIntent["type"]> = new Set([
   "set_expanded",
   "composer_changed",
   "set_composer_delivery",
+  "set_approval_selection",
+  "set_approval_fullscreen",
   "transcript_viewport_changed",
   "open_surface",
   "close_surface",
@@ -200,6 +203,9 @@ class ProductionInteractiveController implements InteractiveController {
         return this.#applied(intent);
       }
       case "submit_composer": {
+        if (this.#local.approvalPrompt) {
+          return this.#rejected(intent, "pending approval 期间 Composer 不接收 submit");
+        }
         if (intent.expectedRevision !== this.#local.composer.revision) {
           return this.#rejected(intent, "Composer revision 已变化，请重新提交");
         }
@@ -251,6 +257,12 @@ class ProductionInteractiveController implements InteractiveController {
           decision: intent.decision,
           planFingerprint: intent.planFingerprint,
         });
+        if (!commandAccepted(ack)) {
+          this.#appendCommandDiagnostic(
+            ack.status === "stale" ? "APPROVAL_STALE" : "APPROVAL_RESPONSE_REJECTED",
+            ack.status,
+          );
+        }
         return this.#fromAck(intent, ack);
       }
       case "update_queue": {
@@ -355,6 +367,7 @@ class ProductionInteractiveController implements InteractiveController {
           return;
         }
         this.#projection = next;
+        this.#reconcileApprovalUi(next);
         const growth = Math.max(0, next.transcript.length - previousTranscriptLength);
         this.#local = observeTranscriptGrowth(this.#local, growth);
         this.#emit();
@@ -387,11 +400,23 @@ class ProductionInteractiveController implements InteractiveController {
     const previousTranscriptLength =
       this.#projection?.transcript.length ?? projection.transcript.length;
     this.#projection = projection;
+    this.#reconcileApprovalUi(projection);
     this.#local = observeTranscriptGrowth(
       this.#local,
       Math.max(0, projection.transcript.length - previousTranscriptLength),
     );
     this.#emit();
+  }
+
+  #reconcileApprovalUi(projection: CodingProjection): void {
+    const active = projection.activeRunId ? projection.runs[projection.activeRunId] : undefined;
+    const approvals = active
+      ? active.approvalOrder.flatMap((approvalId) => {
+          const approval = active.approvals[approvalId];
+          return approval ? [approval] : [];
+        })
+      : [];
+    this.#local = reconcilePendingApproval(this.#local, approvals);
   }
 
   #appendDiagnostic(diagnostic: TuiDiagnostic): void {

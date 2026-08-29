@@ -120,7 +120,9 @@ describe("InteractiveController contract", () => {
     const gate = new ManualGate();
     const model = new ScriptedModel([
       {
-        before: async (signal) => gate.wait(signal),
+        before: async (signal) => {
+          await gate.wait(signal);
+        },
         outcome: { status: "completed", response: scriptedTextResponse("not reached") },
       },
     ]);
@@ -219,6 +221,111 @@ describe("InteractiveController contract", () => {
 
     await controller.dispose();
     await application.dispose();
+  });
+
+  it("pending approval 取得 focus，stale response 保留 prompt 并产生 typed diagnostic", async () => {
+    const activeRunId = runId("run-controller-approval");
+    const currentBranchId = branchId("branch-controller-approval");
+    const ref = { sessionId: sessionId("session-controller-approval") };
+    const approval = {
+      approvalId: "approval-controller",
+      callId: "call-controller",
+      decisions: ["allow_once", "deny"] as const,
+      status: "pending" as const,
+      plan: {
+        callId: "call-controller",
+        toolName: "shell",
+        resources: [{ kind: "command" as const, value: "bun test" }],
+        effects: ["process" as const],
+        risks: ["启动 foreground process"],
+        fingerprint: "fingerprint-controller",
+      },
+    };
+    const snapshot: CodingSessionSnapshot = {
+      version: 1,
+      ref,
+      workspace: { root: "D:/work/interactive-approval", fingerprint: "head:abc" },
+      revision: 1,
+      currentBranchId,
+      activeRunId,
+      branches: [{ branchId: currentBranchId, recordCount: 1 }],
+      runOrder: [activeRunId],
+      runs: {
+        [activeRunId]: {
+          runId: activeRunId,
+          phase: "tool_batch",
+          status: "awaiting_approval",
+          terminal: false,
+          tools: {},
+          toolOrder: [],
+          approvals: { [approval.approvalId]: approval },
+          approvalOrder: [approval.approvalId],
+          compactions: [],
+        },
+      },
+      transcript: [],
+      queues: [],
+      eventCursors: { [activeRunId]: 0 },
+    };
+    const run = {
+      runId: activeRunId,
+      snapshot: async () => ({ snapshot, cursor: { semanticSequence: 0 } }),
+      events: () => ({
+        async *[Symbol.asyncIterator](): AsyncIterator<CodingEvent> {},
+      }),
+      diagnostics: () => ({}),
+      dispatch: async (command: { commandId: string }) => ({
+        commandId: command.commandId,
+        status: "stale" as const,
+      }),
+      finished: new Promise(() => {}),
+    } as unknown as CodingRunHandle;
+    const session = {
+      ref,
+      activeRun: () => run,
+      snapshot: async () => snapshot,
+    } as unknown as CodingSession;
+    const controller = createInteractiveController({
+      session,
+      width: 80,
+      height: 24,
+      createCommandId: () => "approval-response-1",
+    });
+
+    const view = await controller.start();
+    expect(view.ui).toMatchObject({
+      focusedRegion: "approval",
+      approvalPrompt: {
+        approvalId: approval.approvalId,
+        selectedDecision: "allow_once",
+      },
+      surfaceStack: [{ kind: "approval", id: approval.approvalId }],
+    });
+    await expect(
+      controller.dispatch({
+        version: 1,
+        type: "respond_approval",
+        approvalId: approval.approvalId,
+        decision: "allow_once",
+        planFingerprint: approval.plan.fingerprint,
+      }),
+    ).resolves.toMatchObject({
+      status: "rejected",
+      commandAck: { commandId: "approval-response-1", status: "stale" },
+    });
+    expect(controller.current().ui.approvalPrompt?.approvalId).toBe(approval.approvalId);
+    expect(controller.current().diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "APPROVAL_STALE" })]),
+    );
+    const blockedSubmit = await controller.dispatch({
+      version: 1,
+      type: "submit_composer",
+      expectedRevision: 0,
+    });
+    expect(blockedSubmit.status).toBe("rejected");
+    expect(blockedSubmit.message).toContain("pending approval");
+
+    await controller.dispose();
   });
 
   it("semantic sequence gap 通过 active handle 的 atomic snapshot/live join 重同步", async () => {

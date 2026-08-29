@@ -29,7 +29,9 @@ describe("OpenTUI Composer Adapter", () => {
     setup.renderer.root.add(textarea);
     const dispose = bindOpenTuiComposer(textarea, {
       onChanged: (value) => changes.push(value),
-      onSubmit: async (value) => submitted.push(value),
+      onSubmit: async (value) => {
+        submitted.push(value);
+      },
       onLargePaste: (paste) => largePastes.push(paste.placeholder ?? ""),
     });
     textarea.focus();
