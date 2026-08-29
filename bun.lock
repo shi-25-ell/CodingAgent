@@ -6,6 +6,7 @@
       "name": "fast-workspace",
       "devDependencies": {
         "@biomejs/biome": "2.2.2",
+        "@coding-agent/coding": "workspace:*",
         "@types/bun": "1.4.0",
         "@types/node": "24.3.0",
         "typescript": "5.9.2",
