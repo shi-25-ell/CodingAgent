@@ -2,6 +2,7 @@
 
 > 上位文档：[architecture-design.md](architecture-design.md)  
 > 范围：定义 `model`、`agent`、`coding`、`sqlite` 四个 packages 的 public API、内部 Module、状态机、错误、持久化、安全、扩展与测试契约。本文不要求文件与类型一一对应。
+> Runtime/TUI 决策补充：[opentui-bun-development-plan.md](opentui-bun-development-plan.md) 已确定 Bun + OpenTUI；后续实现不得继续采用旧 runtime/terminal framework 假设。
 
 ## 1. 设计基线
 
@@ -30,7 +31,7 @@
 @coding-agent/sqlite
 ```
 
-最终 npm scope 可以随产品名调整；folder names 和职责不因此改变。workspace root 为 private package，不 export runtime API。
+以上 package 名、`coding-agent` CLI、现有 `FAST_*` config prefix 和文档中的 “Fast” 都是工作标识，不代表产品已经命名。最终 package scope、CLI executable、display name、config/env namespace、application data directory 和 extension namespace 需要在补充计划的命名决策点由项目 owner 确认；folder ownership 和职责不因此改变。workspace root 为 private package，不 export runtime API。
 
 ### 1.3 通用约定
 
@@ -765,7 +766,7 @@ CLI executable 只做：
 4. 映射 typed result 到 stdout/stderr/exit code；
 5. 在退出前等待 cleanup。
 
-第一版 commands：
+第一版 commands（以下使用尚未确认的工作命令名）：
 
 ```text
 coding-agent                         # 当前目录启动 interactive mode
@@ -779,7 +780,7 @@ coding-agent skills list
 coding-agent doctor
 ```
 
-命令名可以在正式品牌确定后调整，行为契约不依赖 bin 名。
+命令名必须在正式品牌/CLI 命名决策后统一调整，行为契约不依赖 bin 名。任何实现者准备固化 help header、binary、shell completion、config path、environment prefix、extension manifest namespace 或视觉 wordmark 前，必须提醒项目 owner 完成命名决策，不能自行把工作标识当成正式名称。
 
 Exit code 建议：
 
@@ -809,16 +810,17 @@ export interface ModeRegistry {
 
 #### 4.3.1 Interactive mode
 
-位置：`coding/src/modes/interactive/`，使用 Ink。
+位置：`coding/src/modes/interactive/`，使用 OpenTUI Core、OpenTUI Solid 和 OpenTUI Keymap。
 
 内部结构：
 
-- `App`：screen composition；
+- `App`：screen composition 与 OpenTUI lifecycle owner；
 - `ViewState` + pure reducer：把 `CodingEvent` 映射成 UI state；
 - input controller：将键盘/commands 映射为 facade calls；
 - components：Session/model selector、transcript、tool view、permission、queues、status、RunReport；
 - render throttling：progress delta 合并，semantic event 不丢失；
-- terminal lifecycle：raw mode、resize、Ctrl+C/abort、clean restore 由 Ink/adapter 管理。
+- terminal lifecycle：alternate screen、raw mode、resize、Ctrl+C/abort、signal 和 clean restore 由 OpenTUI/interactive Adapter 管理；
+- OpenTUI native/renderable types 只存在于 interactive implementation，不进入 `CodingEvent`、projection 或 `CodingAgent` Interface。
 
 TUI 禁止：
 

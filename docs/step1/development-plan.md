@@ -1,6 +1,7 @@
 # Fast v1 开发计划
 
 > 依据：[architecture-design.md](./architecture-design.md)、[detailed-design.md](./detailed-design.md) 与项目交付约束
+> Runtime/TUI 更新：[opentui-bun-development-plan.md](./opentui-bun-development-plan.md) 已确定 Bun + OpenTUI，并以 M5.1–M5.5 完成原 M6。本文中的 “Fast”、`coding-agent` 和 `@coding-agent/*` 都是工作标识，产品名仍待项目 owner 决定。
 
 ## 1. 计划结论
 
@@ -137,7 +138,7 @@ M0 Workspace 与最小纵向链路
 
 **实施内容**：
 
-- 配置 npm workspace、共享 TypeScript 配置、lint、test、build 与 package exports；
+- 配置 workspace、共享 TypeScript 配置、lint、test、build 与 package exports；最终 Bun toolchain 迁移见 M5.1 补充计划；
 - 建立目标四包的依赖边界规则，禁止循环依赖和跨包深层 import；package 必须与首个真实实现一同引入，不先创建空目录占位；
 - 在 `model` 定义 canonical message/event/tool/usage/error contracts；
 - 在 `agent` 定义 Run、terminal、Session、context、tool 和 policy 的核心 contracts；
@@ -284,7 +285,7 @@ M0 Workspace 与最小纵向链路
 
 #### M6A：TUI 交互与视觉设计 checkpoint
 
-该 checkpoint 需要较高人工参与。AI 可以辅助生成备选布局、状态清单和可运行 prototype，但最终由人确认信息层级、密度、视觉方向和操作习惯。
+该 checkpoint 需要较高人工参与。AI 可以辅助生成备选布局、状态清单和可运行候选实现，但最终由人确认产品命名、信息层级、密度、视觉方向和操作习惯。涉及 display name、CLI executable、config/env namespace、wordmark 或 help header 时，必须先触发补充计划中的命名决策点，不得擅自沿用工作标识。
 
 必须形成：
 
@@ -305,7 +306,7 @@ M0 Workspace 与最小纵向链路
 
 - 完成架构文档规定的 CLI command、flag、exit code 与 config precedence；
 - 强化 `print` mode，支持非交互任务、structured result 与脚本调用；
-- 实现基于 Ink 的 interactive TUI，同时支持纯对话和 coding task；
+- 实现基于 OpenTUI Core、OpenTUI Solid 和 OpenTUI Keymap 的 interactive TUI，同时支持纯对话和 coding task；
 - 展示 streaming text、tool plan/status/outcome、approval、queue、context/compaction 提示和 terminal summary；
 - 支持 steering、follow-up、abort、session resume 与 branch 选择；
 - 慢消费者只允许 progress coalescing，semantic event 不得丢失；renderer 只消费 projection/view-model；
@@ -390,7 +391,7 @@ M7 还需要对 M6A 的设计基线执行人工 visual QA。自动测试负责 e
 | Unit | 验证纯逻辑和状态转换 | accumulator、budget、risk、path、state reducer、lease rules | 每次提交 |
 | Contract | 保证 adapter 可替换 | `Model`、`SessionRepository`、`InteractionMode`、`ToolExecutor` | 每个 package 合并前 |
 | Integration | 验证跨 Module 不变量 | Harness + Model + Session + ToolHost | 每个纵向切片 |
-| System | 验证真实依赖 | SQLite、filesystem、Git、PowerShell、Bash、Ink terminal | M2 起持续运行 |
+| System | 验证真实依赖 | SQLite、filesystem、Git、PowerShell、Bash、Bun/OpenTUI terminal | M2 起持续运行 |
 | Recovery | 验证 crash 后语义 | lease、orphan Run、unknown effect、artifact | M3 起持续运行 |
 | Acceptance | 验证真实 coding outcome | TS/Python/Java bug 与 feature tasks | M7 release gate |
 | Live smoke | 验证真实 provider 兼容 | OpenAI-compatible、Anthropic | M1、M7、release 前 |
@@ -486,5 +487,5 @@ Fast v1 只有在以下事实同时成立时才可称为完成：
 ### E4：更多 modes 与独立 terminal Module
 
 - JSON/RPC/IDE mode 继续通过 `InteractionMode` 和 `CodingAgent` 接入；
-- 只有出现第二个非 coding 产品、稳定复用 terminal components、并且 Ink 泄漏造成真实维护问题时，才抽取独立 terminal package；
+- 只有出现第二个非 coding 产品、稳定复用 terminal Modules、并且 OpenTUI implementation 泄漏造成真实维护问题时，才抽取独立 terminal package；
 - 抽取时不迁移 Agent、Session、ToolHost 或 product command ownership，只移动已经证明通用的 rendering/input primitives。

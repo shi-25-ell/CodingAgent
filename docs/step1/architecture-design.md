@@ -2,10 +2,11 @@
 
 > 目的：定义第一版及后续演进共同遵守的 package、Module、Interface、Seam、Adapter、目录、依赖和状态所有权。  
 > 配套文档：[detailed-design.md](detailed-design.md) 给出包内接口与行为契约。
+> Runtime/TUI 决策补充：[opentui-bun-development-plan.md](opentui-bun-development-plan.md) 已确定 Bun + OpenTUI；本文中与旧 runtime/terminal framework 相关的历史实现不得覆盖该补充决定。
 
 ## 1. 设计结论
 
-项目采用 npm workspaces 管理四个 production packages：
+项目采用 Bun workspaces 管理四个 production packages：
 
 ```text
 packages/
@@ -14,6 +15,8 @@ packages/
 ├── coding/
 └── sqlite/
 ```
+
+项目尚未确定正式产品名。文档中的 “Fast”/“Coding Agent”、`coding-agent`、`@coding-agent/*` 和 `FAST_*` 都是工作标识；首次固化 CLI identity、config/env namespace 或 visual wordmark 前，必须按补充计划的 N1 决策提醒项目 owner，不能由实现者自行把工作标识转为品牌。
 
 三层主干为：
 
@@ -176,7 +179,7 @@ sequenceDiagram
 
 ### 4.2 `packages/agent`
 
-`agent` 是通用 Agent 层。它依赖 `model`，但不认识 coding workspace、shell、Git、Ink 或 SQLite。
+`agent` 是通用 Agent 层。它依赖 `model`，但不认识 coding workspace、shell、Git、OpenTUI 或 SQLite。
 
 主要职责：
 
@@ -205,7 +208,7 @@ sequenceDiagram
 - `CodingAgent` application facade 和 `CodingSession`；
 - CLI 参数、配置加载、启动诊断和进程退出语义；
 - `InteractionMode` registry；第一版实现 interactive TUI 和 print mode；
-- 基于 Ink 的 terminal presentation；
+- 基于 OpenTUI Core、OpenTUI Solid 和 OpenTUI Keymap 的 terminal presentation；
 - workspace discovery、Git baseline/fingerprint；
 - coding tool registry 与 `CodingToolHost`；
 - filesystem、process、Git、web search/fetch adapters；
@@ -238,7 +241,7 @@ sequenceDiagram
 ```text
 /
 ├── package.json                       # private workspace root；只负责编排 scripts/workspaces
-├── package-lock.json                  # 唯一 dependency lock
+├── bun.lock                           # 唯一 dependency lock
 ├── tsconfig.json                      # workspace typecheck/project references
 ├── tsconfig.base.json                 # packages 共用 TypeScript 规则
 ├── biome.json                         # lint/format/import 规则
@@ -283,7 +286,7 @@ sequenceDiagram
 │   │   │   ├── cli/                   # argv、commands、exit codes、startup diagnostics
 │   │   │   ├── modes/
 │   │   │   │   ├── registry.ts        # InteractionMode registry
-│   │   │   │   ├── interactive/       # Ink TUI、view reducer、components、input mapping
+│   │   │   │   ├── interactive/       # OpenTUI TUI、view reducer、components、input mapping
 │   │   │   │   └── print/             # non-interactive single-task/stdout mode
 │   │   │   ├── workspace/             # repository discovery、baseline、fingerprint、leases
 │   │   │   ├── tools/
@@ -361,7 +364,7 @@ coding → model + agent + sqlite + OS/UI libraries
 ### 7.2 禁止的依赖
 
 - `model` 不得依赖 `agent`、`coding`、`sqlite`。
-- `agent` 不得依赖 `coding`、`sqlite`、Ink、filesystem/process/Git/HTTP production adapters。
+- `agent` 不得依赖 `coding`、`sqlite`、OpenTUI、filesystem/process/Git/HTTP production adapters。
 - `sqlite` 不得依赖 `coding`、provider SDK 或 UI。
 - `coding` 的 modes 不得直接读取 SQLite 或调用 provider adapter。
 - provider-specific types 不得进入 Agent state、Transcript 或 RunReport。
@@ -408,7 +411,7 @@ Composition Root 只负责解析配置和建立 object graph，不包含业务�
 
 ### 9.1 第一版不建立独立 `tui` package
 
-第一版使用 Ink，terminal framework 已由外部 library 提供。若单独建立一个只转发 Ink API 的 `tui` package，会形成浅 Module。因此 interactive TUI 位于：
+第一版使用 OpenTUI Core、OpenTUI Solid 和 OpenTUI Keymap。若单独建立一个只转发 OpenTUI Interface 的 `tui` package，会形成浅 Module。因此 interactive TUI 位于：
 
 ```text
 packages/coding/src/modes/interactive/
@@ -420,7 +423,7 @@ packages/coding/src/modes/interactive/
 
 `InteractionMode` 与 `CodingAgent` facade 是扩展 frontend 的正式边界。第一版至少实现：
 
-- `interactive`：Ink TUI；
+- `interactive`：OpenTUI TUI；
 - `print`：从 argv/stdin 接收任务，在 stdout/stderr 输出结果，适合脚本和 smoke test。
 
 未来的 JSON、RPC、IDE 或 web frontend 通过相同 facade 和 event contract 实现，不需要修改 `Agent`。
@@ -431,7 +434,7 @@ packages/coding/src/modes/interactive/
 
 - 第二个与 coding domain 无关的 terminal application；
 - extensions 需要稳定复用通用 terminal components；
-- Ink 无法满足 streaming、scrollback、input protocol 或性能要求，需要自有 renderer；
+- OpenTUI 无法满足经过实际测量的 streaming、scrollback、input protocol 或性能要求，需要自有 renderer；
 - terminal rendering 本身成为独立维护和测试的技术能力。
 
 提取后 `tui` 必须不依赖 `coding`、`agent`、`model` 或 `sqlite`；coding-specific components 仍留在 `coding`。
@@ -561,11 +564,11 @@ Skill 是经过验证、带 provenance 的 instruction/resource bundle，不是�
 
 后续实现与文档更新应以本草案为准，停止继续使用以下假设：
 
-- 第一版必须是单 npm package；
+- 第一版必须是单 package；
 - 阶段性前缀和旧 controller/session 命名是长期 public naming；
 - 第一阶段只允许 TUI frontend；
 - extension/plugin system 被整体排除；
 - context、memory、Task/Subagent 的未来接入必须通过后续大规模重构；
 - SQLite 与 TUI 因为都属于基础设施，所以都必须独立成 package。
 
-新的判断是：SQLite 已形成真实 persistence Adapter，独立为 `sqlite`；Ink 已提供 terminal framework，interactive TUI 先留在 `coding`，直到产生真实通用复用边界。
+新的判断是：SQLite 已形成真实 persistence Adapter，独立为 `sqlite`；OpenTUI 已提供 terminal framework，interactive TUI 先留在 `coding`，直到产生真实通用复用 seam。Bun 是唯一受支持的 JavaScript runtime、package manager、test runner 和 release build host；迁移顺序与 parity gate 见补充开发计划。
