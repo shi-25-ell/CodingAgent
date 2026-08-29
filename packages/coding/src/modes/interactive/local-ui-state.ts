@@ -87,11 +87,20 @@ export function reduceInteractiveLocalState(
       if (!Number.isFinite(intent.scrollTop) || intent.scrollTop < 0) {
         throw new RangeError("Transcript scrollTop 必须是非负有限数");
       }
+      if (
+        intent.anchorOffsetRows !== undefined &&
+        (!Number.isInteger(intent.anchorOffsetRows) || intent.anchorOffsetRows < 0)
+      ) {
+        throw new RangeError("Transcript anchorOffsetRows 必须是非负整数");
+      }
       const viewport = {
         scrollTop: intent.scrollTop,
         followTail: intent.followTail,
         unseenBlockCount: intent.followTail ? 0 : previous.transcriptViewport.unseenBlockCount,
         ...(intent.anchorBlockId ? { anchorBlockId: intent.anchorBlockId } : {}),
+        ...(intent.anchorOffsetRows !== undefined
+          ? { anchorOffsetRows: intent.anchorOffsetRows }
+          : {}),
       };
       return freezeState({ ...previous, transcriptViewport: viewport });
     }

@@ -36,6 +36,7 @@ export type UiLocalIntent = UiIntentBase &
         readonly scrollTop: number;
         readonly followTail: boolean;
         readonly anchorBlockId?: string;
+        readonly anchorOffsetRows?: number;
       }
     | { readonly type: "open_surface"; readonly surface: UiSurface }
     | { readonly type: "close_surface"; readonly kind?: UiSurface["kind"] }

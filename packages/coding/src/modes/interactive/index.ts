@@ -41,3 +41,9 @@ export {
   type RendererResource,
   type RendererStopReason,
 } from "./renderer-lifecycle.js";
+export {
+  captureTranscriptViewport,
+  restoreTranscriptViewport,
+  type TranscriptBlockLayout,
+  type TranscriptLayoutMeasurement,
+} from "./transcript-viewport.js";

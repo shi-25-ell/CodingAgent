@@ -146,6 +146,7 @@ export interface TranscriptViewportState {
   readonly scrollTop: number;
   readonly followTail: boolean;
   readonly anchorBlockId?: string;
+  readonly anchorOffsetRows?: number;
   readonly unseenBlockCount: number;
 }
 
