@@ -106,6 +106,7 @@ describe.skipIf(process.platform === "win32")("OpenTUI Bun PTY lifecycle", () =>
     try {
       await fixture.waitForText("DEX_PTY_READY raw=true size=80x24");
       fixture.terminal.resize(100, 30);
+      fixture.process.kill("SIGWINCH");
       await fixture.waitForText("DEX_PTY_RESIZED raw=true size=100x30");
       expect(await fixture.process.exited).toBe(0);
       const output = fixture.output();

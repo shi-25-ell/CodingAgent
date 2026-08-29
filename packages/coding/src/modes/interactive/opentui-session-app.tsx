@@ -23,11 +23,7 @@ import type { UiIntent } from "./contracts.js";
 import { resolveInteractiveLayout } from "./layout-policy.js";
 import { OpenTuiApprovalPrompt } from "./opentui-approval-prompt.jsx";
 import { bindOpenTuiComposer, createOpenTuiComposerOptions } from "./opentui-composer-adapter.js";
-import {
-  createOpenTuiCodeOptions,
-  createOpenTuiInlineDiffOptions,
-  createOpenTuiMarkdownOptions,
-} from "./opentui-content-adapters.js";
+import { createOpenTuiCodeOptions, createOpenTuiInlineDiffOptions } from "./opentui-content-adapters.js";
 import { OpenTuiDiffViewer } from "./opentui-diff-viewer.jsx";
 import type { OpenTuiTheme } from "./opentui-theme-adapter.js";
 import { resolveInteractiveSurfacePolicy } from "./surface-policy.js";
@@ -139,11 +135,16 @@ function TranscriptBlock(props: {
         </text>
         <Show when={props.block.kind === "assistant" && text().length > 0}>
           <markdown
-            {...createOpenTuiMarkdownOptions(props.theme, props.syntaxStyle, {
-              content: text().trim(),
-              streaming: false,
-            })}
             width="100%"
+            syntaxStyle={props.syntaxStyle}
+            streaming
+            internalBlockMode="top-level"
+            content={text().trim()}
+            tableOptions={{ style: "grid" }}
+            conceal
+            concealCode
+            fg={props.theme.markdown.text}
+            bg={props.theme.colors.background}
           />
         </Show>
         <Show when={props.block.kind !== "assistant"}>
@@ -321,11 +322,16 @@ function Transcript(props: OpenTuiSessionAppProps & { readonly availableColumns:
         >
           <text fg={props.theme().colors.streaming}>Dex · streaming</text>
           <markdown
-            {...createOpenTuiMarkdownOptions(props.theme(), props.syntaxStyle(), {
-              content: props.viewModel().activeRun?.assistantStream?.text.trim() ?? "",
-              streaming: true,
-            })}
             width="100%"
+            syntaxStyle={props.syntaxStyle()}
+            streaming
+            internalBlockMode="top-level"
+            content={props.viewModel().activeRun?.assistantStream?.text.trim() ?? ""}
+            tableOptions={{ style: "grid" }}
+            conceal
+            concealCode
+            fg={props.theme().markdown.text}
+            bg={props.theme().colors.background}
           />
         </box>
       </Show>
