@@ -21,6 +21,25 @@ export interface TerminalPresentationCapabilities {
   readonly hyperlinks: boolean;
 }
 
+export type InteractiveTerminalDiagnosticCode =
+  | "INTERACTIVE_STDIN_NOT_TTY"
+  | "INTERACTIVE_STDOUT_NOT_TTY"
+  | "INTERACTIVE_RAW_MODE_UNAVAILABLE";
+
+export interface InteractiveTerminalReadiness {
+  readonly ready: boolean;
+  readonly diagnostic?: {
+    readonly code: InteractiveTerminalDiagnosticCode;
+    readonly message: string;
+  };
+}
+
+export interface InteractiveTerminalIoProbe {
+  readonly stdinIsTty: boolean;
+  readonly stdoutIsTty: boolean;
+  readonly stdinSupportsRawMode: boolean;
+}
+
 export interface PresentationGlyphs {
   readonly branch: string;
   readonly horizontal: string;
@@ -89,6 +108,41 @@ export function resolveTerminalPresentationCapabilities(
     focusTracking: Boolean(interactive && capabilities?.focus_tracking),
     hyperlinks: Boolean(interactive && capabilities?.hyperlinks),
   });
+}
+
+/** Fail-closed gate used before acquiring alternate-screen/raw-mode ownership. */
+export function inspectInteractiveTerminal(
+  probe: InteractiveTerminalIoProbe,
+): InteractiveTerminalReadiness {
+  if (!probe.stdinIsTty) {
+    return Object.freeze({
+      ready: false,
+      diagnostic: Object.freeze({
+        code: "INTERACTIVE_STDIN_NOT_TTY" as const,
+        message: "interactive mode 需要 TTY stdin；redirected input 请使用 non-interactive mode。",
+      }),
+    });
+  }
+  if (!probe.stdoutIsTty) {
+    return Object.freeze({
+      ready: false,
+      diagnostic: Object.freeze({
+        code: "INTERACTIVE_STDOUT_NOT_TTY" as const,
+        message:
+          "interactive mode 需要 TTY stdout；redirected output 请使用 non-interactive mode。",
+      }),
+    });
+  }
+  if (!probe.stdinSupportsRawMode) {
+    return Object.freeze({
+      ready: false,
+      diagnostic: Object.freeze({
+        code: "INTERACTIVE_RAW_MODE_UNAVAILABLE" as const,
+        message: "当前 stdin 不支持 raw mode，无法安全启动 interactive renderer。",
+      }),
+    });
+  }
+  return Object.freeze({ ready: true });
 }
 
 export function presentationGlyphs(mode: TerminalGlyphMode): PresentationGlyphs {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { TerminalCapabilities } from "@opentui/core";
 import {
   asciiPresentationGlyphs,
+  inspectInteractiveTerminal,
   presentationGlyphs,
   resolveTerminalPresentationCapabilities,
   unicodePresentationGlyphs,
@@ -78,5 +79,36 @@ describe("terminal presentation capability resolver", () => {
     expect(
       Object.values(asciiPresentationGlyphs).every((glyph) => /^[\x20-\x7e]+$/.test(glyph)),
     ).toBe(true);
+  });
+
+  it("interactive renderer acquire 前 fail closed 拒绝 redirected 或无 raw-mode terminal", () => {
+    expect(
+      inspectInteractiveTerminal({
+        stdinIsTty: false,
+        stdoutIsTty: true,
+        stdinSupportsRawMode: true,
+      }),
+    ).toMatchObject({ ready: false, diagnostic: { code: "INTERACTIVE_STDIN_NOT_TTY" } });
+    expect(
+      inspectInteractiveTerminal({
+        stdinIsTty: true,
+        stdoutIsTty: false,
+        stdinSupportsRawMode: true,
+      }),
+    ).toMatchObject({ ready: false, diagnostic: { code: "INTERACTIVE_STDOUT_NOT_TTY" } });
+    expect(
+      inspectInteractiveTerminal({
+        stdinIsTty: true,
+        stdoutIsTty: true,
+        stdinSupportsRawMode: false,
+      }),
+    ).toMatchObject({ ready: false, diagnostic: { code: "INTERACTIVE_RAW_MODE_UNAVAILABLE" } });
+    expect(
+      inspectInteractiveTerminal({
+        stdinIsTty: true,
+        stdoutIsTty: true,
+        stdinSupportsRawMode: true,
+      }),
+    ).toEqual({ ready: true });
   });
 });

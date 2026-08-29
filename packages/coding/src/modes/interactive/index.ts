@@ -85,6 +85,7 @@ export {
 } from "./opentui-diff-viewer.jsx";
 export {
   createProductionOpenTuiRenderer,
+  InteractiveTerminalError,
   type OpenTuiRendererOptions,
 } from "./opentui-renderer.js";
 export {
@@ -112,6 +113,10 @@ export {
 } from "./renderer-lifecycle.js";
 export {
   asciiPresentationGlyphs,
+  type InteractiveTerminalDiagnosticCode,
+  type InteractiveTerminalIoProbe,
+  type InteractiveTerminalReadiness,
+  inspectInteractiveTerminal,
   type PresentationGlyphs,
   presentationGlyphs,
   resolveTerminalPresentationCapabilities,
