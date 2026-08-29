@@ -15,6 +15,7 @@ import {
   createApprovalBridge,
   createCodingAgent,
   createCodingToolHost,
+  reduceProjection,
   type WorkspaceService,
 } from "@coding-agent/coding";
 import { ScriptedModel } from "@coding-agent/model/testing";
@@ -116,6 +117,12 @@ describe("M2 CodingAgent approval integration", () => {
     });
     const handle = await session.startRun({ task: "尝试创建文件" });
     const request = await nextPermission(handle.events()[Symbol.asyncIterator]());
+    const joined = await handle.snapshot();
+    const pendingProjection = reduceProjection(undefined, joined.snapshot);
+    expect(pendingProjection.runs[handle.runId]?.approvals[request.approvalId]).toMatchObject({
+      status: "pending",
+      plan: { fingerprint: request.plan.fingerprint },
+    });
     await handle.dispatch({
       commandId: "deny-1",
       type: "respond_permission",

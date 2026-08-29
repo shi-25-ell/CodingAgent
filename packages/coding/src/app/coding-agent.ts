@@ -1,27 +1,52 @@
 import type {
   AgentHarness,
   BranchId,
+  ContextDerivationRecord,
   ContextManager,
+  ContextManifest,
   HarnessCommand,
   HarnessEvent,
   HarnessRunHandle,
+  QueueItem,
+  QueueUpdate,
+  RunConfigSnapshot,
   RunId,
   RunPolicies,
   RunReport,
   SessionHandle,
   SessionRef,
   SessionRepository,
+  StoredContextManifest,
+  TokenMeasurement,
   ToolExecutor,
   WorkspaceBinding,
 } from "@coding-agent/agent";
-import type { Model, ModelDescriptor } from "@coding-agent/model";
-import type { ApprovalBridge } from "../permissions/approval-bridge.js";
+import { SessionError } from "@coding-agent/agent";
+import type { Model, ModelDescriptor, ModelRef } from "@coding-agent/model";
+import { createPrintInteractionMode } from "../modes/print/print-entry.js";
+import {
+  type InteractionMode,
+  InteractionModeRegistry,
+  type ModeDescriptor,
+  type ModeRegistry,
+} from "../modes/registry.js";
+import type { ApprovalBridge, ApprovalLifecycleEvent } from "../permissions/approval-bridge.js";
+import type { CodingRunProjection, CodingSessionSnapshot } from "../projection/contracts.js";
+import { reduceProjection } from "../projection/projection.js";
 import type { ApprovalRequest } from "../tools/coding-tool-host.js";
 import {
   sameWorkspaceRoot,
   type WorkspaceService,
   type WorkspaceSnapshot,
 } from "../workspace/workspace-service.js";
+import { CodingEventChannel, type CodingEventCursor } from "./coding-event-channel.js";
+import type {
+  CodingApprovalSummary,
+  CodingEvent,
+  CodingProgressPayload,
+  CodingSemanticPayload,
+  CodingToolPlanSummary,
+} from "./coding-events.js";
 
 export interface CreateCodingSessionInput {
   readonly workspace: WorkspaceBinding;
@@ -29,6 +54,7 @@ export interface CreateCodingSessionInput {
 
 export interface StartCodingRunInput {
   readonly task: string;
+  readonly model?: ModelRef;
   /** Exact current fingerprint acknowledgement required after an explicit workspace/branch change. */
   readonly acceptWorkspaceFingerprint?: string;
 }
@@ -59,19 +85,11 @@ export type CodingTimelineEntry =
       readonly terminationReason: RunReport["terminationReason"];
     };
 
-export interface CodingSessionView extends CodingSessionSummary {
+export interface CodingSessionView extends CodingSessionSnapshot {
   readonly currentBranchId: BranchId;
   readonly branches: Awaited<ReturnType<SessionHandle["inspect"]>>["branches"];
   readonly timeline: readonly CodingTimelineEntry[];
 }
-
-export type CodingEvent =
-  | HarnessEvent
-  | {
-      readonly version: 1;
-      readonly type: "permission_requested";
-      readonly request: ApprovalRequest;
-    };
 export type CodingRunCommand =
   | HarnessCommand
   | {
@@ -80,16 +98,30 @@ export type CodingRunCommand =
       readonly approvalId: string;
       readonly decision: "allow_once" | "deny";
       readonly planFingerprint: string;
+    }
+  | {
+      readonly commandId: string;
+      readonly type: "update_queue";
+      readonly targetCommandId: string;
+      readonly expectedRevision: number;
+      readonly text?: string;
+      readonly status: "queued" | "draft" | "cancelled";
     };
 
 export interface CodingCommandAck {
   readonly commandId: string;
-  readonly status: "accepted" | "already_applied" | "not_active" | "unknown" | "stale";
+  readonly status: "accepted" | "already_applied" | "not_active" | "unknown" | "stale" | "conflict";
+  readonly queueItem?: QueueItem;
 }
 
 export interface CodingRunHandle {
   readonly runId: RunId;
-  events(): AsyncIterable<CodingEvent>;
+  events(cursor?: CodingEventCursor): AsyncIterable<CodingEvent>;
+  snapshot(): Promise<{
+    readonly snapshot: CodingSessionSnapshot;
+    readonly cursor: CodingEventCursor;
+  }>;
+  diagnostics(): ReturnType<CodingEventChannel["diagnostics"]>;
   dispatch(command: CodingRunCommand): Promise<CodingCommandAck>;
   readonly finished: Promise<RunReport>;
 }
@@ -97,20 +129,23 @@ export interface CodingRunHandle {
 export interface CodingSession {
   readonly ref: SessionRef;
   inspect(): Promise<CodingSessionView>;
+  snapshot(): Promise<CodingSessionSnapshot>;
   readRunReport(runId: RunId): Promise<RunReport | undefined>;
+  readContextManifests(runId: RunId): Promise<readonly StoredContextManifest[]>;
+  readContextDerivations(runId: RunId): Promise<readonly ContextDerivationRecord[]>;
+  listQueue(runId?: RunId): Promise<readonly QueueItem[]>;
+  updateQueue(input: QueueUpdate): Promise<QueueItem>;
+  activeRun(): CodingRunHandle | undefined;
   fork(input: ForkConversationInput): Promise<import("@coding-agent/agent").BranchRef>;
   selectBranch(input: SelectBranchInput): Promise<CodingSessionView>;
   startRun(input: StartCodingRunInput): Promise<CodingRunHandle>;
-}
-
-export interface ModeDescriptor {
-  readonly id: "print";
-  readonly displayName: string;
+  resume(input: StartCodingRunInput): Promise<CodingRunHandle>;
 }
 
 export interface CodingDiagnostics {
   readonly sessionRepository: "available";
   readonly model: ModelDescriptor;
+  readonly models: readonly ModelDescriptor[];
   readonly modes: readonly ModeDescriptor[];
 }
 
@@ -120,6 +155,7 @@ export interface CodingAgent {
   openSession(ref: SessionRef): Promise<CodingSession>;
   listModels(): Promise<readonly ModelDescriptor[]>;
   listModes(): readonly ModeDescriptor[];
+  resolveMode(id: string): InteractionMode;
   diagnostics(): Promise<CodingDiagnostics>;
 }
 
@@ -127,10 +163,19 @@ export interface CodingAgentOptions {
   readonly sessions: SessionRepository;
   readonly harness: AgentHarness;
   readonly model: Model;
+  readonly models?: readonly Model[];
   readonly tools: ToolExecutor;
   readonly context: ContextManager;
   readonly policies: RunPolicies;
   readonly configurationRevision: string;
+  readonly runConfiguration?: {
+    readonly permissionMode?: "safe" | "autonomous";
+    readonly searchProfile?: string;
+    readonly extensions?: readonly string[];
+    readonly skills?: readonly string[];
+    readonly policyVersions?: Readonly<Record<string, string>>;
+  };
+  readonly modes?: readonly InteractionMode[];
   readonly approvals?: ApprovalBridge;
   readonly workspace: WorkspaceService;
 }
@@ -155,38 +200,6 @@ export class CodingStartError extends Error {
     this.name = "CodingStartError";
     this.code = code;
     this.currentWorkspace = options?.currentWorkspace;
-  }
-}
-
-class CodingEventStream {
-  readonly #events: CodingEvent[] = [];
-  readonly #waiters = new Set<() => void>();
-  #closed = false;
-
-  publish(event: CodingEvent): void {
-    if (this.#closed) return;
-    this.#events.push(event);
-    for (const wake of this.#waiters) wake();
-    this.#waiters.clear();
-  }
-
-  close(): void {
-    this.#closed = true;
-    for (const wake of this.#waiters) wake();
-    this.#waiters.clear();
-  }
-
-  async *read(): AsyncIterable<CodingEvent> {
-    let index = 0;
-    while (true) {
-      while (index < this.#events.length) {
-        const event = this.#events[index];
-        index += 1;
-        if (event) yield event;
-      }
-      if (this.#closed) return;
-      await new Promise<void>((resolve) => this.#waiters.add(resolve));
-    }
   }
 }
 
@@ -218,8 +231,112 @@ function timeline(
   });
 }
 
+function planSummary(request: ApprovalRequest): CodingToolPlanSummary {
+  return {
+    callId: request.plan.callId,
+    toolName: request.plan.toolName,
+    resources: request.plan.resources,
+    effects: request.plan.effects,
+    risks: request.plan.risks,
+    fingerprint: request.plan.fingerprint,
+  };
+}
+
+function approvalSummary(request: ApprovalRequest): CodingApprovalSummary {
+  return {
+    approvalId: request.approvalId,
+    callId: request.plan.callId,
+    plan: planSummary(request),
+    decisions: ["allow_once", "deny"],
+    status: "pending",
+  };
+}
+
+function emptyRun(runId: RunId): CodingRunProjection {
+  return {
+    runId,
+    phase: "created",
+    status: "idle",
+    terminal: false,
+    tools: {},
+    toolOrder: [],
+    approvals: {},
+    approvalOrder: [],
+    compactions: [],
+  };
+}
+
+function measurementFromManifest(manifest: ContextManifest): TokenMeasurement {
+  const selected = manifest.contributions.filter((item) => item.disposition !== "omitted");
+  const withoutToolDefinitions = selected.filter(
+    (item) => item.provenance.id !== "tool-definitions",
+  );
+  return {
+    method: "estimated_chars",
+    inputTokens: withoutToolDefinitions.reduce((sum, item) => sum + item.estimatedTokens, 0),
+    outputReserve: manifest.budget.requestedOutputReserve,
+    protocolToolSchemaReserve: manifest.budget.protocolToolSchemaReserve,
+    safetyMargin: manifest.budget.safetyMargin,
+    usableInputBudget: manifest.budget.usableInputBudget,
+    requiredTokens: withoutToolDefinitions
+      .filter((item) => item.required)
+      .reduce((sum, item) => sum + item.estimatedTokens, 0),
+    optionalTokens: selected
+      .filter((item) => !item.required)
+      .reduce((sum, item) => sum + item.estimatedTokens, 0),
+  };
+}
+
 export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
-  const modes: readonly ModeDescriptor[] = [{ id: "print", displayName: "Print" }];
+  const models = [...(options.models ?? []), options.model].filter(
+    (model, index, all) =>
+      all.findIndex(
+        (candidate) =>
+          candidate.descriptor.providerId === model.descriptor.providerId &&
+          candidate.descriptor.modelId === model.descriptor.modelId,
+      ) === index,
+  );
+  const configuredModes = options.modes ?? [];
+  const modeRegistry: ModeRegistry = new InteractionModeRegistry([
+    ...(configuredModes.some((mode) => mode.descriptor.id === "print")
+      ? []
+      : [createPrintInteractionMode()]),
+    ...configuredModes,
+  ]);
+  const activeRuns = new Map<string, CodingRunHandle>();
+
+  const resolveModel = (ref: ModelRef | undefined): Model => {
+    if (!ref) return options.model;
+    const model = models.find(
+      (candidate) =>
+        candidate.descriptor.providerId === ref.providerId &&
+        candidate.descriptor.modelId === ref.modelId,
+    );
+    if (!model) throw new TypeError("选择的 model 不在当前 catalog 中或不可用");
+    return model;
+  };
+
+  const configFor = (model: Model): RunConfigSnapshot => ({
+    version: 1,
+    model: {
+      providerId: model.descriptor.providerId,
+      modelId: model.descriptor.modelId,
+      sourceRevision: model.descriptor.source.revision,
+    },
+    permissionMode: options.runConfiguration?.permissionMode ?? "autonomous",
+    budgets: Object.freeze({ ...options.policies.budgets }),
+    tools: Object.freeze(options.tools.definitions().map((tool) => tool.name)),
+    ...(options.runConfiguration?.searchProfile
+      ? { searchProfile: options.runConfiguration.searchProfile }
+      : {}),
+    extensions: Object.freeze([...(options.runConfiguration?.extensions ?? [])]),
+    skills: Object.freeze([...(options.runConfiguration?.skills ?? [])]),
+    policyVersions: Object.freeze({
+      run: options.configurationRevision,
+      ...(options.runConfiguration?.policyVersions ?? {}),
+    }),
+    configurationRevision: options.configurationRevision,
+  });
 
   const inspectWorkspace = async (root: string): Promise<WorkspaceSnapshot> => {
     try {
@@ -231,18 +348,220 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
     }
   };
 
-  const projectView = async (session: SessionHandle): Promise<CodingSessionView> => {
-    const snapshot = await session.inspect();
-    const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
-    return {
-      ref: snapshot.ref,
-      workspace: snapshot.workspace,
-      revision: snapshot.revision,
-      ...(snapshot.activeRunId ? { activeRunId: snapshot.activeRunId } : {}),
-      currentBranchId: snapshot.currentBranchId,
-      branches: snapshot.branches,
-      timeline: timeline(branch.records),
+  const projectSnapshot = async (session: SessionHandle): Promise<CodingSessionSnapshot> => {
+    const sessionSnapshot = await session.inspect();
+    const branch = await session.readBranch({ branchId: sessionSnapshot.currentBranchId });
+    const queues = await session.listQueue();
+    const runs: Record<string, CodingRunProjection> = {};
+    const runOrder: RunId[] = [];
+    const transcript: CodingSessionSnapshot["transcript"][number][] = [];
+    const ensureRun = (runId: RunId): CodingRunProjection => {
+      const existing = runs[runId];
+      if (existing) return existing;
+      const created = emptyRun(runId);
+      runs[runId] = created;
+      runOrder.push(runId);
+      return created;
     };
+    const replaceRun = (runId: RunId, run: CodingRunProjection): void => {
+      runs[runId] = run;
+    };
+    for (const record of branch.records) {
+      const run = ensureRun(record.runId);
+      switch (record.kind) {
+        case "run_started":
+          replaceRun(record.runId, {
+            ...run,
+            ...(record.metadata.config
+              ? { config: record.metadata.config }
+              : record.metadata.configurationRevision === options.configurationRevision
+                ? { config: configFor(options.model) }
+                : {}),
+          });
+          break;
+        case "user_message":
+          transcript.push({
+            id: `ledger:${record.ledgerSeq}`,
+            runId: record.runId,
+            ledgerSeq: record.ledgerSeq,
+            kind: "user",
+            text: record.text,
+          });
+          break;
+        case "assistant_message": {
+          const tools = { ...run.tools };
+          const toolOrder = [...run.toolOrder];
+          for (const part of record.message.content) {
+            if (part.type !== "tool_call") continue;
+            tools[part.callId] = {
+              callId: part.callId,
+              plan: {
+                callId: part.callId,
+                toolName: part.name,
+                resources: [],
+                effects: [],
+                risks: [],
+              },
+              status: "planned",
+            };
+            if (!toolOrder.includes(part.callId)) toolOrder.push(part.callId);
+          }
+          replaceRun(record.runId, { ...run, tools, toolOrder });
+          transcript.push({
+            id: `ledger:${record.ledgerSeq}`,
+            runId: record.runId,
+            ledgerSeq: record.ledgerSeq,
+            kind: "assistant",
+            assistant: record.message,
+          });
+          break;
+        }
+        case "tool_started": {
+          const tool = run.tools[record.callId];
+          if (tool) {
+            replaceRun(record.runId, {
+              ...run,
+              tools: { ...run.tools, [record.callId]: { ...tool, status: "running" } },
+            });
+          }
+          break;
+        }
+        case "tool_outcome": {
+          const tool = run.tools[record.outcome.callId];
+          const fallback = {
+            callId: record.outcome.callId,
+            toolName: "unknown",
+            resources: [],
+            effects: [],
+            risks: [],
+          };
+          replaceRun(record.runId, {
+            ...run,
+            tools: {
+              ...run.tools,
+              [record.outcome.callId]: {
+                callId: record.outcome.callId,
+                plan: {
+                  ...(tool?.plan ?? fallback),
+                  resources: [],
+                  effects: Array.isArray(record.outcome.evidence?.effects)
+                    ? record.outcome.evidence.effects.filter(
+                        (effect): effect is CodingToolPlanSummary["effects"][number] =>
+                          effect === "workspace_read" ||
+                          effect === "workspace_mutation" ||
+                          effect === "process" ||
+                          effect === "git_evidence" ||
+                          effect === "network",
+                      )
+                    : [],
+                  risks: [],
+                  ...(typeof record.outcome.evidence?.planFingerprint === "string"
+                    ? { fingerprint: record.outcome.evidence.planFingerprint }
+                    : {}),
+                },
+                status: "settled",
+                outcome: record.outcome,
+              },
+            },
+            toolOrder: run.toolOrder.includes(record.outcome.callId)
+              ? run.toolOrder
+              : [...run.toolOrder, record.outcome.callId],
+          });
+          transcript.push({
+            id: `ledger:${record.ledgerSeq}`,
+            runId: record.runId,
+            ledgerSeq: record.ledgerSeq,
+            kind: "tool",
+            outcome: record.outcome,
+          });
+          break;
+        }
+        case "model_failure":
+          replaceRun(record.runId, { ...run, modelFailure: record.failure });
+          transcript.push({
+            id: `ledger:${record.ledgerSeq}`,
+            runId: record.runId,
+            ledgerSeq: record.ledgerSeq,
+            kind: "model_failure",
+            failure: record.failure,
+          });
+          break;
+        case "recovery": {
+          const diagnostic = {
+            code: "RUN_INTERRUPTED" as const,
+            message: "先前 active Run 在恢复时被保守结算",
+            runId: record.runId,
+          };
+          replaceRun(record.runId, {
+            ...run,
+            phase: "terminal",
+            status: "recovering",
+            terminal: true,
+            recovery: diagnostic,
+          });
+          transcript.push({
+            id: `recovery:${record.runId}`,
+            runId: record.runId,
+            ledgerSeq: record.ledgerSeq,
+            kind: "recovery",
+            recovery: diagnostic,
+          });
+          break;
+        }
+        case "run_terminal":
+          replaceRun(record.runId, {
+            ...run,
+            phase: "terminal",
+            status: record.report.status,
+            terminal: true,
+            report: record.report,
+          });
+          break;
+        case "run_boundary":
+          break;
+      }
+    }
+    await Promise.all(
+      runOrder.map(async (runId) => {
+        const [manifests, derivations] = await Promise.all([
+          session.readContextManifests(runId),
+          session.readContextDerivations(runId),
+        ]);
+        const manifest = manifests.toReversed().find((item) => item.version === 2);
+        const run = runs[runId];
+        if (!run || !manifest) return;
+        const checkpoint = branch.checkpoints.toReversed().find((item) => item.runId === runId);
+        replaceRun(runId, {
+          ...run,
+          context: {
+            manifest,
+            measurement: measurementFromManifest(manifest),
+            ...(checkpoint ? { checkpoint } : {}),
+            derivations,
+          },
+          compactions: derivations,
+        });
+      }),
+    );
+    return {
+      version: 1,
+      ref: sessionSnapshot.ref,
+      workspace: sessionSnapshot.workspace,
+      revision: sessionSnapshot.revision,
+      ...(sessionSnapshot.activeRunId ? { activeRunId: sessionSnapshot.activeRunId } : {}),
+      currentBranchId: sessionSnapshot.currentBranchId,
+      branches: sessionSnapshot.branches,
+      runOrder,
+      runs,
+      transcript,
+      queues,
+    };
+  };
+
+  const projectView = async (session: SessionHandle): Promise<CodingSessionView> => {
+    const snapshot = await projectSnapshot(session);
+    const branch = await session.readBranch({ branchId: snapshot.currentBranchId });
+    return { ...snapshot, timeline: timeline(branch.records) };
   };
 
   const assertBoundWorkspace = async (
@@ -266,16 +585,8 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
     );
   };
 
-  const wrapSession = (session: SessionHandle): CodingSession => ({
-    ref: session.ref,
-    inspect: () => projectView(session),
-    readRunReport: (runId) => session.readRunReport(runId),
-    fork: (input) => session.forkBranch(input),
-    async selectBranch(input) {
-      await session.selectBranch(input.branchId, input.expectedRevision);
-      return projectView(session);
-    },
-    async startRun(input) {
+  const wrapSession = (session: SessionHandle): CodingSession => {
+    const startRun = async (input: StartCodingRunInput): Promise<CodingRunHandle> => {
       if (input.task.trim().length === 0) throw new TypeError("Coding Task 不能为空");
       const snapshot = await session.inspect();
       if (snapshot.activeRunId) {
@@ -295,68 +606,251 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
           "当前 Context/Skill configuration 与 Session 最近一次 Run 不一致",
         );
       }
+      const model = resolveModel(input.model);
+      const config = configFor(model);
       const handle: HarnessRunHandle = await options.harness.startRun({
         session,
         branchId: snapshot.currentBranchId,
         expectedSessionRevision: snapshot.revision,
         initialMessages: [{ role: "user", text: input.task }],
-        model: options.model,
+        model,
         tools: options.tools,
         context: options.context,
         policies: options.policies,
         metadata: {
           task: input.task,
           configurationRevision: options.configurationRevision,
+          config,
         },
       });
-      const events = new CodingEventStream();
+      const channel = new CodingEventChannel(handle.runId);
       let runStarted = false;
-      const pendingPermissions: ApprovalRequest[] = [];
-      const unsubscribe = options.approvals?.subscribe((request) => {
-        if (request.runId === handle.runId) {
-          if (runStarted) {
-            events.publish({ version: 1, type: "permission_requested", request });
-          } else {
-            pendingPermissions.push(request);
-          }
+      const pendingApprovals: ApprovalLifecycleEvent[] = [];
+      const publishSemantic = (payload: CodingSemanticPayload): void => {
+        channel.publishSemantic(payload);
+      };
+      const publishProgress = (payload: CodingProgressPayload): void => {
+        channel.publishProgress(payload);
+      };
+      const publishApproval = (event: ApprovalLifecycleEvent): void => {
+        if (event.request.runId !== handle.runId) return;
+        if (!runStarted) {
+          pendingApprovals.push(event);
+          return;
         }
-      });
+        if (event.type === "requested") {
+          publishSemantic({
+            type: "permission_requested",
+            approval: approvalSummary(event.request),
+            request: event.request,
+          });
+        } else {
+          publishSemantic({
+            type: "permission_resolved",
+            approvalId: event.request.approvalId,
+            status:
+              event.type === "resolved"
+                ? event.decision === "allow_once"
+                  ? "allowed"
+                  : "denied"
+                : event.type,
+            ...(event.type === "resolved" ? { decision: event.decision } : {}),
+          });
+        }
+      };
+      const unsubscribe = options.approvals?.subscribeLifecycle(publishApproval);
+      const publishHarness = (event: HarnessEvent): void => {
+        if (event.category === "progress") {
+          publishProgress({ key: event.key, ...event.event });
+          return;
+        }
+        switch (event.type) {
+          case "run_started":
+            publishSemantic({
+              type: "run_started",
+              sessionId: session.ref.sessionId,
+              branchId: snapshot.currentBranchId,
+              config: event.metadata.config ?? config,
+            });
+            runStarted = true;
+            for (const approval of pendingApprovals.splice(0)) publishApproval(approval);
+            break;
+          case "user_accepted":
+            publishSemantic({ type: "user_accepted", text: event.message.text });
+            break;
+          case "assistant_committed":
+            publishSemantic({
+              type: "assistant_committed",
+              message: event.message,
+              ledgerSeq: event.ledgerSeq,
+            });
+            break;
+          case "tool_planned":
+            publishSemantic({
+              type: "tool_planned",
+              plan: {
+                callId: event.callId,
+                toolName: event.toolName,
+                resources: [],
+                effects: [],
+                risks: [],
+              },
+            });
+            break;
+          case "tool_started":
+            publishSemantic({ type: "tool_started", callId: event.callId });
+            break;
+          case "tool_settled":
+            publishSemantic({
+              type: "tool_settled",
+              outcome: event.outcome,
+              ledgerSeq: event.ledgerSeq,
+            });
+            break;
+          case "model_failure_committed":
+            publishSemantic({
+              type: "model_failure_committed",
+              failure: event.failure,
+              ledgerSeq: event.ledgerSeq,
+            });
+            break;
+          case "queue_changed":
+          case "queue_delivered":
+            publishSemantic({ type: event.type, item: event.item });
+            break;
+          case "context_prepared":
+            publishSemantic({
+              type: "context_prepared",
+              manifest: event.manifest,
+              measurement: measurementFromManifest(event.manifest),
+              ...(event.checkpoint ? { checkpoint: event.checkpoint } : {}),
+              derivations: event.derivations,
+            });
+            break;
+          case "compaction_completed":
+            publishSemantic({
+              type: "compaction_completed",
+              derivation: event.derivation,
+              ...(event.checkpoint ? { checkpoint: event.checkpoint } : {}),
+            });
+            break;
+          case "compaction_failed":
+            publishSemantic({ type: "compaction_failed", derivation: event.derivation });
+            break;
+          case "terminal":
+            publishSemantic({ type: "terminal_committed", report: event.report });
+            break;
+        }
+      };
       void (async () => {
         try {
           for await (const event of handle.events()) {
-            events.publish(event);
-            if (event.type === "run_started") {
-              runStarted = true;
-              for (const request of pendingPermissions.splice(0)) {
-                events.publish({ version: 1, type: "permission_requested", request });
-              }
+            if (event.category === "semantic" && event.type === "terminal") {
+              const latest = await session.inspect();
+              publishSemantic({
+                type: "session_updated",
+                revision: latest.revision,
+                currentBranchId: latest.currentBranchId,
+                ...(latest.activeRunId ? { activeRunId: latest.activeRunId } : {}),
+                branches: latest.branches,
+              });
             }
+            publishHarness(event);
           }
         } finally {
           unsubscribe?.();
-          events.close();
+          channel.close();
         }
       })();
-      return {
+      const codingHandle: CodingRunHandle = {
         runId: handle.runId,
-        events: () => events.read(),
-        async dispatch(command) {
-          if (command.type !== "respond_permission") return handle.dispatch(command);
-          if (!options.approvals) {
-            return { commandId: command.commandId, status: "unknown" };
+        events: (cursor) => channel.events(cursor),
+        async snapshot() {
+          const cursor = channel.cursor();
+          const durable = await projectSnapshot(session);
+          let projection = reduceProjection(undefined, durable);
+          for (const event of channel.checkpointEvents(cursor)) {
+            projection = reduceProjection(projection, event);
           }
-          const ack = options.approvals.respond({
-            approvalId: command.approvalId,
-            runId: handle.runId,
-            decision: command.decision,
-            planFingerprint: command.planFingerprint,
-          });
-          return { commandId: command.commandId, status: ack.status };
+          return {
+            snapshot: {
+              version: 1,
+              ref: projection.ref,
+              workspace: projection.workspace,
+              revision: projection.revision,
+              ...(projection.activeRunId ? { activeRunId: projection.activeRunId } : {}),
+              currentBranchId: projection.currentBranchId,
+              branches: projection.branches,
+              runOrder: projection.runOrder,
+              runs: projection.runs,
+              transcript: projection.transcript,
+              queues: projection.queues,
+              eventCursors: { [handle.runId]: cursor.semanticSequence },
+            },
+            cursor,
+          };
+        },
+        diagnostics: () => channel.diagnostics(),
+        async dispatch(command) {
+          if (command.type === "respond_permission") {
+            if (!options.approvals) return { commandId: command.commandId, status: "unknown" };
+            const ack = options.approvals.respond({
+              approvalId: command.approvalId,
+              runId: handle.runId,
+              decision: command.decision,
+              planFingerprint: command.planFingerprint,
+            });
+            return { commandId: command.commandId, status: ack.status };
+          }
+          if (command.type === "update_queue") {
+            try {
+              const item = await session.updateQueue({
+                commandId: command.targetCommandId,
+                expectedRevision: command.expectedRevision,
+                ...(command.text !== undefined ? { text: command.text } : {}),
+                status: command.status,
+              });
+              publishSemantic({ type: "queue_changed", item });
+              return { commandId: command.commandId, status: "accepted", queueItem: item };
+            } catch (error) {
+              if (error instanceof SessionError && error.code === "SESSION_REVISION_CONFLICT") {
+                return { commandId: command.commandId, status: "conflict" };
+              }
+              throw error;
+            }
+          }
+          return handle.dispatch(command);
         },
         finished: handle.finished,
       };
-    },
-  });
+      activeRuns.set(String(session.ref.sessionId), codingHandle);
+      void handle.finished.finally(() => {
+        if (activeRuns.get(String(session.ref.sessionId)) === codingHandle) {
+          activeRuns.delete(String(session.ref.sessionId));
+        }
+      });
+      return codingHandle;
+    };
+
+    return {
+      ref: session.ref,
+      inspect: () => projectView(session),
+      snapshot: () => projectSnapshot(session),
+      readRunReport: (runId) => session.readRunReport(runId),
+      readContextManifests: (runId) => session.readContextManifests(runId),
+      readContextDerivations: (runId) => session.readContextDerivations(runId),
+      listQueue: (runId) => session.listQueue(runId),
+      updateQueue: (input) => session.updateQueue(input),
+      activeRun: () => activeRuns.get(String(session.ref.sessionId)),
+      fork: (input) => session.forkBranch(input),
+      async selectBranch(input) {
+        await session.selectBranch(input.branchId, input.expectedRevision);
+        return projectView(session);
+      },
+      startRun,
+      resume: startRun,
+    };
+  };
 
   return {
     async listSessions() {
@@ -383,16 +877,20 @@ export function createCodingAgent(options: CodingAgentOptions): CodingAgent {
       return wrapSession(await options.sessions.open(ref));
     },
     async listModels() {
-      return [options.model.descriptor];
+      return models.map((model) => model.descriptor);
     },
     listModes() {
-      return modes;
+      return modeRegistry.list();
+    },
+    resolveMode(id) {
+      return modeRegistry.resolve(id);
     },
     async diagnostics() {
       return {
         sessionRepository: "available",
         model: options.model.descriptor,
-        modes,
+        models: models.map((model) => model.descriptor),
+        modes: modeRegistry.list(),
       };
     },
   };

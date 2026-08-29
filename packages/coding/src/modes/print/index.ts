@@ -1,4 +1,5 @@
 export {
+  createPrintInteractionMode,
   type PrintEntryDependencies,
   type PrintEntryResult,
   type PrintIo,

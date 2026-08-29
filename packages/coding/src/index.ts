@@ -3,7 +3,6 @@ export {
   type CodingAgentOptions,
   type CodingCommandAck,
   type CodingDiagnostics,
-  type CodingEvent,
   type CodingRunCommand,
   type CodingRunHandle,
   type CodingSession,
@@ -15,10 +14,14 @@ export {
   type CreateCodingSessionInput,
   createCodingAgent,
   type ForkConversationInput,
-  type ModeDescriptor,
   type SelectBranchInput,
   type StartCodingRunInput,
 } from "./app/coding-agent.js";
+export type {
+  CodingEventChannelDiagnostics,
+  CodingEventCursor,
+} from "./app/coding-event-channel.js";
+export * from "./app/coding-events.js";
 export { createLocalCodingToolHost as createCodingToolHost } from "./composition/local-tool-composition.js";
 export {
   type AnthropicCodingAgent,
@@ -43,12 +46,15 @@ export {
   type ProviderCodingAgentOptions,
 } from "./composition/openai-composition.js";
 export * from "./context/index.js";
+export * from "./modes/registry.js";
 export {
   type ApprovalBridge,
+  type ApprovalLifecycleEvent,
   type ApprovalResponseAck,
   type ApprovalResponseCommand,
   createApprovalBridge,
 } from "./permissions/approval-bridge.js";
+export * from "./projection/index.js";
 export * from "./skills/index.js";
 export type {
   ApprovalPort,

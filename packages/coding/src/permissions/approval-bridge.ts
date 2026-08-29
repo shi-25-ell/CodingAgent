@@ -13,9 +13,19 @@ export interface ApprovalResponseAck {
   readonly status: "accepted" | "already_applied" | "unknown" | "stale";
 }
 
+export type ApprovalLifecycleEvent =
+  | { readonly type: "requested"; readonly request: ApprovalRequest }
+  | {
+      readonly type: "resolved";
+      readonly request: ApprovalRequest;
+      readonly decision: "allow_once" | "deny";
+    }
+  | { readonly type: "stale" | "withdrawn"; readonly request: ApprovalRequest };
+
 export interface ApprovalBridge extends ApprovalPort {
   requests(): AsyncIterable<ApprovalRequest>;
   subscribe(listener: (request: ApprovalRequest) => void): () => void;
+  subscribeLifecycle(listener: (event: ApprovalLifecycleEvent) => void): () => void;
   diagnostics(): { readonly listenerFailureCount: number };
   respond(command: ApprovalResponseCommand): ApprovalResponseAck;
 }
@@ -53,10 +63,20 @@ class ApprovalRequestStream {
 export function createApprovalBridge(): ApprovalBridge {
   const stream = new ApprovalRequestStream();
   const pending = new Map<string, PendingApproval>();
-  const applied = new Set<string>();
-  const stale = new Set<string>();
+  const applied = new Map<string, ApprovalRequest>();
+  const stale = new Map<string, ApprovalRequest>();
   const listeners = new Set<(request: ApprovalRequest) => void>();
+  const lifecycleListeners = new Set<(event: ApprovalLifecycleEvent) => void>();
   let listenerFailureCount = 0;
+  const publishLifecycle = (event: ApprovalLifecycleEvent): void => {
+    for (const listener of lifecycleListeners) {
+      try {
+        listener(event);
+      } catch (_error) {
+        listenerFailureCount += 1;
+      }
+    }
+  };
   return {
     request(request, signal) {
       if (signal.aborted) {
@@ -68,11 +88,13 @@ export function createApprovalBridge(): ApprovalBridge {
       return new Promise<ApprovalResponse>((resolve, reject) => {
         const abort = () => {
           pending.delete(request.approvalId);
+          publishLifecycle({ type: "withdrawn", request });
           reject(new DOMException("Approval 已取消", "AbortError"));
         };
         pending.set(request.approvalId, { request, signal, resolve, abort });
         signal.addEventListener("abort", abort, { once: true });
         stream.publish(request);
+        publishLifecycle({ type: "requested", request });
         for (const listener of listeners) {
           try {
             listener(request);
@@ -95,9 +117,24 @@ export function createApprovalBridge(): ApprovalBridge {
       }
       return () => listeners.delete(listener);
     },
+    subscribeLifecycle(listener) {
+      lifecycleListeners.add(listener);
+      for (const waiting of pending.values()) {
+        try {
+          listener({ type: "requested", request: waiting.request });
+        } catch (_error) {
+          listenerFailureCount += 1;
+        }
+      }
+      return () => lifecycleListeners.delete(listener);
+    },
     invalidate(approvalId) {
+      const request = applied.get(approvalId) ?? pending.get(approvalId)?.request;
       applied.delete(approvalId);
-      stale.add(approvalId);
+      if (request) {
+        stale.set(approvalId, request);
+        publishLifecycle({ type: "stale", request });
+      }
     },
     respond(command) {
       if (stale.has(command.approvalId)) {
@@ -114,12 +151,13 @@ export function createApprovalBridge(): ApprovalBridge {
         return { approvalId: command.approvalId, status: "stale" };
       }
       pending.delete(command.approvalId);
-      applied.add(command.approvalId);
+      applied.set(command.approvalId, waiting.request);
       waiting.signal.removeEventListener("abort", waiting.abort);
       waiting.resolve({
         decision: command.decision,
         planFingerprint: command.planFingerprint,
       });
+      publishLifecycle({ type: "resolved", request: waiting.request, decision: command.decision });
       return { approvalId: command.approvalId, status: "accepted" };
     },
   };

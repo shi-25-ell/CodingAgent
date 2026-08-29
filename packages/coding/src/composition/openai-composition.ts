@@ -549,6 +549,15 @@ async function createCompatibleCodingAgent(
     context,
     policies: createFixedRunPolicies({ maxModelTurns: 16, maxModelAttempts: 20, maxRetries: 2 }),
     configurationRevision: contextRevision,
+    runConfiguration: {
+      permissionMode: options.permissionMode ?? "autonomous",
+      searchProfile: options.webSearchProvider?.id ?? options.webSearchProfile ?? "brave",
+      skills: selectedSkills.map((skill) => skill.id),
+      policyVersions: {
+        context: contextRevision,
+        tools: "m2-tool-policy-1",
+      },
+    },
     approvals,
     workspace: createGitWorkspaceService(),
   });

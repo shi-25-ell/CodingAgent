@@ -21,6 +21,8 @@ describe("ApprovalBridge contract", () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-approval-bridge-"));
     temporaryDirectories.push(root);
     const bridge = createApprovalBridge();
+    const lifecycle: string[] = [];
+    bridge.subscribeLifecycle((event) => lifecycle.push(event.type));
     bridge.subscribe(() => {
       throw new Error("injected observer failure");
     });
@@ -74,6 +76,7 @@ describe("ApprovalBridge contract", () => {
     await expect(pending).resolves.toMatchObject({ status: "succeeded" });
     bridge.invalidate?.(command.approvalId);
     expect(bridge.respond(command)).toMatchObject({ status: "stale" });
+    expect(lifecycle).toEqual(["requested", "resolved", "stale"]);
     await expect(readFile(path.join(root, "approved.txt"), "utf8")).resolves.toBe("approved");
   });
 
@@ -81,6 +84,8 @@ describe("ApprovalBridge contract", () => {
     const root = await mkdtemp(path.join(tmpdir(), "fast-approval-abort-"));
     temporaryDirectories.push(root);
     const bridge = createApprovalBridge();
+    const lifecycle: string[] = [];
+    bridge.subscribeLifecycle((item) => lifecycle.push(item.type));
     const requests = bridge.requests()[Symbol.asyncIterator]();
     const controller = new AbortController();
     const activeRun = runId("approval-abort-run");
@@ -116,5 +121,6 @@ describe("ApprovalBridge contract", () => {
       }),
     ).toMatchObject({ status: "unknown" });
     await expect(access(path.join(root, "aborted.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(lifecycle).toEqual(["requested", "withdrawn"]);
   });
 });
