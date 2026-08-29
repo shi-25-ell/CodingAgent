@@ -1,6 +1,7 @@
 import {
   collectModelTurn,
   type Model,
+  type ModelEvent,
   type ModelFailure,
   type ModelResponse,
   type ToolCall,
@@ -82,6 +83,42 @@ function aborted(counts: RunCounts, usage: UsageSummary): AgentRunResult {
   };
 }
 
+function agentProgressKey(event: AgentEvent): string | undefined {
+  switch (event.type) {
+    case "phase_changed":
+      return "run:phase";
+    case "model_attempt_started":
+      return "model:attempt";
+    case "assistant_delta":
+      return `assistant:${event.modelTurnCount}:${event.modelAttemptCount}:${event.channel}:${event.partIndex}`;
+    case "tool_update":
+      return `tool:${event.callId}`;
+    default:
+      return undefined;
+  }
+}
+
+async function* observeModelProgress(
+  events: AsyncIterable<ModelEvent>,
+  counts: Pick<RunCounts, "modelTurnCount" | "modelAttemptCount">,
+  publish: (event: AgentProgressEvent) => void,
+): AsyncIterable<ModelEvent> {
+  for await (const event of events) {
+    if (event.type === "text_delta" || event.type === "reasoning_delta") {
+      publish({
+        version: 1,
+        type: "assistant_delta",
+        modelTurnCount: counts.modelTurnCount,
+        modelAttemptCount: counts.modelAttemptCount,
+        partIndex: event.index,
+        channel: event.type === "text_delta" ? "text" : "reasoning",
+        delta: event.delta,
+      });
+    }
+    yield event;
+  }
+}
+
 type DependencyKind = "context" | "persistence" | "policy" | "tool";
 
 class AgentDependencyFailure extends Error {
@@ -150,7 +187,7 @@ function dependencyFailure(
 
 class DefaultAgent implements Agent {
   run(input: AgentRunInput, host: AgentHost): AgentExecution {
-    const stream = new ReplayEventStream<AgentEvent>();
+    const stream = new ReplayEventStream<AgentEvent>({ coalescingKey: agentProgressKey });
     const state = new RunStateMachine();
     const publish = (event: AgentProgressEvent): void => {
       stream.publish(event);
@@ -228,7 +265,11 @@ class DefaultAgent implements Agent {
           });
           transition({ version: 1, type: "phase_changed", phase: "model_streaming" });
           const turn = await collectModelTurn(
-            input.model.stream(prepared.request, { signal: input.signal }),
+            observeModelProgress(
+              input.model.stream(prepared.request, { signal: input.signal }),
+              counts,
+              publish,
+            ),
           );
           if (
             input.signal.aborted ||

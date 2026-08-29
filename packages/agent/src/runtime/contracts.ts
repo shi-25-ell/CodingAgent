@@ -157,6 +157,14 @@ export type AgentProgressEvent = { readonly version: 1 } & (
       readonly modelTurnCount: number;
       readonly modelAttemptCount: number;
     }
+  | {
+      readonly type: "assistant_delta";
+      readonly modelTurnCount: number;
+      readonly modelAttemptCount: number;
+      readonly partIndex: number;
+      readonly channel: "text" | "reasoning";
+      readonly delta: string;
+    }
   | { readonly type: "tool_update"; readonly callId: string; readonly update: ToolUpdate }
 );
 

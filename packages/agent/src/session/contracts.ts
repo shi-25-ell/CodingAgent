@@ -1,11 +1,11 @@
-import type { AssistantMessage, ModelFailure } from "@coding-agent/model";
+import type { AssistantMessage, ModelFailure, ModelRef } from "@coding-agent/model";
 import type {
   ContextDerivationRecord,
   ContextManifest,
   StoredContextManifest,
 } from "../context/contracts.js";
 import type { BranchId, RecordId, RunId, SessionId } from "../contracts/primitives.js";
-import type { RunReport } from "../runtime/contracts.js";
+import type { RunBudgets, RunReport } from "../runtime/contracts.js";
 import type { ToolOutcome } from "../tools/contracts.js";
 
 export interface SessionRef {
@@ -139,6 +139,20 @@ export interface CompactionCheckpointMetadata {
 
 export interface RunMetadata {
   readonly task: string;
+  readonly configurationRevision: string;
+  readonly config?: RunConfigSnapshot;
+}
+
+export interface RunConfigSnapshot {
+  readonly version: 1;
+  readonly model: ModelRef & { readonly sourceRevision: string };
+  readonly permissionMode: "safe" | "autonomous";
+  readonly budgets: RunBudgets;
+  readonly tools: readonly string[];
+  readonly searchProfile?: string;
+  readonly extensions: readonly string[];
+  readonly skills: readonly string[];
+  readonly policyVersions: Readonly<Record<string, string>>;
   readonly configurationRevision: string;
 }
 

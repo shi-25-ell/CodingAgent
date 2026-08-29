@@ -31,8 +31,10 @@ export {
   createAgentHarness,
   type HarnessCommand,
   type HarnessEvent,
+  type HarnessProgressEvent,
   type HarnessRunHandle,
   type HarnessRunInput,
+  type HarnessSemanticEvent,
 } from "./harness/agent-harness.js";
 export { createFixedRunPolicies, type FixedRunPolicyOptions } from "./policies/fixed-policies.js";
 export * from "./runtime/contracts.js";

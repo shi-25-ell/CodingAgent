@@ -1,13 +1,18 @@
-import type { JsonObject, Model } from "@coding-agent/model";
+import type { AssistantMessage, JsonObject, Model, ModelFailure } from "@coding-agent/model";
 import type { Agent } from "../agent/agent.js";
 import { RunStateMachine } from "../agent/run-state-machine.js";
-import type { ContextManager } from "../context/contracts.js";
+import type {
+  ContextDerivationRecord,
+  ContextManager,
+  ContextManifest,
+  TokenMeasurement,
+} from "../context/contracts.js";
 import { ContextError } from "../context/errors.js";
 import { responseAsAssistantMessage } from "../context/transcript-context.js";
 import type { BranchId, RunId } from "../contracts/primitives.js";
 import { ReplayEventStream } from "../events/replay-event-stream.js";
 import type {
-  AgentEvent,
+  AgentProgressEvent,
   AgentRunResult,
   AgentSemanticEvent,
   ChangedFileEvidence,
@@ -19,11 +24,13 @@ import type {
 } from "../runtime/contracts.js";
 import type {
   AgentInputMessage,
+  CompactionCheckpointMetadata,
+  QueueItem,
   RunLease,
   RunMetadata,
   SessionHandle,
 } from "../session/contracts.js";
-import type { ToolExecutor } from "../tools/contracts.js";
+import type { ToolExecutor, ToolOutcome } from "../tools/contracts.js";
 
 export interface HarnessRunInput {
   readonly session: SessionHandle;
@@ -47,13 +54,62 @@ export interface CommandAck {
   readonly status: "accepted" | "already_applied" | "not_active";
 }
 
-export type HarnessEvent = { readonly version: 1 } & (
-  | { readonly type: "run_started"; readonly runId: RunId }
-  | { readonly type: "progress"; readonly event: AgentEvent }
-  | { readonly type: "assistant_committed"; readonly runId: RunId }
-  | { readonly type: "model_failure_committed"; readonly runId: RunId }
+export type HarnessSemanticEvent = {
+  readonly version: 1;
+  readonly category: "semantic";
+  readonly runId: RunId;
+  readonly sequence: number;
+} & (
+  | { readonly type: "run_started"; readonly metadata: RunMetadata }
+  | { readonly type: "user_accepted"; readonly message: AgentInputMessage }
+  | {
+      readonly type: "assistant_committed";
+      readonly message: AssistantMessage;
+      readonly ledgerSeq: number;
+    }
+  | { readonly type: "tool_planned"; readonly callId: string; readonly toolName: string }
+  | { readonly type: "tool_started"; readonly callId: string }
+  | {
+      readonly type: "tool_settled";
+      readonly outcome: ToolOutcome;
+      readonly ledgerSeq: number;
+    }
+  | {
+      readonly type: "model_failure_committed";
+      readonly failure: ModelFailure;
+      readonly ledgerSeq: number;
+    }
+  | { readonly type: "queue_changed" | "queue_delivered"; readonly item: QueueItem }
+  | {
+      readonly type: "context_prepared";
+      readonly manifest: ContextManifest;
+      readonly measurement: TokenMeasurement;
+      readonly checkpoint?: CompactionCheckpointMetadata;
+      readonly derivations: readonly ContextDerivationRecord[];
+    }
+  | {
+      readonly type: "compaction_completed";
+      readonly derivation: ContextDerivationRecord;
+      readonly checkpoint?: CompactionCheckpointMetadata;
+    }
+  | { readonly type: "compaction_failed"; readonly derivation: ContextDerivationRecord }
   | { readonly type: "terminal"; readonly report: RunReport }
 );
+
+export interface HarnessProgressEvent {
+  readonly version: 1;
+  readonly category: "progress";
+  readonly type: "progress";
+  readonly runId: RunId;
+  readonly key: string;
+  readonly event: AgentProgressEvent;
+}
+
+export type HarnessEvent = HarnessSemanticEvent | HarnessProgressEvent;
+
+type HarnessSemanticPayload<T = HarnessSemanticEvent> = T extends HarnessSemanticEvent
+  ? Omit<T, "version" | "category" | "runId" | "sequence">
+  : never;
 
 export interface HarnessRunHandle {
   readonly runId: RunId;
@@ -154,6 +210,19 @@ function startLeaseHeartbeat(
   };
 }
 
+function progressKey(event: AgentProgressEvent): string {
+  switch (event.type) {
+    case "phase_changed":
+      return "run:phase";
+    case "model_attempt_started":
+      return "model:attempt";
+    case "assistant_delta":
+      return `assistant:${event.modelTurnCount}:${event.modelAttemptCount}:${event.channel}:${event.partIndex}`;
+    case "tool_update":
+      return `tool:${event.callId}`;
+  }
+}
+
 class DefaultAgentHarness implements AgentHarness {
   readonly #options: AgentHarnessOptions;
 
@@ -171,7 +240,9 @@ class DefaultAgentHarness implements AgentHarness {
       initialMessages: redactValue(input.initialMessages, redact),
       metadata: redactValue(input.metadata, redact),
     });
-    const stream = new ReplayEventStream<HarnessEvent>();
+    const stream = new ReplayEventStream<HarnessEvent>({
+      coalescingKey: (event) => (event.category === "progress" ? event.key : undefined),
+    });
     const state = new RunStateMachine();
     const controller = new AbortController();
     const heartbeat = startLeaseHeartbeat(lease, controller);
@@ -181,6 +252,7 @@ class DefaultAgentHarness implements AgentHarness {
     let permissionSummary: PermissionSummary = { requested: 0, allowed: 0, denied: 0 };
     const changedFiles: ChangedFileEvidence[] = [];
     const commands: CommandEvidence[] = [];
+    let semanticSequence = 0;
     let lifecycle: "active" | "finalizing" | "terminal" = "active";
     let acceptsQueueMessages = true;
     const policies: RunPolicies = Object.freeze({
@@ -188,22 +260,58 @@ class DefaultAgentHarness implements AgentHarness {
       budgets: Object.freeze({ ...input.policies.budgets }),
     });
     const toolDefinitions = freezeValue(structuredClone(input.tools.definitions()));
-    stream.publish({ version: 1, type: "run_started", runId: lease.runId });
+    const publishSemantic = (event: HarnessSemanticPayload): void => {
+      semanticSequence += 1;
+      stream.publish({
+        version: 1,
+        category: "semantic",
+        runId: lease.runId,
+        sequence: semanticSequence,
+        ...event,
+      } as unknown as HarnessSemanticEvent);
+    };
+    const publishProgress = (event: AgentProgressEvent): void => {
+      stream.publish({
+        version: 1,
+        category: "progress",
+        type: "progress",
+        runId: lease.runId,
+        key: progressKey(event),
+        event,
+      });
+    };
+    publishSemantic({ type: "run_started", metadata: redactValue(input.metadata, redact) });
+    for (const message of input.initialMessages) {
+      publishSemantic({ type: "user_accepted", message: redactValue(message, redact) });
+    }
 
     const commit = async (event: AgentSemanticEvent): Promise<void> => {
       const safeEvent = redactValue(event, redact);
       if (safeEvent.type === "assistant_message") {
-        await lease.append([
-          { kind: "assistant_message", message: responseAsAssistantMessage(safeEvent.response) },
-        ]);
-        stream.publish({ version: 1, type: "assistant_committed", runId: lease.runId });
+        const message = responseAsAssistantMessage(safeEvent.response);
+        const receipt = await lease.append([{ kind: "assistant_message", message }]);
+        publishSemantic({
+          type: "assistant_committed",
+          message,
+          ledgerSeq: receipt.lastLedgerSeq,
+        });
+        for (const part of message.content) {
+          if (part.type === "tool_call") {
+            publishSemantic({ type: "tool_planned", callId: part.callId, toolName: part.name });
+          }
+        }
       } else if (safeEvent.type === "model_failure") {
-        await lease.append([{ kind: "model_failure", failure: safeEvent.failure }]);
-        stream.publish({ version: 1, type: "model_failure_committed", runId: lease.runId });
+        const receipt = await lease.append([{ kind: "model_failure", failure: safeEvent.failure }]);
+        publishSemantic({
+          type: "model_failure_committed",
+          failure: safeEvent.failure,
+          ledgerSeq: receipt.lastLedgerSeq,
+        });
       } else if (safeEvent.type === "tool_started") {
         await lease.markToolCallStarted(safeEvent.callId);
+        publishSemantic({ type: "tool_started", callId: safeEvent.callId });
       } else {
-        await lease.append([{ kind: "tool_outcome", outcome: safeEvent.outcome }]);
+        const receipt = await lease.append([{ kind: "tool_outcome", outcome: safeEvent.outcome }]);
         const evidence = safeEvent.outcome.evidence;
         if (evidence?.permissionRequested === true) {
           const requested =
@@ -259,6 +367,11 @@ class DefaultAgentHarness implements AgentHarness {
           succeeded: toolSummary.succeeded + (safeEvent.outcome.status === "succeeded" ? 1 : 0),
           failed: toolSummary.failed + (safeEvent.outcome.status === "succeeded" ? 0 : 1),
         };
+        publishSemantic({
+          type: "tool_settled",
+          outcome: safeEvent.outcome,
+          ledgerSeq: receipt.lastLedgerSeq,
+        });
       }
     };
 
@@ -281,24 +394,54 @@ class DefaultAgentHarness implements AgentHarness {
               tools: toolDefinitions,
             });
             await lease.commitContext(prepared.manifest, prepared.checkpoint, prepared.derivations);
+            publishSemantic({
+              type: "context_prepared",
+              manifest: prepared.manifest,
+              measurement: prepared.measurement,
+              ...(prepared.checkpoint ? { checkpoint: prepared.checkpoint } : {}),
+              derivations: prepared.derivations,
+            });
+            for (const derivation of prepared.derivations) {
+              if (derivation.status === "succeeded") {
+                publishSemantic({
+                  type: "compaction_completed",
+                  derivation,
+                  ...(prepared.checkpoint ? { checkpoint: prepared.checkpoint } : {}),
+                });
+              } else {
+                publishSemantic({ type: "compaction_failed", derivation });
+              }
+            }
             return prepared;
           } catch (error) {
             if (error instanceof ContextError && error.derivations.length > 0) {
               await lease.commitContextFailure(error.derivations);
+              for (const derivation of error.derivations) {
+                publishSemantic({ type: "compaction_failed", derivation });
+              }
             }
             throw error;
           }
         },
         commit,
-        drainSteering: () => lease.drainSteering(),
-        takeFollowUp: () => lease.takeFollowUp(),
+        async drainSteering() {
+          const items = await lease.drainSteering();
+          for (const item of items) publishSemantic({ type: "queue_delivered", item });
+          return items;
+        },
+        async takeFollowUp() {
+          const item = await lease.takeFollowUp();
+          if (item) publishSemantic({ type: "queue_delivered", item });
+          return item;
+        },
         reportProgress(event) {
-          if (event.type === "phase_changed") {
-            state.transition(event.phase);
-            if (event.phase === "completion_candidate") acceptsQueueMessages = false;
-            if (event.phase === "preparing_context") acceptsQueueMessages = true;
+          const safeEvent = redactValue(event, redact);
+          if (safeEvent.type === "phase_changed") {
+            state.transition(safeEvent.phase);
+            if (safeEvent.phase === "completion_candidate") acceptsQueueMessages = false;
+            if (safeEvent.phase === "preparing_context") acceptsQueueMessages = true;
           }
-          stream.publish({ version: 1, type: "progress", event });
+          publishProgress(safeEvent);
         },
       },
     );
@@ -330,12 +473,8 @@ class DefaultAgentHarness implements AgentHarness {
         const report = (await lease.finish(requestedReport)).report;
         lifecycle = "terminal";
         state.transition("terminal");
-        stream.publish({
-          version: 1,
-          type: "progress",
-          event: { version: 1, type: "phase_changed", phase: "terminal" },
-        });
-        stream.publish({ version: 1, type: "terminal", report });
+        publishProgress({ version: 1, type: "phase_changed", phase: "terminal" });
+        publishSemantic({ type: "terminal", report });
         return report;
       })
       .finally(async () => {
@@ -362,11 +501,12 @@ class DefaultAgentHarness implements AgentHarness {
         if (!acceptsQueueMessages) {
           return { commandId: command.commandId, status: "not_active" };
         }
-        await input.session.enqueue({
+        const item = await input.session.enqueue({
           commandId: command.commandId,
           kind: command.type === "steer" ? "steering" : "follow_up",
           text: redact(command.text),
         });
+        publishSemantic({ type: "queue_changed", item });
         return { commandId: command.commandId, status: "accepted" };
       },
       finished,
