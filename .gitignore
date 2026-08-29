@@ -7,4 +7,5 @@ tmp/
 .env
 .env.*
 !.env.example
-.fast/credentials.json
+.dex
+
