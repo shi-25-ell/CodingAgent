@@ -45,6 +45,30 @@ export {
   visibleDiffViewerFiles,
 } from "./diff-viewer.js";
 export {
+  canonicalizeDexKeyBinding,
+  type DexCommandPaletteEntry,
+  type DexKeymapBaseContext,
+  type DexKeymapBindingDefinition,
+  type DexKeymapBindingOverride,
+  type DexKeymapCommandDefinition,
+  type DexKeymapCommandId,
+  type DexKeymapConfiguration,
+  type DexKeymapConflict,
+  type DexKeymapConflictCode,
+  type DexKeymapMode,
+  DexKeymapModeStack,
+  type DexKeymapModeStackSnapshot,
+  type DexKeymapScope,
+  dexDefaultKeymapCommands,
+  dexKeymapScopePriority,
+  type ResolvedDexKeymap,
+  type ResolvedDexKeymapBinding,
+  type ResolvedDexKeymapCommand,
+  resolveDexKeymap,
+  resolveDexKeymapScopes,
+  selectDexCommandPaletteEntries,
+} from "./keymap-policy.js";
+export {
   type InteractiveLayout,
   interactiveLayoutBreakpoints,
   resolveInteractiveLayout,
@@ -83,6 +107,15 @@ export {
   OpenTuiDiffViewer,
   type OpenTuiDiffViewerProps,
 } from "./opentui-diff-viewer.jsx";
+export {
+  createOpenTuiKeymapAdapter,
+  type DexKeymapCommandHandler,
+  DexKeymapConfigurationError,
+  type DexKeymapRuntimeDiagnostic,
+  type DexKeymapRuntimeDiagnosticCode,
+  type OpenTuiKeymapAdapter,
+  type OpenTuiKeymapAdapterOptions,
+} from "./opentui-keymap-adapter.js";
 export {
   createProductionOpenTuiRenderer,
   InteractiveTerminalError,

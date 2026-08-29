@@ -1,6 +1,6 @@
 # Dex Code M5.3 TUI design baseline
 
-> 状态：进行中。本文是 M5.3 的 owner-confirmed design record；N1、V1-A、V2、V3-A、V4-A、V5-A 与 V6-A 已确认，V7 按依赖顺序补充。未经确认的结构性方案不得进入 global keymap behavior。
+> 状态：已完成 owner checkpoint。本文是 M5.3 的 owner-confirmed design record；N1、V1-A、V2、V3-A、V4-A、V5-A、V6-A 与 V7-A+ 均已确认。后续实现不得静默改变命名体系、信息架构、主要 interaction flow 或 executable keymap。
 
 ## 1. N1：产品、CLI 与 namespace 命名
 
@@ -8,16 +8,16 @@
 
 项目 owner 将 “Dex Code” 定义为品牌名，而不是必须替换全部技术术语的 namespace。品牌 Interface 与内部实现 seam 分离如下：
 
-| Surface | 决定 | 说明 |
-| --- | --- | --- |
-| Display name / wordmark | `Dex Code` | TUI title、welcome、help/about、对外文档与截图使用 |
-| CLI executable | `dex` | usage、shell completion 与 release bin 使用 |
-| Environment namespace | `DEX_*` | model、provider、credential、data home 等用户配置 |
-| Project config/data directory | `.dex` | project credential、project skill 等用户可见目录 |
-| User data directory | Unix `dex`；Windows `Dex Code` | 遵循各平台 data root 约定 |
-| Package scope | `@coding-agent/*` | 保持技术 namespace；不为品牌做无收益的全仓改名 |
-| Code identifiers | `CodingAgent`、`CodingSession` 等 | 保持准确的领域/技术命名 |
-| Extension contract namespace | `coding-agent` | 表达技术协议，不强制 extension ID 使用品牌前缀 |
+| Surface                       | 决定                              | 说明                                               |
+| ----------------------------- | --------------------------------- | -------------------------------------------------- |
+| Display name / wordmark       | `Dex Code`                        | TUI title、welcome、help/about、对外文档与截图使用 |
+| CLI executable                | `dex`                             | usage、shell completion 与 release bin 使用        |
+| Environment namespace         | `DEX_*`                           | model、provider、credential、data home 等用户配置  |
+| Project config/data directory | `.dex`                            | project credential、project skill 等用户可见目录   |
+| User data directory           | Unix `dex`；Windows `Dex Code`    | 遵循各平台 data root 约定                          |
+| Package scope                 | `@coding-agent/*`                 | 保持技术 namespace；不为品牌做无收益的全仓改名     |
+| Code identifiers              | `CodingAgent`、`CodingSession` 等 | 保持准确的领域/技术命名                            |
+| Extension contract namespace  | `coding-agent`                    | 表达技术协议，不强制 extension ID 使用品牌前缀     |
 
 ### 1.1 选择理由
 
@@ -111,17 +111,17 @@ Narrow / regular（sidebar explicitly opened）
 
 视觉方向为 neutral dark/light UI 加 blue、green、light-purple semantic identity：
 
-| Token group | 角色 |
-| --- | --- |
-| `primary` | blue；focus、selection、主要交互、Markdown link 与部分关键状态 |
-| `secondary` | green；completed execution、positive state、diff add 与部分 code/command semantics |
-| `accent` | light purple；reasoning、agent-related secondary emphasis、Markdown heading 与少量高层级 metadata |
-| `info/success/warning/error/pending` | blue/cyan、green、amber/yellow、soft red、muted purple/gray |
-| `background/backgroundPanel/backgroundElement/backgroundMenu` | 接近黑或接近白的 neutral surface steps，仅作轻微明度区分 |
-| `text/textMuted/textSubtle/textDisabled` | neutral text hierarchy；普通正文不使用品牌色 |
-| `border/borderActive/borderSubtle/focus` | neutral border hierarchy；focus 使用 primary blue |
-| Markdown / syntax | 从完整 semantic roles 映射的克制多色 system，不为每个 tool 分配独立强色 |
-| diff | add=green、remove=soft red、context=neutral、hunk=info；background 使用低强度 tint |
+| Token group                                                   | 角色                                                                                              |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `primary`                                                     | blue；focus、selection、主要交互、Markdown link 与部分关键状态                                    |
+| `secondary`                                                   | green；completed execution、positive state、diff add 与部分 code/command semantics                |
+| `accent`                                                      | light purple；reasoning、agent-related secondary emphasis、Markdown heading 与少量高层级 metadata |
+| `info/success/warning/error/pending`                          | blue/cyan、green、amber/yellow、soft red、muted purple/gray                                       |
+| `background/backgroundPanel/backgroundElement/backgroundMenu` | 接近黑或接近白的 neutral surface steps，仅作轻微明度区分                                          |
+| `text/textMuted/textSubtle/textDisabled`                      | neutral text hierarchy；普通正文不使用品牌色                                                      |
+| `border/borderActive/borderSubtle/focus`                      | neutral border hierarchy；focus 使用 primary blue                                                 |
+| Markdown / syntax                                             | 从完整 semantic roles 映射的克制多色 system，不为每个 tool 分配独立强色                           |
+| diff                                                          | add=green、remove=soft red、context=neutral、hunk=info；background 使用低强度 tint                |
 
 ### 3.1 使用约束
 
@@ -143,13 +143,13 @@ theme resolver 只输出 presentation token，不进入 `CodingEvent`、projecti
 
 所有 tool activity 都属于 Transcript，不创建 Activity workspace。presentation Adapter 按 tool semantics 在 compact row、output block、inline diff 与 code/diagnostic block 之间选择；不把所有 tool 统一成相同 card，也不把 output 一律移入 detail route。
 
-| Tool family | 默认呈现 |
-| --- | --- |
-| read / grep / glob / search | compact semantic inline row |
-| shell / command | inline output block；默认约 10 行，超出后 expand/collapse |
-| generic tool | compact summary；raw output 默认隐藏，可单独全局开启；开启后默认约 3 行 preview |
-| edit / apply_patch | 有 structured diff metadata 时直接在 Transcript 渲染 inline diff |
-| write | 根据 metadata 使用 compact row 或 syntax-aware code/diagnostic block |
+| Tool family                 | 默认呈现                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| read / grep / glob / search | compact semantic inline row                                                     |
+| shell / command             | inline output block；默认约 10 行，超出后 expand/collapse                       |
+| generic tool                | compact summary；raw output 默认隐藏，可单独全局开启；开启后默认约 3 行 preview |
+| edit / apply_patch          | 有 structured diff metadata 时直接在 Transcript 渲染 inline diff                |
+| write                       | 根据 metadata 使用 compact row 或 syntax-aware code/diagnostic block            |
 
 inline edit diff 使用 syntax highlighting、line numbers、add/remove semantic color 与 selection token。它和 dedicated Diff route 是两个不同层级：单次 mutation evidence 留在 Transcript；session/working-tree 综合审阅进入 full-screen route。inline region `width <= 120` 默认 unified，`width > 120` 可使用 split；用户选择 stacked 时始终 unified。V6 继续负责 dedicated Diff route 的多文件导航和完整 width matrix，不能反向取消这里的 inline mutation evidence。
 
@@ -198,14 +198,14 @@ Composer editor policy：
 
 V5-A local interaction 固定为：
 
-| Input | 行为 |
-| --- | --- |
-| default focus | `Allow once` |
-| Left / `h` | 选择 `Allow once` |
-| Right / `l` | 选择 `Deny` |
-| Enter | 发送当前选择 |
-| Escape | 直接发送 `Deny` |
-| Ctrl+F | collapsed/full-screen 切换 |
+| Input         | 行为                       |
+| ------------- | -------------------------- |
+| default focus | `Allow once`               |
+| Left / `h`    | 选择 `Allow once`          |
+| Right / `l`   | 选择 `Deny`                |
+| Enter         | 发送当前选择               |
+| Escape        | 直接发送 `Deny`            |
+| Ctrl+F        | collapsed/full-screen 切换 |
 
 approval response 必须经过 `respond_approval` UiIntent，携带 stable approval ID、decision 与 exact plan fingerprint。只有 application ack 为 `accepted` / `already_applied` 且后续 semantic event 收敛后 prompt 才消失；`stale` 显示 `APPROVAL_STALE`，其他拒绝显示 `APPROVAL_RESPONSE_REJECTED`，两者都保留 prompt。Escape 永远不映射 abort；abort 是独立 Run command，approval focus scope 也不允许按键泄漏到 Composer、background surface 或 global destructive command。
 
@@ -230,25 +230,65 @@ V6-A 固定交互能力为：
 
 宽度矩阵：
 
-| 条件 | File tree | Patch view | 说明 |
-| --- | --- | --- | --- |
-| tree visible 且存在 files | 32 columns | 剩余宽度 | narrow 下不转为 Session side panel；用户可隐藏 tree 释放空间 |
-| patch columns `< 100` | 可见或隐藏 | unified | split override 暂时失效，但 preference 保留 |
-| patch columns `>= 100`、default | 可见或隐藏 | split | `stacked` preference 除外 |
-| patch columns `>= 100`、explicit override | 可见或隐藏 | split/unified | override 是 UI-local preference |
-| no files / loading / failure | 按 source state | typed state | 不伪造空 diff，也不自行读取 repository |
+| 条件                                      | File tree       | Patch view    | 说明                                                         |
+| ----------------------------------------- | --------------- | ------------- | ------------------------------------------------------------ |
+| tree visible 且存在 files                 | 32 columns      | 剩余宽度      | narrow 下不转为 Session side panel；用户可隐藏 tree 释放空间 |
+| patch columns `< 100`                     | 可见或隐藏      | unified       | split override 暂时失效，但 preference 保留                  |
+| patch columns `>= 100`、default           | 可见或隐藏      | split         | `stacked` preference 除外                                    |
+| patch columns `>= 100`、explicit override | 可见或隐藏      | split/unified | override 是 UI-local preference                              |
+| no files / loading / failure              | 按 source state | typed state   | 不伪造空 diff，也不自行读取 repository                       |
 
-## 8. Owner checkpoint 状态
+## 8. V7：Scoped hybrid keymap
 
-| ID | 状态 | 记录 |
-| --- | --- | --- |
-| N1 | 已确认 | 本文第 1 节 |
-| V1 | 已确认 | V1-A：stretch root、wide auto dock、narrow/regular explicit overlay |
-| V2 | 已确认 | 默认 `dex` dark/light palette；可选 terminal-adaptive `system` |
-| V3 | 已确认 | V3-A：semantic inline tools；mutation diff 留在 Transcript |
-| V4 | 已确认 | V4-A：单一 run-aware Composer；active 默认 STEER，footer 可切 FOLLOW-UP |
-| V5 | 已确认 | V5-A：bottom blocking prompt；默认 Allow once；Escape Deny；可 full-screen |
-| V6 | 已确认 | V6-A：full-screen route、32-column file tree、all/single patch、responsive split/unified |
-| V7 | 待确认 | executable keymap、可发现性与 conflict report |
+确认日期：2026-08-29
 
-V7 确认后，本文还必须包含完整 end-to-end flows、状态矩阵、keyboard/focus/overlay 规则，以及 `CodingEvent -> TuiViewModel -> visual region -> UiIntent` 的可追踪 mapping。
+项目 owner 选择 V7-A+。Dex Code 使用显式 command registry、scope/mode stack 与固定 precedence；component registration order 不参与冲突裁决。`Ctrl+X` 是 2 秒 timed leader，`Ctrl+P` 打开 command palette，`<leader>p` 是 terminal compatibility fallback。which-key 默认隐藏，仅按需打开；command palette、route footer 与 route-local `?` help 是默认 discoverability 入口，不建立常驻快捷键 panel。
+
+Composer 使用独立 managed Textarea scope。cursor、selection、newline、history 与 edit-buffer command 优先于 route/global binding；Enter submit，Shift+Enter newline。config load 必须分析最终 resolved bindings，产生 typed `duplicate`、`shadowed`、`unreachable` 与 `textarea conflict` report；禁止依赖后注册覆盖先注册或静默 last-write-wins。
+
+Escape precedence 固定为：
+
+```text
+pending sequence
+  -> top overlay/dialog
+  -> Approval
+  -> Diff
+  -> Composer local state
+  -> compatibility double-Escape detector
+```
+
+单次 Escape 永远不触发 Run abort。Run abort 的 canonical binding 是 `<leader>i`。`Esc Esc` 只作为 compatibility abort：必须存在 active Run、两个 Escape 在 bounded interval 内到达，并且两次都未被更高 scope 消费；Approval、Diff、dialog/overlay 或 Composer local state 一旦处理 Escape，compatibility sequence 立即清除。
+
+确认的 direct bindings：
+
+| Scope      | Binding               | Command semantics                       |
+| ---------- | --------------------- | --------------------------------------- |
+| Global     | `Ctrl+P`, `<leader>p` | command palette                         |
+| Run        | `<leader>i`           | abort active Run                        |
+| Diff       | `Tab`                 | files/patches focus                     |
+| Diff       | `[`, `]`              | previous/next hunk                      |
+| Diff       | `p`, `n`              | previous/next file                      |
+| Diff       | `b`, `s`, `d`, `v`    | tree、single patch、source、view toggle |
+| Diff       | `?`                   | route help                              |
+| Diff       | `q`, `Esc`            | close route                             |
+| Transcript | `PgUp`, `PgDn`        | page scroll                             |
+| Transcript | `Home`, `End`         | first/last                              |
+| Approval   | V5-A bindings         | blocking decision scope                 |
+| Composer   | Enter / Shift+Enter   | submit / newline                        |
+
+scope precedence 使用固定 numeric policy，仅用于 deterministic dispatch；视觉 z-index 仍由 surface policy 管理。blocking Approval 禁用 session/global destructive command。Diff route 可以使用 global/session non-blocking commands，但自己的 direct bindings优先。command palette 只展示当前 context 中 active/reachable command 和 resolved binding；disabled 或 unreachable command 必须带 diagnostic，不伪装为可执行项。
+
+## 9. Owner checkpoint 状态
+
+| ID  | 状态   | 记录                                                                                         |
+| --- | ------ | -------------------------------------------------------------------------------------------- |
+| N1  | 已确认 | 本文第 1 节                                                                                  |
+| V1  | 已确认 | V1-A：stretch root、wide auto dock、narrow/regular explicit overlay                          |
+| V2  | 已确认 | 默认 `dex` dark/light palette；可选 terminal-adaptive `system`                               |
+| V3  | 已确认 | V3-A：semantic inline tools；mutation diff 留在 Transcript                                   |
+| V4  | 已确认 | V4-A：单一 run-aware Composer；active 默认 STEER，footer 可切 FOLLOW-UP                      |
+| V5  | 已确认 | V5-A：bottom blocking prompt；默认 Allow once；Escape Deny；可 full-screen                   |
+| V6  | 已确认 | V6-A：full-screen route、32-column file tree、all/single patch、responsive split/unified     |
+| V7  | 已确认 | V7-A+：Ctrl+X leader、Ctrl+P/leader-p palette、scoped direct bindings、typed conflict report |
+
+N1 与 V1–V7 已全部确认。本文还需在 M5.3 收敛前补齐完整 end-to-end flows、状态矩阵、keyboard/focus/overlay 规则，以及 `CodingEvent -> TuiViewModel -> visual region -> UiIntent` 的可追踪 mapping。
